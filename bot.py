@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent
 IRC_MESSAGE = re.compile(r"^(?:@[^ ]+ )?:([^! ]+)![^ ]+ PRIVMSG #([^ ]+) :(.*)$")
 LOGIN = re.compile(r"^[a-zA-Z0-9_]{1,25}$")
 AI_MODEL = "deepseek-v4.1-flash"
+MAX_QUEUED_QUESTIONS = 10
 SYSTEM_PROMPT = (
     "Ты Чунда — язвительная, смешная виртуальная собеседница Twitch-чата стримерши Софи. "
     "Софи — хозяйка канала. Отвечай по-русски одним-двумя короткими предложениями, "
@@ -128,8 +129,6 @@ class Bot:
     def __init__(self, cfg: dict[str, str]):
         self.cfg = cfg
         self.memory = load_memory(ensure_local_memory(ROOT / "memory.json"))
-        self.last_global = 0.0
-        self.last_user: dict[str, float] = {}
         self.last_sent = 0.0
 
     async def send(self, writer: asyncio.StreamWriter, line: str) -> None:
@@ -167,7 +166,7 @@ class Bot:
         reader, writer = await asyncio.open_connection(
             "irc.chat.twitch.tv", 6697, ssl=ssl.create_default_context()
         )
-        queue: asyncio.Queue = asyncio.Queue(maxsize=3)
+        queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUED_QUESTIONS)
         worker = asyncio.create_task(self.worker(writer, queue))
         try:
             await self.send(writer, "PASS oauth:" + access_token)
@@ -193,19 +192,16 @@ class Bot:
                 question = extract_question(message)
                 if question is None:
                     continue
-                now = time.monotonic()
-                if now - self.last_global < 10 or now - self.last_user.get(user, 0) < 60:
-                    continue
-                if queue.full():
-                    continue
-                self.last_global = now
-                self.last_user[user] = now
                 if not question:
                     await self.say(writer, f"@{user} напиши вопрос после !бот")
                     continue
                 user_id = irc_user_id(line)
-                queue.put_nowait((user, user_id, question))
-                print(f"Вопрос от {user} принят", flush=True)
+                try:
+                    queue.put_nowait((user, user_id, question))
+                except asyncio.QueueFull:
+                    print(f"Вопрос от {user} отклонён: очередь заполнена", flush=True)
+                    continue
+                print(f"Вопрос от {user} принят (в очереди: {queue.qsize()})", flush=True)
         finally:
             worker.cancel()
             writer.close()
