@@ -6,14 +6,16 @@ from pathlib import Path
 from unittest.mock import patch
 
 import bot
+import memory
 import start
 import twitch_auth
 
 
 class BotTests(unittest.TestCase):
     def test_command_and_irc_message(self):
-        line = "@id=abc :viewer!viewer@viewer.tmi.twitch.tv PRIVMSG #channel :!бот Привет?"
+        line = "@id=abc;user-id=123 :viewer!viewer@viewer.tmi.twitch.tv PRIVMSG #channel :!бот Привет?"
         self.assertEqual(bot.IRC_MESSAGE.match(line).groups(), ("viewer", "channel", "!бот Привет?"))
+        self.assertEqual(bot.irc_user_id(line), "123")
         self.assertEqual(bot.extract_question("!бот Привет?"), "Привет?")
         self.assertIsNone(bot.extract_question("!ботинок"))
 
@@ -28,15 +30,58 @@ class BotTests(unittest.TestCase):
         def fake_urlopen(request, timeout):
             self.assertEqual(request.full_url, "https://api.deepseek.com/chat/completions")
             self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
-            self.assertEqual(json.loads(request.data)["model"], "deepseek-flash")
+            payload = json.loads(request.data)
+            self.assertEqual(payload["model"], bot.AI_MODEL)
+            self.assertIn("Ты Чунда", payload["messages"][0]["content"])
+            self.assertIn("Мат — привычная часть", payload["messages"][0]["content"])
+            self.assertEqual(len(payload["messages"]), 2)
             return Response(json.dumps({"choices": [{"message": {"content": "Привет!\nКак дела?"}}]}).encode())
 
         with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
             answer = bot.call_ai({
-                "AI_MODEL": "deepseek-flash", "AI_API_KEY": "test-key",
+                "AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "test-key",
                 "AI_CHAT_URL": "https://api.deepseek.com/chat/completions",
             }, "viewer", "Привет")
         self.assertEqual(answer, "Привет! Как дела?")
+
+    def test_memory_is_valid_and_only_current_viewer_is_sent(self):
+        data = memory.load_memory(Path(__file__).resolve().parents[1] / "memory.json")
+        self.assertEqual(data["viewers"], [])  # The example card is ignored.
+        data["streamer"]["facts"] = ["Софи любит хорроры"]
+        data["viewers"] = [
+            {"login": "pelmen", "user_id": "123", "facts": ["Боится скримеров"], "jokes": [], "avoid": []},
+            {"login": "other", "user_id": "456", "facts": ["Любит шахматы"], "jokes": [], "avoid": []},
+        ]
+        context = memory.context_for(data, "renamed_pelmen", "123")
+        self.assertIn("Боится скримеров", context)
+        self.assertIn("Софи любит хорроры", context)
+        self.assertNotIn("Любит шахматы", context)
+        self.assertNotIn("Боится скримеров", memory.context_for(data, "pelmen", "456"))
+        self.assertNotIn("Боится скримеров", memory.context_for(data, "pelmen", ""))
+
+    def test_memory_notes_are_in_ai_request(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        data = {"streamer": {"facts": [], "jokes": []}, "viewers": [
+            {"login": "pelmen", "user_id": "", "facts": ["Любит хорроры"], "jokes": [], "avoid": []},
+        ]}
+
+        def fake_urlopen(request, timeout):
+            messages = json.loads(request.data)["messages"]
+            self.assertEqual(len(messages), 3)
+            self.assertIn("Любит хорроры", messages[1]["content"])
+            return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
+
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
+            self.assertEqual(bot.call_ai({
+                "AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "test-key",
+                "AI_CHAT_URL": "https://api.deepseek.com/chat/completions",
+            }, "pelmen", "Привет", data), "OK")
 
     def test_expired_twitch_token_is_refreshed_and_saved(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -70,7 +115,7 @@ class BotTests(unittest.TestCase):
             path = Path(directory) / ".env"
             answers = iter([
                 "https://www.twitch.tv/Streamer", "Helper_bot", "client123",
-                "https://api.example.com/v1/chat/completions", "model-x",
+                "https://api.example.com/v1/chat/completions",
             ])
             with patch("builtins.input", side_effect=lambda _: next(answers)), patch.object(
                 start.getpass, "getpass", return_value="secret-key"
@@ -79,6 +124,7 @@ class BotTests(unittest.TestCase):
                 self.assertTrue(start.complete(start.read_config(path)))
                 self.assertEqual(start.read_config(path)["TWITCH_CHANNEL"], "streamer")
                 self.assertEqual(start.read_config(path)["AI_BASE_URL"], "https://api.example.com/v1")
+                self.assertEqual(start.AI_MODEL, bot.AI_MODEL)
                 start.setup(path)
                 secret.assert_called_once()
 
