@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from bot import AI_MODEL
+
 
 ROOT = Path(__file__).resolve().parent
 ENV_PATH = ROOT / ".env"
@@ -14,9 +16,8 @@ FIELDS = (
     ("TWITCH_CHANNEL", "Логин Twitch-канала (или ссылка на него)"),
     ("TWITCH_BOT_NAME", "Логин отдельного Twitch-аккаунта бота"),
     ("TWITCH_CLIENT_ID", "Client ID приложения Twitch типа Public"),
-    ("AI_BASE_URL", "Base URL API из кабинета ai.starimg.ru"),
+    ("AI_BASE_URL", "Base URL API ai.starimg.ru"),
     ("AI_API_KEY", "Ключ AI API"),
-    ("AI_MODEL", "ID текстовой модели из кабинета ai.starimg.ru"),
 )
 LOGIN = re.compile(r"^[a-zA-Z0-9_]{1,25}$")
 
@@ -65,11 +66,11 @@ def setup(path: Path, force: bool = False) -> None:
     if complete(previous) and not force:
         return
     print("\nПервоначальная настройка бота. Данные сохраняются только в файле .env на этом компьютере.")
-    print("Для ai.starimg.ru возьмите Base URL и ID текстовой модели в личном кабинете.")
+    print(f"Используется модель {AI_MODEL}; Base URL по умолчанию — https://ai.starimg.ru/v1.")
     print("Для Twitch нужен отдельный аккаунт бота и Client ID приложения типа Public.\n")
     values = {}
     for name, label in FIELDS:
-        old = previous.get(name, "")
+        old = previous.get(name, "") or ("https://ai.starimg.ru/v1" if name == "AI_BASE_URL" else "")
         while True:
             suffix = " [Enter — оставить прежнее]" if old else ""
             prompt = f"{label}{suffix}: "
