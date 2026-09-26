@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import bot
+import start
 import twitch_auth
 
 
@@ -63,6 +64,23 @@ class BotTests(unittest.TestCase):
             }):
                 with self.assertRaisesRegex(RuntimeError, "не под аккаунтом бота"):
                     twitch_auth.get_access_token("client", "bot", path)
+
+    def test_first_run_setup_and_reuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".env"
+            answers = iter([
+                "https://www.twitch.tv/Streamer", "Helper_bot", "client123",
+                "https://api.example.com/v1/chat/completions", "model-x",
+            ])
+            with patch("builtins.input", side_effect=lambda _: next(answers)), patch.object(
+                start.getpass, "getpass", return_value="secret-key"
+            ) as secret:
+                start.setup(path)
+                self.assertTrue(start.complete(start.read_config(path)))
+                self.assertEqual(start.read_config(path)["TWITCH_CHANNEL"], "streamer")
+                self.assertEqual(start.read_config(path)["AI_BASE_URL"], "https://api.example.com/v1")
+                start.setup(path)
+                secret.assert_called_once()
 
 
 if __name__ == "__main__":
