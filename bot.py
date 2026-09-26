@@ -10,7 +10,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from memory import context_for, load_memory
+from memory import context_for, ensure_local_memory, load_memory
 from twitch_auth import get_access_token
 
 
@@ -127,7 +127,7 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
 class Bot:
     def __init__(self, cfg: dict[str, str]):
         self.cfg = cfg
-        self.memory = load_memory(ROOT / "memory.json")
+        self.memory = load_memory(ensure_local_memory(ROOT / "memory.json"))
         self.last_global = 0.0
         self.last_user: dict[str, float] = {}
         self.last_sent = 0.0

@@ -9,6 +9,16 @@ LOGIN = re.compile(r"^[a-z0-9_]{1,25}$")
 USER_ID = re.compile(r"^[0-9]+$")
 
 
+def ensure_local_memory(path: Path) -> Path:
+    """Create an ignored local memory file from the public template once."""
+    if not path.exists():
+        try:
+            path.write_bytes(path.with_name("memory.example.json").read_bytes())
+        except OSError as exc:
+            raise ValueError(f"Не удалось создать {path.name}: {exc}") from exc
+    return path
+
+
 def _notes(value: object, label: str) -> list[str]:
     if not isinstance(value, list) or len(value) > 12:
         raise ValueError(f"{label}: нужен список максимум из 12 строк")
