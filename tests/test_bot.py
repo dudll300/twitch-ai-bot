@@ -45,7 +45,7 @@ class BotTests(unittest.TestCase):
         self.assertEqual(answer, "Привет! Как дела?")
 
     def test_memory_is_valid_and_only_current_viewer_is_sent(self):
-        data = memory.load_memory(Path(__file__).resolve().parents[1] / "memory.json")
+        data = memory.load_memory(Path(__file__).resolve().parents[1] / "memory.example.json")
         self.assertEqual(data["viewers"], [])  # The example card is ignored.
         data["streamer"]["facts"] = ["Софи любит хорроры"]
         data["viewers"] = [
@@ -58,6 +58,18 @@ class BotTests(unittest.TestCase):
         self.assertNotIn("Любит шахматы", context)
         self.assertNotIn("Боится скримеров", memory.context_for(data, "pelmen", "456"))
         self.assertNotIn("Боится скримеров", memory.context_for(data, "pelmen", ""))
+
+    def test_local_memory_is_created_once_from_template(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "memory.example.json"
+            local = root / "memory.json"
+            template.write_text('{"streamer":{"facts":[],"jokes":[]},"viewers":[]}', encoding="utf-8")
+            memory.ensure_local_memory(local)
+            self.assertEqual(local.read_bytes(), template.read_bytes())
+            local.write_text("private notes", encoding="utf-8")
+            memory.ensure_local_memory(local)
+            self.assertEqual(local.read_text(encoding="utf-8"), "private notes")
 
     def test_memory_notes_are_in_ai_request(self):
         class Response(io.BytesIO):
