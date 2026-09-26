@@ -1,0 +1,4 @@
+.env
+.twitch_token.json
+.twitch_token.tmp
+__pycache__/
