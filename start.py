@@ -72,7 +72,8 @@ def setup(path: Path, force: bool = False) -> None:
     for name, label in FIELDS:
         old = previous.get(name, "") or ("https://ai.starimg.ru/v1" if name == "AI_BASE_URL" else "")
         while True:
-            suffix = " [Enter — оставить прежнее]" if old else ""
+            suffix = (f" [Enter — {old}]" if name == "AI_BASE_URL" else
+                      " [Enter — оставить прежнее]" if old else "")
             prompt = f"{label}{suffix}: "
             try:
                 entered = getpass.getpass(prompt) if name == "AI_API_KEY" else input(prompt)
