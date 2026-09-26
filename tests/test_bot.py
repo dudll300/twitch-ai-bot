@@ -1,3 +1,4 @@
+import asyncio
 import io
 import json
 import tempfile
@@ -18,6 +19,59 @@ class BotTests(unittest.TestCase):
         self.assertEqual(bot.irc_user_id(line), "123")
         self.assertEqual(bot.extract_question("!бот Привет?"), "Привет?")
         self.assertIsNone(bot.extract_question("!ботинок"))
+
+    def test_burst_from_multiple_viewers_and_repeat_question(self):
+        async def scenario():
+            answered = asyncio.Event()
+            replies = []
+            users = ["one", "two", "three", "four", "one"]
+            messages = [
+                f":{user}!{user}@{user}.tmi.twitch.tv PRIVMSG #channel :!бот Вопрос {number}\r\n".encode()
+                for number, user in enumerate(users)
+            ]
+
+            class Reader:
+                async def readline(self):
+                    if messages:
+                        return messages.pop(0)
+                    await asyncio.wait_for(answered.wait(), timeout=2)
+                    return b""
+
+            class Writer:
+                def write(self, data):
+                    pass
+
+                async def drain(self):
+                    pass
+
+                def close(self):
+                    pass
+
+                async def wait_closed(self):
+                    pass
+
+            async def open_connection(*args, **kwargs):
+                return Reader(), Writer()
+
+            async def say(self, writer, message):
+                replies.append(message)
+                if len(replies) == len(users):
+                    answered.set()
+
+            instance = bot.Bot.__new__(bot.Bot)
+            instance.cfg = {
+                "TWITCH_CLIENT_ID": "client", "TWITCH_BOT_NAME": "helper",
+                "TWITCH_CHANNEL": "channel",
+            }
+            instance.memory = {"streamer": {"facts": [], "jokes": []}, "viewers": []}
+            with patch.object(bot, "get_access_token", return_value="token"), patch.object(
+                bot.asyncio, "open_connection", open_connection
+            ), patch.object(bot, "call_ai", return_value="OK"), patch.object(bot.Bot, "say", say):
+                await instance.connection()
+            self.assertEqual(len(replies), len(users))
+            self.assertEqual(sum(reply.startswith("@one ") for reply in replies), 2)
+
+        asyncio.run(scenario())
 
     def test_ai_request_and_one_line_reply(self):
         class Response(io.BytesIO):
