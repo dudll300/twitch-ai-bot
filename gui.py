@@ -3,9 +3,8 @@
 import codecs
 import html
 import sys
-from pathlib import Path
 
-from PySide6.QtCore import QProcess, QProcessEnvironment, Qt, QTimer, QUrl
+from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QApplication, QComboBox, QFormLayout, QGroupBox, QHBoxLayout, QLabel,
@@ -49,18 +48,19 @@ class MainWindow(QMainWindow):
         self._root = data_dir()
         values, prompt = load_settings(self._root)
         self._has_saved_key = bool(values.get("AI_API_KEY"))
-        self._stdout_decoder = codecs.getincrementaldecoder("utf-8")()
-        self._stderr_decoder = codecs.getincrementaldecoder("utf-8")()
+        self._log_decoder = codecs.getincrementaldecoder("utf-8")()
+        self._log_path = self._root / "bot-session.log"
+        self._log_offset = 0
         self._output_tail = ""
         self._auth_url = ""
 
         self.process = QProcess(self)
-        self.process.setProcessChannelMode(QProcess.SeparateChannels)
         self.process.started.connect(self._on_started)
         self.process.finished.connect(self._on_finished)
         self.process.errorOccurred.connect(self._on_process_error)
-        self.process.readyReadStandardOutput.connect(self._read_stdout)
-        self.process.readyReadStandardError.connect(self._read_stderr)
+        self._log_timer = QTimer(self)
+        self._log_timer.setInterval(250)
+        self._log_timer.timeout.connect(self._poll_log)
 
         body = QWidget()
         outer = QVBoxLayout(body)
@@ -220,8 +220,13 @@ class MainWindow(QMainWindow):
     def _start(self) -> None:
         if self.process.state() != QProcess.NotRunning or not self._save():
             return
-        self._stdout_decoder = codecs.getincrementaldecoder("utf-8")()
-        self._stderr_decoder = codecs.getincrementaldecoder("utf-8")()
+        try:
+            self._log_path.write_text("", encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Не удалось создать журнал", str(exc))
+            return
+        self._log_decoder = codecs.getincrementaldecoder("utf-8")()
+        self._log_offset = 0
         self._output_tail = ""
         self._auth_url = ""
         self.auth_hint.setVisible(False)
@@ -229,15 +234,12 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText("Запускаю бота…")
         self.status.setText("Запускается…")
         self._set_running(True)
-        env = QProcessEnvironment.systemEnvironment()
-        env.insert("PYTHONIOENCODING", "utf-8")
-        env.insert("PYTHONUNBUFFERED", "1")
-        self.process.setProcessEnvironment(env)
         self.process.setWorkingDirectory(str(self._root))
+        self._log_timer.start()
         if getattr(sys, "frozen", False):
-            self.process.start(str(Path(sys.executable).with_name("ChundaWorker.exe")), [])
+            self.process.start(sys.executable, ["--bot", str(self._log_path)])
         else:
-            self.process.start(sys.executable, ["-u", str(resource_path("bot.py"))])
+            self.process.start(sys.executable, ["-u", str(resource_path("app.py")), "--bot", str(self._log_path)])
 
     def _stop(self) -> None:
         if self.process.state() == QProcess.NotRunning:
@@ -255,6 +257,8 @@ class MainWindow(QMainWindow):
         self.status.setText("Бот запущен")
 
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
+        self._poll_log()
+        self._log_timer.stop()
         if self._output_tail:
             self._append_log(self._output_tail)
             self._output_tail = ""
@@ -263,16 +267,23 @@ class MainWindow(QMainWindow):
         self._set_running(False)
 
     def _on_process_error(self, error: QProcess.ProcessError) -> None:
+        self._poll_log()
         self.log.appendPlainText(f"Ошибка запуска бота: {self.process.errorString()}")
         if error == QProcess.FailedToStart:
+            self._log_timer.stop()
             self.status.setText("Не удалось запустить")
             self._set_running(False)
 
-    def _read_stdout(self) -> None:
-        self._consume(self._stdout_decoder.decode(bytes(self.process.readAllStandardOutput())))
-
-    def _read_stderr(self) -> None:
-        self._consume(self._stderr_decoder.decode(bytes(self.process.readAllStandardError())))
+    def _poll_log(self) -> None:
+        try:
+            with self._log_path.open("rb") as stream:
+                stream.seek(self._log_offset)
+                chunk = stream.read()
+                self._log_offset = stream.tell()
+        except OSError:
+            return
+        if chunk:
+            self._consume(self._log_decoder.decode(chunk))
 
     def _consume(self, text: str) -> None:
         self._output_tail += text
@@ -291,6 +302,7 @@ class MainWindow(QMainWindow):
             self.auth_hint.setVisible(True)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        self._log_timer.stop()
         if self.process.state() != QProcess.NotRunning:
             self.process.kill()
             self.process.waitForFinished(1000)

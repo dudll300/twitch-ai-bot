@@ -35,9 +35,9 @@ def main() -> None:
         assert values["AI_API_KEY"] == "sk-test"
         assert window.api_key.text() == ""
         assert (root / "prompt.txt").read_text(encoding="utf-8").strip() == "Новый промпт"
-        window.process.start(sys.executable, ["-u", "-c", "print('GUI_LOG_TEST')"])
-        assert window.process.waitForFinished(5000)
-        app.processEvents()
+        window._log_path = root / "bot-session.log"
+        window._log_path.write_text("GUI_LOG_TEST\n", encoding="utf-8")
+        window._poll_log()
         assert "GUI_LOG_TEST" in window.log.toPlainText()
         window.close()
     app.quit()

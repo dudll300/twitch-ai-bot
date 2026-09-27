@@ -11,7 +11,7 @@
 
 ## Запуск приложения на Windows
 
-Готовая Windows-сборка создаётся автоматически в [GitHub Actions](https://github.com/dudll300/twitch-ai-bot/actions/workflows/windows-gui.yml) для ветки `dev`. Откройте последний успешный запуск, скачайте артефакт **Chunda-Windows**, распакуйте ZIP целиком и запустите `Chunda.exe`. Файл `ChundaWorker.exe` должен лежать рядом с ним.
+Готовая Windows-сборка создаётся автоматически в [GitHub Actions](https://github.com/dudll300/twitch-ai-bot/actions/workflows/windows-gui.yml) для ветки `dev`. Откройте последний успешный запуск, скачайте артефакт **Chunda-Windows**, извлеките из него `Chunda.exe` и запустите его. Это один файл; Python устанавливать не нужно.
 
 Для запуска из исходников скачайте ветку `dev`, распакуйте её и откройте `launch_gui.bat`. При первом запуске скрипт создаст локальное окружение и установит PySide6. В следующие разы он сразу откроет приложение.
 
