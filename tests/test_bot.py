@@ -102,6 +102,36 @@ class BotTests(unittest.TestCase):
             }, "viewer", "Привет")
         self.assertEqual(answer, "Привет! Как дела?")
 
+    def test_channel_owner_gets_a_distinct_tone(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append(json.loads(request.data)["messages"])
+            return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
+
+        cfg = {
+            "TWITCH_CHANNEL": "chundon", "AI_MODEL": bot.AI_MODEL,
+            "AI_API_KEY": "test-key", "AI_CHAT_URL": "https://api.example.com/chat/completions",
+            "AI_PROMPT": "Пользовательский промпт",
+        }
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
+            bot.call_ai(cfg, "Chundon", "Привет")
+            bot.call_ai(cfg, "viewer", "Привет")
+
+        owner, viewer = requests
+        self.assertEqual(owner[0]["content"], "Пользовательский промпт")
+        self.assertIn("госпожа", owner[1]["content"])
+        self.assertIn("Стримерша Chundon", owner[-1]["content"])
+        self.assertEqual(len(viewer), 2)
+        self.assertIn("Зритель viewer", viewer[-1]["content"])
+
     def test_temporary_failure_uses_backup_and_cooldown_then_probes_primary(self):
         router = bot.AIModelRouter()
         cfg = {"AI_MODEL": bot.AI_MODEL}
