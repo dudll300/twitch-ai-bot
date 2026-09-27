@@ -1,5 +1,12 @@
 .env
+.env.tmp
+prompt.txt
+prompt.tmp
 memory.json
 .twitch_token.json
 .twitch_token.tmp
 __pycache__/
+.venv/
+build/
+dist/
+*.spec

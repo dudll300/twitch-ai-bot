@@ -11,15 +11,17 @@ import urllib.request
 from pathlib import Path
 
 from memory import context_for, ensure_local_memory, load_memory
+from paths import data_dir
 from twitch_auth import get_access_token
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = data_dir()
 IRC_MESSAGE = re.compile(r"^(?:@[^ ]+ )?:([^! ]+)![^ ]+ PRIVMSG #([^ ]+) :(.*)$")
 LOGIN = re.compile(r"^[a-zA-Z0-9_]{1,25}$")
 AI_MODEL = "deepseek-v4.1-flash"
 AI_FALLBACK_MODELS = (
-    "deepseek-v4-pro", "deepseek-v4-flash", "minimax-m3", "mimo-v2.5-pro",
+    "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
+    "minimax-m3", "mimo-v2.5-pro",
 )
 AI_REQUEST_TIMEOUT_SECONDS = 20
 AI_PRIMARY_FAILURE_LIMIT = 3
@@ -65,7 +67,11 @@ def config() -> dict[str, str]:
         "TWITCH_CHANNEL", "TWITCH_BOT_NAME", "TWITCH_CLIENT_ID",
         "AI_BASE_URL", "AI_API_KEY",
     )}
-    result["AI_MODEL"] = AI_MODEL
+    result["AI_MODEL"] = os.getenv("AI_MODEL", AI_MODEL).strip() or AI_MODEL
+    prompt_path = ROOT / "prompt.txt"
+    result["AI_PROMPT"] = prompt_path.read_text(encoding="utf-8-sig").strip() if prompt_path.exists() else SYSTEM_PROMPT
+    if not result["AI_PROMPT"]:
+        raise ValueError("Файл prompt.txt пуст")
     for key in ("TWITCH_CHANNEL", "TWITCH_BOT_NAME"):
         result[key] = result[key].lstrip("#").lower()
         if not LOGIN.fullmatch(result[key]):
@@ -104,7 +110,7 @@ class TemporaryAIError(RuntimeError):
 def call_ai(cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             model: str | None = None) -> str:
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages = [{"role": "system", "content": cfg.get("AI_PROMPT", SYSTEM_PROMPT)}]
     if memory_data is not None:
         context = context_for(memory_data, user, user_id)
         if context:

@@ -1,0 +1,30 @@
+name: Windows GUI
+
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pyinstaller
+      - run: python -m unittest discover -s tests -v
+      - run: python tests/smoke_gui.py
+      - run: python -m PyInstaller --noconfirm --clean --onefile --console --name ChundaWorker --add-data "memory.example.json;." worker.py
+      - run: python -m PyInstaller --noconfirm --clean --onedir --windowed --name Chunda --add-data "memory.example.json;." app.py
+      - run: Copy-Item dist\ChundaWorker.exe dist\Chunda\ChundaWorker.exe
+      - run: python tests/smoke_package.py
+      - run: Compress-Archive -Path dist\Chunda\* -DestinationPath dist\Chunda-Windows.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Chunda-Windows
+          path: dist/Chunda-Windows.zip

@@ -8,9 +8,10 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from bot import AI_MODEL
+from paths import data_dir
 
 
-ROOT = Path(__file__).resolve().parent
+ROOT = data_dir()
 ENV_PATH = ROOT / ".env"
 FIELDS = (
     ("TWITCH_CHANNEL", "Логин Twitch-канала (или ссылка на него)"),
@@ -66,7 +67,7 @@ def setup(path: Path, force: bool = False) -> None:
     if complete(previous) and not force:
         return
     print("\nПервоначальная настройка бота. Данные сохраняются только в файле .env на этом компьютере.")
-    print(f"Используется модель {AI_MODEL}; Base URL по умолчанию — https://ai.starimg.ru/v1.")
+    print(f"Основная модель: {previous.get('AI_MODEL', AI_MODEL)}; Base URL по умолчанию — https://ai.starimg.ru/v1.")
     print("Для Twitch нужен отдельный аккаунт бота и Client ID приложения типа Public.\n")
     values = {}
     for name, label in FIELDS:
@@ -86,6 +87,8 @@ def setup(path: Path, force: bool = False) -> None:
                 print(f"Ошибка: {exc}")
     content = "# Локальные настройки бота. Не публикуйте этот файл.\n"
     content += "".join(f"{name}={values[name]}\n" for name, _ in FIELDS)
+    if previous.get("AI_MODEL"):
+        content += f"AI_MODEL={previous['AI_MODEL']}\n"
     path.write_text(content, encoding="utf-8")
     if sys.platform != "win32":
         path.chmod(0o600)

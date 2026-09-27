@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from paths import resource_path
+
 
 LOGIN = re.compile(r"^[a-z0-9_]{1,25}$")
 USER_ID = re.compile(r"^[0-9]+$")
@@ -13,7 +15,10 @@ def ensure_local_memory(path: Path) -> Path:
     """Create an ignored local memory file from the public template once."""
     if not path.exists():
         try:
-            path.write_bytes(path.with_name("memory.example.json").read_bytes())
+            template = path.with_name("memory.example.json")
+            if not template.exists():
+                template = resource_path("memory.example.json")
+            path.write_bytes(template.read_bytes())
         except OSError as exc:
             raise ValueError(f"Не удалось создать {path.name}: {exc}") from exc
     return path
