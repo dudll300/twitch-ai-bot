@@ -3,6 +3,7 @@ import io
 import json
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
@@ -61,15 +62,17 @@ class BotTests(unittest.TestCase):
             instance = bot.Bot.__new__(bot.Bot)
             instance.cfg = {
                 "TWITCH_CLIENT_ID": "client", "TWITCH_BOT_NAME": "helper",
-                "TWITCH_CHANNEL": "channel",
+                "TWITCH_CHANNEL": "channel", "AI_MODEL": bot.AI_MODEL,
             }
             instance.memory = {"streamer": {"facts": [], "jokes": []}, "viewers": []}
+            instance.ai_router = bot.AIModelRouter()
             with patch.object(bot, "get_access_token", return_value="token"), patch.object(
                 bot.asyncio, "open_connection", open_connection
             ), patch.object(bot, "call_ai", return_value="OK"), patch.object(bot.Bot, "say", say):
                 await instance.connection()
             self.assertEqual(len(replies), len(users))
             self.assertEqual(sum(reply.startswith("@one ") for reply in replies), 2)
+            self.assertTrue(all(reply.endswith(" OK") for reply in replies))
 
         asyncio.run(scenario())
 
@@ -82,6 +85,7 @@ class BotTests(unittest.TestCase):
                 self.close()
 
         def fake_urlopen(request, timeout):
+            self.assertEqual(timeout, 20)
             self.assertEqual(request.full_url, "https://api.deepseek.com/chat/completions")
             self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
             payload = json.loads(request.data)
@@ -97,6 +101,58 @@ class BotTests(unittest.TestCase):
                 "AI_CHAT_URL": "https://api.deepseek.com/chat/completions",
             }, "viewer", "Привет")
         self.assertEqual(answer, "Привет! Как дела?")
+
+    def test_temporary_failure_uses_backup_and_cooldown_then_probes_primary(self):
+        router = bot.AIModelRouter()
+        cfg = {"AI_MODEL": bot.AI_MODEL}
+        clock = {"now": 0.0}
+        attempts = []
+        primary_calls = 0
+
+        def fake_call_ai(_cfg, _user, _question, _memory, _user_id, model):
+            nonlocal primary_calls
+            attempts.append(model)
+            if model == bot.AI_MODEL:
+                primary_calls += 1
+                if primary_calls <= 3:
+                    raise bot.TemporaryAIError("HTTP 503")
+            return "OK"
+
+        with patch.object(bot, "call_ai", side_effect=fake_call_ai), patch.object(
+            bot.time, "monotonic", side_effect=lambda: clock["now"]
+        ):
+            for _ in range(3):
+                self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "OK")
+            self.assertEqual(router.primary_failures, 3)
+            self.assertEqual(router.primary_disabled_until, 300.0)
+            clock["now"] = 299.0
+            self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "OK")
+            clock["now"] = 300.0
+            self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "OK")
+
+        self.assertEqual(attempts, [
+            bot.AI_MODEL, "deepseek-v4-pro",
+            bot.AI_MODEL, "deepseek-v4-pro",
+            bot.AI_MODEL, "deepseek-v4-pro",
+            "deepseek-v4-pro", bot.AI_MODEL,
+        ])
+        self.assertEqual(router.primary_failures, 0)
+
+    def test_http_503_is_retryable_but_401_is_not(self):
+        cfg = {
+            "AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "test-key",
+            "AI_CHAT_URL": "https://api.example.com/chat/completions",
+        }
+
+        def http_error(status):
+            return urllib.error.HTTPError(cfg["AI_CHAT_URL"], status, "error", {}, None)
+
+        with patch.object(bot.urllib.request, "urlopen", side_effect=http_error(503)):
+            with self.assertRaises(bot.TemporaryAIError):
+                bot.call_ai(cfg, "viewer", "вопрос")
+        with patch.object(bot.urllib.request, "urlopen", side_effect=http_error(401)):
+            with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
+                bot.call_ai(cfg, "viewer", "вопрос")
 
     def test_memory_is_valid_and_only_current_viewer_is_sent(self):
         data = memory.load_memory(Path(__file__).resolve().parents[1] / "memory.example.json")

@@ -18,6 +18,10 @@ ROOT = Path(__file__).resolve().parent
 IRC_MESSAGE = re.compile(r"^(?:@[^ ]+ )?:([^! ]+)![^ ]+ PRIVMSG #([^ ]+) :(.*)$")
 LOGIN = re.compile(r"^[a-zA-Z0-9_]{1,25}$")
 AI_MODEL = "deepseek-v4.1-flash"
+AI_FALLBACK_MODELS = ("deepseek-v4-pro", "deepseek-v4-flash")
+AI_REQUEST_TIMEOUT_SECONDS = 20
+AI_PRIMARY_FAILURE_LIMIT = 3
+AI_PRIMARY_COOLDOWN_SECONDS = 5 * 60
 MAX_QUEUED_QUESTIONS = 10
 SYSTEM_PROMPT = (
     "Ты Чунда — язвительная, смешная виртуальная собеседница Twitch-чата стримерши Софи. "
@@ -91,8 +95,13 @@ def irc_user_id(line: str) -> str:
     return next((tag[8:] for tag in tags.split(";") if tag.startswith("user-id=")), "")
 
 
+class TemporaryAIError(RuntimeError):
+    """A model request may work again or through another model."""
+
+
 def call_ai(cfg: dict[str, str], user: str, question: str,
-            memory_data: dict | None = None, user_id: str = "") -> str:
+            memory_data: dict | None = None, user_id: str = "",
+            model: str | None = None) -> str:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     if memory_data is not None:
         context = context_for(memory_data, user, user_id)
@@ -100,7 +109,7 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
             messages.append({"role": "system", "content": context})
     messages.append({"role": "user", "content": f"Зритель {user} спрашивает: {question}"})
     payload = {
-        "model": cfg["AI_MODEL"],
+        "model": model or cfg["AI_MODEL"],
         "messages": messages,
         "max_tokens": 512,
         "stream": False,
@@ -115,14 +124,55 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=AI_REQUEST_TIMEOUT_SECONDS) as response:
             data = json.load(response)
     except urllib.error.HTTPError as exc:
+        if exc.code in (408, 500, 502, 503, 504):
+            raise TemporaryAIError(f"AI API вернул HTTP {exc.code}") from None
         raise RuntimeError(f"AI API вернул HTTP {exc.code}") from None
-    answer = data["choices"][0]["message"]["content"]
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise TemporaryAIError(f"AI API недоступен: {type(exc).__name__}") from None
+    except ValueError:
+        raise TemporaryAIError("AI API вернул некорректный JSON") from None
+    try:
+        answer = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError):
+        raise TemporaryAIError("AI API вернул некорректный ответ") from None
     if not isinstance(answer, str) or not answer.strip():
-        raise RuntimeError("AI API вернул пустой ответ")
+        raise TemporaryAIError("AI API вернул пустой ответ")
     return clean_text(answer, 300)
+
+
+class AIModelRouter:
+    def __init__(self):
+        self.primary_failures = 0
+        self.primary_disabled_until = 0.0
+
+    def ask(self, cfg: dict[str, str], user: str, question: str,
+            memory_data: dict | None = None, user_id: str = "") -> str:
+        primary = cfg["AI_MODEL"]
+        fallback = next((name for name in AI_FALLBACK_MODELS if name != primary), None)
+        if time.monotonic() < self.primary_disabled_until:
+            if fallback is None:
+                raise RuntimeError("Запасная AI-модель не настроена")
+            return call_ai(cfg, user, question, memory_data, user_id, model=fallback)
+        try:
+            answer = call_ai(cfg, user, question, memory_data, user_id, model=primary)
+        except TemporaryAIError as exc:
+            self.primary_failures += 1
+            if self.primary_failures >= AI_PRIMARY_FAILURE_LIMIT:
+                self.primary_disabled_until = time.monotonic() + AI_PRIMARY_COOLDOWN_SECONDS
+                print(f"Основная модель {primary} отключена на 5 минут: {exc}", flush=True)
+            if fallback is None:
+                raise
+            print(f"Модель {primary} недоступна; пробую {fallback}: {exc}", flush=True)
+            return call_ai(cfg, user, question, memory_data, user_id, model=fallback)
+        except Exception:
+            self.primary_failures = 0
+            raise
+        self.primary_failures = 0
+        self.primary_disabled_until = 0.0
+        return answer
 
 
 class Bot:
@@ -130,6 +180,7 @@ class Bot:
         self.cfg = cfg
         self.memory = load_memory(ensure_local_memory(ROOT / "memory.json"))
         self.last_sent = 0.0
+        self.ai_router = AIModelRouter()
 
     async def send(self, writer: asyncio.StreamWriter, line: str) -> None:
         writer.write((line + "\r\n").encode("utf-8"))
@@ -146,7 +197,7 @@ class Bot:
         while True:
             user, user_id, question = await queue.get()
             try:
-                answer = await asyncio.to_thread(call_ai, self.cfg, user, question, self.memory, user_id)
+                answer = await asyncio.to_thread(self.ai_router.ask, self.cfg, user, question, self.memory, user_id)
                 await self.say(writer, f"@{user} {answer}")
                 print(f"Ответ отправлен для {user}", flush=True)
             except Exception as exc:
