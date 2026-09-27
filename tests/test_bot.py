@@ -138,6 +138,26 @@ class BotTests(unittest.TestCase):
         ])
         self.assertEqual(router.primary_failures, 0)
 
+    def test_fallbacks_are_tried_in_order_until_one_answers(self):
+        router = bot.AIModelRouter()
+        cfg = {"AI_MODEL": bot.AI_MODEL}
+        attempts = []
+
+        def fake_call_ai(_cfg, _user, _question, _memory, _user_id, model):
+            attempts.append(model)
+            if model != "mimo-v2.5-pro":
+                raise bot.TemporaryAIError("HTTP 503")
+            return "Ответ от последней модели"
+
+        with patch.object(bot, "call_ai", side_effect=fake_call_ai):
+            self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "Ответ от последней модели")
+
+        self.assertEqual(attempts, [
+            bot.AI_MODEL, "deepseek-v4-pro", "deepseek-v4-flash",
+            "minimax-m3", "mimo-v2.5-pro",
+        ])
+        self.assertEqual(router.primary_failures, 1)
+
     def test_http_503_is_retryable_but_401_is_not(self):
         cfg = {
             "AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "test-key",

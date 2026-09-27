@@ -18,7 +18,9 @@ ROOT = Path(__file__).resolve().parent
 IRC_MESSAGE = re.compile(r"^(?:@[^ ]+ )?:([^! ]+)![^ ]+ PRIVMSG #([^ ]+) :(.*)$")
 LOGIN = re.compile(r"^[a-zA-Z0-9_]{1,25}$")
 AI_MODEL = "deepseek-v4.1-flash"
-AI_FALLBACK_MODELS = ("deepseek-v4-pro", "deepseek-v4-flash")
+AI_FALLBACK_MODELS = (
+    "deepseek-v4-pro", "deepseek-v4-flash", "minimax-m3", "mimo-v2.5-pro",
+)
 AI_REQUEST_TIMEOUT_SECONDS = 20
 AI_PRIMARY_FAILURE_LIMIT = 3
 AI_PRIMARY_COOLDOWN_SECONDS = 5 * 60
@@ -151,28 +153,33 @@ class AIModelRouter:
     def ask(self, cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "") -> str:
         primary = cfg["AI_MODEL"]
-        fallback = next((name for name in AI_FALLBACK_MODELS if name != primary), None)
-        if time.monotonic() < self.primary_disabled_until:
-            if fallback is None:
-                raise RuntimeError("Запасная AI-модель не настроена")
-            return call_ai(cfg, user, question, memory_data, user_id, model=fallback)
-        try:
-            answer = call_ai(cfg, user, question, memory_data, user_id, model=primary)
-        except TemporaryAIError as exc:
-            self.primary_failures += 1
-            if self.primary_failures >= AI_PRIMARY_FAILURE_LIMIT:
-                self.primary_disabled_until = time.monotonic() + AI_PRIMARY_COOLDOWN_SECONDS
-                print(f"Основная модель {primary} отключена на 5 минут: {exc}", flush=True)
-            if fallback is None:
+        models = tuple(name for name in AI_FALLBACK_MODELS if name != primary)
+        if time.monotonic() >= self.primary_disabled_until:
+            models = (primary,) + models
+        last_error = None
+        for model in models:
+            try:
+                answer = call_ai(cfg, user, question, memory_data, user_id, model=model)
+            except TemporaryAIError as exc:
+                last_error = exc
+                if model == primary:
+                    self.primary_failures += 1
+                    if self.primary_failures >= AI_PRIMARY_FAILURE_LIMIT:
+                        self.primary_disabled_until = time.monotonic() + AI_PRIMARY_COOLDOWN_SECONDS
+                        print(f"Основная модель {primary} отключена на 5 минут: {exc}", flush=True)
+                print(f"Модель {model} недоступна: {exc}", flush=True)
+                continue
+            except Exception:
+                if model == primary:
+                    self.primary_failures = 0
                 raise
-            print(f"Модель {primary} недоступна; пробую {fallback}: {exc}", flush=True)
-            return call_ai(cfg, user, question, memory_data, user_id, model=fallback)
-        except Exception:
-            self.primary_failures = 0
-            raise
-        self.primary_failures = 0
-        self.primary_disabled_until = 0.0
-        return answer
+            if model == primary:
+                self.primary_failures = 0
+                self.primary_disabled_until = 0.0
+            return answer
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Нет доступных AI-моделей")
 
 
 class Bot:
