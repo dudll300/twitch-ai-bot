@@ -20,8 +20,7 @@ IRC_MESSAGE = re.compile(r"^(?:@[^ ]+ )?:([^! ]+)![^ ]+ PRIVMSG #([^ ]+) :(.*)$"
 LOGIN = re.compile(r"^[a-zA-Z0-9_]{1,25}$")
 AI_MODEL = "deepseek-v4.1-flash"
 AI_FALLBACK_MODELS = (
-    "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
-    "minimax-m3", "mimo-v2.5-pro",
+    "deepseek-v4.1-flash", "deepseek-v4.1-pro", "deepseek-v4-flash",
 )
 AI_REQUEST_TIMEOUT_SECONDS = 20
 AI_PRIMARY_FAILURE_LIMIT = 3
@@ -74,7 +73,11 @@ def config() -> dict[str, str]:
         "TWITCH_CHANNEL", "TWITCH_BOT_NAME", "TWITCH_CLIENT_ID",
         "AI_BASE_URL", "AI_API_KEY",
     )}
-    result["AI_MODEL"] = os.getenv("AI_MODEL", AI_MODEL).strip() or AI_MODEL
+    selected_model = os.getenv("AI_MODEL", AI_MODEL).strip() or AI_MODEL
+    if selected_model not in AI_FALLBACK_MODELS:
+        print(f"Модель {selected_model} больше не используется; выбрана {AI_MODEL}.", flush=True)
+        selected_model = AI_MODEL
+    result["AI_MODEL"] = selected_model
     prompt_path = ROOT / "prompt.txt"
     result["AI_PROMPT"] = prompt_path.read_text(encoding="utf-8-sig").strip() if prompt_path.exists() else SYSTEM_PROMPT
     if not result["AI_PROMPT"]:
@@ -170,6 +173,8 @@ class AIModelRouter:
     def ask(self, cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "") -> str:
         primary = cfg["AI_MODEL"]
+        if primary not in AI_FALLBACK_MODELS:
+            primary = AI_MODEL
         models = tuple(name for name in AI_FALLBACK_MODELS if name != primary)
         if time.monotonic() >= self.primary_disabled_until:
             models = (primary,) + models

@@ -4,7 +4,7 @@ import os
 import sys
 from pathlib import Path
 
-from bot import AI_MODEL, SYSTEM_PROMPT
+from bot import AI_FALLBACK_MODELS, AI_MODEL, SYSTEM_PROMPT
 from paths import data_dir
 from start import FIELDS, normalize, read_config
 
@@ -13,7 +13,8 @@ def load_settings(root: Path | None = None) -> tuple[dict[str, str], str]:
     root = root or data_dir()
     values = read_config(root / ".env")
     values.setdefault("AI_BASE_URL", "https://ai.starimg.ru/v1")
-    values.setdefault("AI_MODEL", AI_MODEL)
+    if values.get("AI_MODEL") not in AI_FALLBACK_MODELS:
+        values["AI_MODEL"] = AI_MODEL
     prompt_path = root / "prompt.txt"
     prompt = prompt_path.read_text(encoding="utf-8-sig") if prompt_path.exists() else SYSTEM_PROMPT
     return values, prompt
@@ -29,8 +30,8 @@ def save_settings(values: dict[str, str], prompt: str, root: Path | None = None)
             value = previous.get(name, "")
         clean[name] = normalize(name, value)
     model = values.get("AI_MODEL", "").strip()
-    if not model or len(model) > 128 or any(char.isspace() or char == "=" for char in model):
-        raise ValueError("Укажите ID модели без пробелов (до 128 символов).")
+    if model not in AI_FALLBACK_MODELS:
+        raise ValueError("Выберите одну из трёх моделей DeepSeek в списке.")
     clean["AI_MODEL"] = model
     prompt = prompt.strip()
     if not prompt or len(prompt) > 20000:

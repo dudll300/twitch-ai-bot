@@ -22,16 +22,17 @@ def main() -> None:
         with patch.object(gui, "data_dir", return_value=root):
             window = gui.MainWindow()
         assert window.api_key.echoMode() == QLineEdit.Password
-        assert window.model.count() == 5
+        assert window.model.count() == 3
+        assert not window.model.isEditable()
         window.channel.setText("https://www.twitch.tv/Sophie")
         window.bot_name.setText("ChundaBot")
         window.client_id.setText("client123")
         window.api_key.setText("sk-test")
-        window.model.setCurrentText("my-custom-model")
+        window.model.setCurrentText("deepseek-v4.1-pro")
         window.prompt.setPlainText("Новый промпт")
         assert window._save()
         values = read_config(root / ".env")
-        assert values["AI_MODEL"] == "my-custom-model"
+        assert values["AI_MODEL"] == "deepseek-v4.1-pro"
         assert values["AI_API_KEY"] == "sk-test"
         assert window.api_key.text() == ""
         assert (root / "prompt.txt").read_text(encoding="utf-8").strip() == "Новый промпт"

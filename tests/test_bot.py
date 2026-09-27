@@ -161,10 +161,10 @@ class BotTests(unittest.TestCase):
             self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "OK")
 
         self.assertEqual(attempts, [
-            bot.AI_MODEL, "deepseek-v4-pro",
-            bot.AI_MODEL, "deepseek-v4-pro",
-            bot.AI_MODEL, "deepseek-v4-pro",
-            "deepseek-v4-pro", bot.AI_MODEL,
+            bot.AI_MODEL, "deepseek-v4.1-pro",
+            bot.AI_MODEL, "deepseek-v4.1-pro",
+            bot.AI_MODEL, "deepseek-v4.1-pro",
+            "deepseek-v4.1-pro", bot.AI_MODEL,
         ])
         self.assertEqual(router.primary_failures, 0)
 
@@ -175,7 +175,7 @@ class BotTests(unittest.TestCase):
 
         def fake_call_ai(_cfg, _user, _question, _memory, _user_id, model):
             attempts.append(model)
-            if model != "mimo-v2.5-pro":
+            if model != "deepseek-v4-flash":
                 raise bot.TemporaryAIError("HTTP 503")
             return "Ответ от последней модели"
 
@@ -183,8 +183,7 @@ class BotTests(unittest.TestCase):
             self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "Ответ от последней модели")
 
         self.assertEqual(attempts, [
-            bot.AI_MODEL, "deepseek-v4-pro", "deepseek-v4-flash",
-            "minimax-m3", "mimo-v2.5-pro",
+            bot.AI_MODEL, "deepseek-v4.1-pro", "deepseek-v4-flash",
         ])
         self.assertEqual(router.primary_failures, 1)
 
