@@ -3,12 +3,11 @@
 import os
 import subprocess
 import tempfile
-import time
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXE = ROOT / "dist" / "Chunda.exe"
+EXE = Path(os.environ.get("CHUNDA_TEST_EXE", str(ROOT / "dist" / "Chunda.exe")))
 
 
 def main() -> None:
@@ -32,13 +31,8 @@ def main() -> None:
         assert "WORKER_READY" in log_path.read_text(encoding="utf-8")
         assert (data / "memory.json").exists()
 
-        gui = subprocess.Popen([str(EXE)], env=env)
-        try:
-            time.sleep(3)
-            assert gui.poll() is None, f"GUI завершился сразу с кодом {gui.returncode}"
-        finally:
-            gui.terminate()
-            gui.wait(timeout=10)
+        gui = subprocess.run([str(EXE), "--self-test-gui"], env=env, timeout=30)
+        assert gui.returncode == 0, f"GUI check failed with code {gui.returncode}"
     print("Single-file GUI and worker started successfully.")
 
 

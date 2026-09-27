@@ -6,6 +6,17 @@ from pathlib import Path
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--self-test-gui"]:
+        from PySide6.QtWidgets import QApplication
+        from gui import MainWindow
+
+        app = QApplication([])
+        window = MainWindow()
+        window.show()
+        app.processEvents()
+        window.close()
+        app.quit()
+        return 0
     if len(sys.argv) in (3, 4) and sys.argv[1] == "--bot":
         log_path = Path(sys.argv[2]).resolve()
         if len(sys.argv) == 4 and sys.argv[3] != "--self-test":
