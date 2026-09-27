@@ -4,6 +4,7 @@ import json
 import tempfile
 import unittest
 import urllib.error
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -202,6 +203,35 @@ class BotTests(unittest.TestCase):
         with patch.object(bot.urllib.request, "urlopen", side_effect=http_error(401)):
             with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
                 bot.call_ai(cfg, "viewer", "вопрос")
+
+    def test_http_400_reports_reason_and_tries_next_model(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        cfg = {
+            "AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "sk-test",
+            "AI_CHAT_URL": "https://api.example.com/chat/completions",
+        }
+        attempts = []
+
+        def fake_urlopen(request, timeout):
+            model = json.loads(request.data)["model"]
+            attempts.append(model)
+            if model == bot.AI_MODEL:
+                body = io.BytesIO(b'{"error":{"message":"model unavailable: sk-test"}}')
+                raise urllib.error.HTTPError(request.full_url, 400, "error", {}, body)
+            return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
+
+        log = io.StringIO()
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen), redirect_stdout(log):
+            self.assertEqual(bot.AIModelRouter().ask(cfg, "viewer", "вопрос"), "OK")
+        self.assertEqual(attempts, [bot.AI_MODEL, "deepseek-v4.1-pro"])
+        self.assertIn("HTTP 400: model unavailable: [ключ скрыт]", log.getvalue())
+        self.assertNotIn("sk-test", log.getvalue())
 
     def test_memory_is_valid_and_only_current_viewer_is_sent(self):
         data = memory.load_memory(Path(__file__).resolve().parents[1] / "memory.example.json")

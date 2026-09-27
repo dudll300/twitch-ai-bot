@@ -117,6 +117,32 @@ class TemporaryAIError(RuntimeError):
     """A model request may work again or through another model."""
 
 
+def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
+    try:
+        raw = exc.read(4096)
+    except (AttributeError, OSError, ValueError):
+        return ""
+    if not raw:
+        return ""
+    detail = raw.decode("utf-8", errors="replace")
+    try:
+        payload = json.loads(detail)
+        if isinstance(payload, dict):
+            error = payload.get("error", payload)
+            if isinstance(error, dict):
+                detail = error.get("message") or error.get("detail") or error.get("code") or ""
+            elif isinstance(error, str):
+                detail = error
+    except ValueError:
+        pass
+    if not isinstance(detail, str):
+        detail = str(detail)
+    if api_key:
+        detail = detail.replace(api_key, "[ключ скрыт]")
+    detail = clean_text(detail, 240)
+    return f": {detail}" if detail else ""
+
+
 def call_ai(cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             model: str | None = None) -> str:
@@ -149,9 +175,10 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
         with urllib.request.urlopen(request, timeout=AI_REQUEST_TIMEOUT_SECONDS) as response:
             data = json.load(response)
     except urllib.error.HTTPError as exc:
-        if exc.code in (408, 500, 502, 503, 504):
-            raise TemporaryAIError(f"AI API вернул HTTP {exc.code}") from None
-        raise RuntimeError(f"AI API вернул HTTP {exc.code}") from None
+        message = f"AI API вернул HTTP {exc.code}{http_error_detail(exc, cfg['AI_API_KEY'])}"
+        if exc.code in (400, 408, 429, 500, 502, 503, 504):
+            raise TemporaryAIError(message) from None
+        raise RuntimeError(message) from None
     except (urllib.error.URLError, TimeoutError) as exc:
         raise TemporaryAIError(f"AI API недоступен: {type(exc).__name__}") from None
     except ValueError:
