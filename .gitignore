@@ -6,6 +6,8 @@ bot-session.log
 memory.json
 .twitch_token.json
 .twitch_token.tmp
+.twitch_broadcaster_token.json
+.twitch_broadcaster_token.tmp
 __pycache__/
 .venv/
 build/

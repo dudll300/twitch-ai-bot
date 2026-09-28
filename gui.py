@@ -53,6 +53,7 @@ class MainWindow(QMainWindow):
         self._log_offset = 0
         self._output_tail = ""
         self._auth_url = ""
+        self._auth_account = ""
 
         self.process = QProcess(self)
         self.process.started.connect(self._on_started)
@@ -119,7 +120,7 @@ class MainWindow(QMainWindow):
         self.client_id = QLineEdit(values.get("TWITCH_CLIENT_ID", ""))
         self.client_id.setPlaceholderText("Client ID приложения типа Public")
         twitch_form.addRow("Client ID", self.client_id)
-        twitch_help = QLabel('Приложение создаётся в <a href="https://dev.twitch.tv/console/apps">Twitch Developer Console</a>. При первом запуске Twitch попросит войти под аккаунтом бота.')
+        twitch_help = QLabel('Приложение создаётся в <a href="https://dev.twitch.tv/console/apps">Twitch Developer Console</a>. При первом запуске Twitch попросит по очереди войти под аккаунтом бота и стримерши. Создайте награду «Иишка» с обязательным вводом текста.')
         twitch_help.setWordWrap(True)
         twitch_help.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         twitch_help.setOpenExternalLinks(True)
@@ -227,6 +228,7 @@ class MainWindow(QMainWindow):
         self._log_offset = 0
         self._output_tail = ""
         self._auth_url = ""
+        self._auth_account = ""
         self.auth_hint.setVisible(False)
         self.tabs.setCurrentIndex(1)
         self.log.appendPlainText("Запускаю бота…")
@@ -291,12 +293,15 @@ class MainWindow(QMainWindow):
 
     def _append_log(self, line: str) -> None:
         self.log.appendPlainText(line)
-        if line.startswith("https://") and "twitch.tv/activate" in line:
+        if line.startswith("Откройте ссылку и войдите в Twitch под аккаунтом "):
+            self._auth_account = line.removeprefix("Откройте ссылку и войдите в Twitch под аккаунтом ").rstrip(":")
+        elif line.startswith("https://") and "twitch.tv/activate" in line:
             self._auth_url = line
         elif line.startswith("Код: ") and self._auth_url:
             url = html.escape(self._auth_url, quote=True)
             code = html.escape(line[5:].strip())
-            self.auth_hint.setText(f'Подтвердите вход под аккаунтом бота: <a href="{url}">открыть Twitch</a>. Код: <b>{code}</b>')
+            account = html.escape(self._auth_account or "нужным аккаунтом")
+            self.auth_hint.setText(f'Подтвердите вход под аккаунтом {account}: <a href="{url}">открыть Twitch</a>. Код: <b>{code}</b>')
             self.auth_hint.setVisible(True)
 
     def closeEvent(self, event: QCloseEvent) -> None:

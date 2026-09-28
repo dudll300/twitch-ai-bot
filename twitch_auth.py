@@ -12,6 +12,7 @@ from pathlib import Path
 
 ID_URL = "https://id.twitch.tv/oauth2"
 SCOPES = {"chat:read", "chat:edit"}
+REDEMPTION_SCOPES = {"channel:read:redemptions"}
 
 
 def post_form(path: str, fields: dict[str, str]) -> dict:
@@ -53,10 +54,11 @@ def save_tokens(path: Path, tokens: dict) -> None:
     os.replace(temporary, path)
 
 
-def authorize_device(client_id: str) -> dict:
-    device = post_form("/device", {"client_id": client_id, "scopes": "chat:read chat:edit"})
+def authorize_device(client_id: str, scopes: set[str], expected_login: str) -> dict:
+    scope_text = " ".join(sorted(scopes))
+    device = post_form("/device", {"client_id": client_id, "scopes": scope_text})
     uri = device["verification_uri"]
-    print("Откройте ссылку и войдите в Twitch именно под аккаунтом бота:", flush=True)
+    print(f"Откройте ссылку и войдите в Twitch под аккаунтом {expected_login}:", flush=True)
     print(uri, flush=True)
     print("Код: " + device["user_code"], flush=True)
     webbrowser.open(uri)
@@ -67,7 +69,7 @@ def authorize_device(client_id: str) -> dict:
         try:
             return post_form("/token", {
                 "client_id": client_id,
-                "scopes": "chat:read chat:edit",
+                "scopes": scope_text,
                 "device_code": device["device_code"],
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
             })
@@ -85,10 +87,14 @@ def authorize_device(client_id: str) -> dict:
     raise RuntimeError("Время авторизации Twitch истекло; запустите бота снова")
 
 
-def get_access_token(client_id: str, bot_login: str, path: Path) -> str:
+def get_access_token(client_id: str, expected_login: str, path: Path,
+                     scopes: set[str] | None = None) -> str:
+    required_scopes = SCOPES if scopes is None else scopes
     tokens = read_tokens(path)
     access = tokens.get("access_token", "")
     info = validate(access) if access else None
+    if info is not None and not required_scopes.issubset(set(info.get("scopes", []))):
+        info = None
     if info is None and tokens.get("refresh_token"):
         try:
             tokens = post_form("/token", {
@@ -98,16 +104,18 @@ def get_access_token(client_id: str, bot_login: str, path: Path) -> str:
             })
             save_tokens(path, tokens)
             info = validate(tokens["access_token"])
+            if info is not None and not required_scopes.issubset(set(info.get("scopes", []))):
+                info = None
         except urllib.error.HTTPError:
             info = None
     if info is None:
-        tokens = authorize_device(client_id)
+        tokens = authorize_device(client_id, required_scopes, expected_login)
         info = validate(tokens["access_token"])
         if info is None:
             raise RuntimeError("Twitch не подтвердил новый токен")
-    if info.get("client_id") != client_id or info.get("login", "").lower() != bot_login:
-        raise RuntimeError("Twitch авторизован не под аккаунтом бота или другим приложением")
-    if not SCOPES.issubset(set(info.get("scopes", []))):
-        raise RuntimeError("Токен Twitch не содержит chat:read и chat:edit")
+    if info.get("client_id") != client_id or info.get("login", "").lower() != expected_login:
+        raise RuntimeError(f"Twitch авторизован не под аккаунтом {expected_login} или другим приложением")
+    if not required_scopes.issubset(set(info.get("scopes", []))):
+        raise RuntimeError("Токен Twitch не содержит разрешения: " + ", ".join(sorted(required_scopes)))
     save_tokens(path, tokens)
     return tokens["access_token"]

@@ -51,7 +51,7 @@ class SettingsTests(unittest.TestCase):
         router = bot.AIModelRouter()
         attempts = []
 
-        def unavailable(_cfg, _user, _question, _memory, _user_id, model):
+        def unavailable(_cfg, _user, _question, _memory, _user_id, model, history):
             attempts.append(model)
             raise bot.TemporaryAIError("HTTP 503")
 

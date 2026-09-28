@@ -8,15 +8,16 @@ import ssl
 import time
 import urllib.error
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 from memory import context_for, ensure_local_memory, load_memory
 from paths import data_dir
+from rewards import RewardListener
 from twitch_auth import get_access_token
 
 
 ROOT = data_dir()
-IRC_MESSAGE = re.compile(r"^(?:@[^ ]+ )?:([^! ]+)![^ ]+ PRIVMSG #([^ ]+) :(.*)$")
 LOGIN = re.compile(r"^[a-zA-Z0-9_]{1,25}$")
 AI_MODEL = "deepseek-v4.1-flash"
 AI_FALLBACK_MODELS = (
@@ -98,21 +99,6 @@ def clean_text(value: str, limit: int) -> str:
     return value[:limit].rstrip()
 
 
-def extract_question(message: str) -> str | None:
-    if not message.lower().startswith("!бот"):
-        return None
-    if len(message) > 4 and not message[4].isspace():
-        return None
-    return clean_text(message[4:].strip(), 400)
-
-
-def irc_user_id(line: str) -> str:
-    if not line.startswith("@"):
-        return ""
-    tags = line.split(" ", 1)[0][1:]
-    return next((tag[8:] for tag in tags.split(";") if tag.startswith("user-id=")), "")
-
-
 class TemporaryAIError(RuntimeError):
     """A model request may work again or through another model."""
 
@@ -145,7 +131,8 @@ def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
 
 def call_ai(cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
-            model: str | None = None) -> str:
+            model: str | None = None,
+            history: tuple[tuple[str, str], ...] = ()) -> str:
     messages = [{"role": "system", "content": cfg.get("AI_PROMPT", SYSTEM_PROMPT)}]
     is_streamer = user.casefold() == cfg.get("TWITCH_CHANNEL", "").casefold()
     if is_streamer:
@@ -155,6 +142,9 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
         if context:
             messages.append({"role": "system", "content": context})
     author = "Стримерша" if is_streamer else "Зритель"
+    for previous_question, previous_answer in history[-10:]:
+        messages.append({"role": "user", "content": f"{author} {user} спрашивает: {previous_question}"})
+        messages.append({"role": "assistant", "content": previous_answer})
     messages.append({"role": "user", "content": f"{author} {user} спрашивает: {question}"})
     payload = {
         "model": model or cfg["AI_MODEL"],
@@ -198,7 +188,8 @@ class AIModelRouter:
         self.primary_disabled_until = 0.0
 
     def ask(self, cfg: dict[str, str], user: str, question: str,
-            memory_data: dict | None = None, user_id: str = "") -> str:
+            memory_data: dict | None = None, user_id: str = "",
+            history: tuple[tuple[str, str], ...] = ()) -> str:
         primary = cfg["AI_MODEL"]
         if primary not in AI_FALLBACK_MODELS:
             primary = AI_MODEL
@@ -208,7 +199,7 @@ class AIModelRouter:
         last_error = None
         for model in models:
             try:
-                answer = call_ai(cfg, user, question, memory_data, user_id, model=model)
+                answer = call_ai(cfg, user, question, memory_data, user_id, model=model, history=history)
             except TemporaryAIError as exc:
                 last_error = exc
                 if model == primary:
@@ -237,6 +228,7 @@ class Bot:
         self.memory = load_memory(ensure_local_memory(ROOT / "memory.json"))
         self.last_sent = 0.0
         self.ai_router = AIModelRouter()
+        self.histories: dict[str, deque[tuple[str, str]]] = {}
 
     async def send(self, writer: asyncio.StreamWriter, line: str) -> None:
         writer.write((line + "\r\n").encode("utf-8"))
@@ -251,10 +243,15 @@ class Bot:
 
     async def worker(self, writer: asyncio.StreamWriter, queue: asyncio.Queue) -> None:
         while True:
-            user, user_id, question = await queue.get()
+            user, user_id, question, _redemption_id = await queue.get()
             try:
-                answer = await asyncio.to_thread(self.ai_router.ask, self.cfg, user, question, self.memory, user_id)
+                key = user_id or user.casefold()
+                history = tuple(self.histories.get(key, ()))
+                answer = await asyncio.to_thread(
+                    self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history,
+                )
                 await self.say(writer, f"@{user} {answer}")
+                self.histories.setdefault(key, deque(maxlen=10)).append((question, answer))
                 print(f"Ответ отправлен для {user}", flush=True)
             except Exception as exc:
                 print(f"Ошибка ответа для {user}: {exc}", flush=True)
@@ -275,42 +272,49 @@ class Bot:
         )
         queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUED_QUESTIONS)
         worker = asyncio.create_task(self.worker(writer, queue))
+        async def on_question(user: str, user_id: str, question: str, redemption_id: str) -> None:
+            try:
+                queue.put_nowait((user, user_id, question, redemption_id))
+            except asyncio.QueueFull:
+                print(f"Награда {redemption_id} от {user}: очередь заполнена; проверьте возврат баллов вручную.", flush=True)
+                await self.say(writer, f"@{user} очередь переполнена, сообщи стримерше о возврате баллов.")
+                return
+            print(f"Вопрос от {user} принят (в очереди: {queue.qsize()})", flush=True)
+
+        listener = RewardListener(
+            self.cfg["TWITCH_CLIENT_ID"], self.cfg["TWITCH_CHANNEL"],
+            ROOT / ".twitch_broadcaster_token.json", on_question,
+        )
+        rewards_task = None
+        reader_task = None
         try:
             await self.send(writer, "PASS oauth:" + access_token)
             await self.send(writer, "NICK " + self.cfg["TWITCH_BOT_NAME"])
             await self.send(writer, "CAP REQ :twitch.tv/tags")
             await self.send(writer, "JOIN #" + self.cfg["TWITCH_CHANNEL"])
-            while raw := await reader.readline():
-                line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                if line.startswith("PING "):
-                    await self.send(writer, "PONG " + line[5:])
-                    continue
-                if "Login authentication failed" in line:
-                    raise RuntimeError("Twitch отклонил OAuth-токен")
-                if " NOTICE " in line:
-                    print("Twitch: " + line.split(" :", 1)[-1], flush=True)
-                match = IRC_MESSAGE.match(line)
-                if not match:
-                    continue
-                user, channel, message = match.groups()
-                user = user.lower()
-                if channel.lower() != self.cfg["TWITCH_CHANNEL"] or user == self.cfg["TWITCH_BOT_NAME"]:
-                    continue
-                question = extract_question(message)
-                if question is None:
-                    continue
-                if not question:
-                    await self.say(writer, f"@{user} напиши вопрос после !бот")
-                    continue
-                user_id = irc_user_id(line)
-                try:
-                    queue.put_nowait((user, user_id, question))
-                except asyncio.QueueFull:
-                    print(f"Вопрос от {user} отклонён: очередь заполнена", flush=True)
-                    continue
-                print(f"Вопрос от {user} принят (в очереди: {queue.qsize()})", flush=True)
+            await listener.prepare()
+            rewards_task = asyncio.create_task(listener.run())
+            async def read_chat() -> None:
+                while raw := await reader.readline():
+                    line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+                    if line.startswith("PING "):
+                        await self.send(writer, "PONG " + line[5:])
+                    elif "Login authentication failed" in line:
+                        raise RuntimeError("Twitch отклонил OAuth-токен")
+                    elif " NOTICE " in line:
+                        print("Twitch: " + line.split(" :", 1)[-1], flush=True)
+
+            reader_task = asyncio.create_task(read_chat())
+            done, _ = await asyncio.wait((reader_task, rewards_task), return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                task.result()
         finally:
             worker.cancel()
+            if reader_task is not None:
+                reader_task.cancel()
+            if rewards_task is not None:
+                rewards_task.cancel()
+            await asyncio.gather(*(task for task in (worker, reader_task, rewards_task) if task), return_exceptions=True)
             writer.close()
             try:
                 await writer.wait_closed()

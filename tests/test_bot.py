@@ -12,70 +12,86 @@ import bot
 import memory
 import start
 import twitch_auth
+import rewards
 
 
 class BotTests(unittest.TestCase):
-    def test_command_and_irc_message(self):
-        line = "@id=abc;user-id=123 :viewer!viewer@viewer.tmi.twitch.tv PRIVMSG #channel :!бот Привет?"
-        self.assertEqual(bot.IRC_MESSAGE.match(line).groups(), ("viewer", "channel", "!бот Привет?"))
-        self.assertEqual(bot.irc_user_id(line), "123")
-        self.assertEqual(bot.extract_question("!бот Привет?"), "Привет?")
-        self.assertIsNone(bot.extract_question("!ботинок"))
-
-    def test_burst_from_multiple_viewers_and_repeat_question(self):
+    def test_reward_events_only_and_history_per_viewer(self):
         async def scenario():
-            answered = asyncio.Event()
-            replies = []
-            users = ["one", "two", "three", "four", "one"]
-            messages = [
-                f":{user}!{user}@{user}.tmi.twitch.tv PRIVMSG #channel :!бот Вопрос {number}\r\n".encode()
-                for number, user in enumerate(users)
-            ]
-
-            class Reader:
-                async def readline(self):
-                    if messages:
-                        return messages.pop(0)
-                    await asyncio.wait_for(answered.wait(), timeout=2)
-                    return b""
-
-            class Writer:
-                def write(self, data):
-                    pass
-
-                async def drain(self):
-                    pass
-
-                def close(self):
-                    pass
-
-                async def wait_closed(self):
-                    pass
-
-            async def open_connection(*args, **kwargs):
-                return Reader(), Writer()
-
-            async def say(self, writer, message):
-                replies.append(message)
-                if len(replies) == len(users):
-                    answered.set()
-
             instance = bot.Bot.__new__(bot.Bot)
-            instance.cfg = {
-                "TWITCH_CLIENT_ID": "client", "TWITCH_BOT_NAME": "helper",
-                "TWITCH_CHANNEL": "channel", "AI_MODEL": bot.AI_MODEL,
-            }
+            instance.cfg = {"AI_MODEL": bot.AI_MODEL}
             instance.memory = {"streamer": {"facts": [], "jokes": []}, "viewers": []}
-            instance.ai_router = bot.AIModelRouter()
-            with patch.object(bot, "get_access_token", return_value="token"), patch.object(
-                bot.asyncio, "open_connection", open_connection
-            ), patch.object(bot, "call_ai", return_value="OK"), patch.object(bot.Bot, "say", say):
-                await instance.connection()
-            self.assertEqual(len(replies), len(users))
-            self.assertEqual(sum(reply.startswith("@one ") for reply in replies), 2)
-            self.assertTrue(all(reply.endswith(" OK") for reply in replies))
+            instance.histories = {}
+            calls = []
+            class Router:
+                def ask(self, cfg, user, question, memory_data, user_id, history):
+                    calls.append((user_id, history))
+                    return "OK"
+            instance.ai_router = Router()
+            replies = []
+            async def say(writer, message):
+                replies.append(message)
+            instance.say = say
+            queue = asyncio.Queue()
+            for index in range(12):
+                queue.put_nowait(("one", "1", f"Вопрос {index}", str(index)))
+            queue.put_nowait(("two", "2", "Другой вопрос", "other"))
+            task = asyncio.create_task(instance.worker(None, queue))
+            await asyncio.wait_for(queue.join(), timeout=3)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self.assertEqual(len(instance.histories["1"]), 10)
+            self.assertEqual(instance.histories["1"][0], ("Вопрос 2", "OK"))
+            self.assertEqual(calls[11][1][0], ("Вопрос 1", "OK"))
+            self.assertEqual(calls[12], ("2", ()))
+            self.assertEqual(len(replies), 13)
 
         asyncio.run(scenario())
+
+    def test_reward_deduplication_and_required_input(self):
+        async def scenario():
+            received = []
+            async def on_question(*args):
+                received.append(args)
+            listener = rewards.RewardListener("client", "channel", Path("token"), on_question)
+            listener.reward_id = "reward-1"
+            event = {"event": {"id": "redeem-1", "reward": {"id": "reward-1"},
+                               "user_login": "Viewer", "user_id": "123", "user_input": "Привет?"}}
+            await listener.handle_notification(event)
+            await listener.handle_notification(event)
+            await listener.handle_notification({"event": {**event["event"], "id": "redeem-2", "reward": {"id": "other"}}})
+            self.assertEqual(received, [("viewer", "123", "Привет?", "redeem-1")])
+        asyncio.run(scenario())
+
+    def test_reward_lookup_accepts_existing_twitch_reward(self):
+        reward = {"id": "reward-1", "title": "Иишка", "cost": 200,
+                  "is_user_input_required": True, "is_enabled": True}
+        with patch.object(rewards, "api_json", return_value={"data": [reward]}) as api:
+            self.assertEqual(rewards.find_reward("client", "token", "123"), "reward-1")
+        self.assertIn("broadcaster_id=123", api.call_args.args[0])
+
+    def test_ai_receives_ten_complete_pairs_before_current_question(self):
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.close()
+
+        captured = []
+        def fake_urlopen(request, timeout):
+            captured.extend(json.loads(request.data)["messages"])
+            return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
+
+        cfg = {"AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "key",
+               "AI_CHAT_URL": "https://api.example.com/chat/completions"}
+        history = tuple((f"Вопрос {i}", f"Ответ {i}") for i in range(12))
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
+            bot.call_ai(cfg, "viewer", "Новый вопрос", history=history)
+        self.assertEqual(len(captured), 22)
+        self.assertEqual(captured[1]["content"], "Зритель viewer спрашивает: Вопрос 2")
+        self.assertEqual(captured[-2]["content"], "Ответ 11")
+        self.assertEqual(captured[-1]["content"], "Зритель viewer спрашивает: Новый вопрос")
 
     def test_ai_request_and_one_line_reply(self):
         class Response(io.BytesIO):
@@ -140,7 +156,7 @@ class BotTests(unittest.TestCase):
         attempts = []
         primary_calls = 0
 
-        def fake_call_ai(_cfg, _user, _question, _memory, _user_id, model):
+        def fake_call_ai(_cfg, _user, _question, _memory, _user_id, model, history):
             nonlocal primary_calls
             attempts.append(model)
             if model == bot.AI_MODEL:
@@ -174,7 +190,7 @@ class BotTests(unittest.TestCase):
         cfg = {"AI_MODEL": bot.AI_MODEL}
         attempts = []
 
-        def fake_call_ai(_cfg, _user, _question, _memory, _user_id, model):
+        def fake_call_ai(_cfg, _user, _question, _memory, _user_id, model, history):
             attempts.append(model)
             if model != "deepseek-v4-flash":
                 raise bot.TemporaryAIError("HTTP 503")
@@ -308,7 +324,7 @@ class BotTests(unittest.TestCase):
             with patch.object(twitch_auth, "validate", return_value={
                 "client_id": "client", "login": "someone_else", "scopes": ["chat:read", "chat:edit"]
             }):
-                with self.assertRaisesRegex(RuntimeError, "не под аккаунтом бота"):
+                with self.assertRaisesRegex(RuntimeError, "не под аккаунтом bot"):
                     twitch_auth.get_access_token("client", "bot", path)
 
     def test_first_run_setup_and_reuse(self):
