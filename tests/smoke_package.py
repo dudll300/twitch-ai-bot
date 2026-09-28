@@ -1,6 +1,7 @@
 """Check the single-file Windows application without network access."""
 
 import os
+import json
 import subprocess
 import tempfile
 from pathlib import Path
@@ -26,10 +27,21 @@ def main() -> None:
             "TWITCH_CLIENT_ID=client123\nAI_BASE_URL=https://ai.starimg.ru/v1\n"
             "AI_API_KEY=sk-test\nAI_MODEL=deepseek-v4.1-pro\n", encoding="utf-8",
         )
+        (data / "profiles.json").write_text(json.dumps({"version": 1, "profiles": [
+            {"login": "viewer", "user_id": "123", "prompt": "Personal instruction", "enabled": True}
+        ]}), encoding="utf-8")
         ready = subprocess.run([str(EXE), "--bot", str(log_path), "--self-test"], env=env, timeout=30)
         assert ready.returncode == 0, (ready.returncode, log_path.read_text(encoding="utf-8"))
         assert "WORKER_READY" in log_path.read_text(encoding="utf-8")
         assert (data / "memory.json").exists()
+
+        invalid_path = data / "profiles.json"
+        saved_profiles = invalid_path.read_bytes()
+        invalid_path.write_text("broken", encoding="utf-8")
+        invalid = subprocess.run([str(EXE), "--bot", str(log_path), "--self-test"], env=env, timeout=30)
+        assert invalid.returncode == 1
+        assert "profiles.json" in log_path.read_text(encoding="utf-8")
+        invalid_path.write_bytes(saved_profiles)
 
         gui = subprocess.run([str(EXE), "--self-test-gui"], env=env, timeout=30)
         assert gui.returncode == 0, f"GUI check failed with code {gui.returncode}"

@@ -17,7 +17,8 @@ def load_settings(root: Path | None = None) -> tuple[dict[str, str], str]:
     return values, prompt
 
 
-def save_settings(values: dict[str, str], prompt: str, root: Path | None = None) -> None:
+def save_settings(values: dict[str, str], prompt: str, root: Path | None = None, *,
+                  allow_incomplete: bool = False) -> None:
     root = root or data_dir()
     previous = read_config(root / ".env")
     clean = dict(previous)
@@ -25,7 +26,7 @@ def save_settings(values: dict[str, str], prompt: str, root: Path | None = None)
         value = values.get(name, DEFAULTS.get(name, ""))
         if name == "AI_API_KEY" and not value.strip():
             value = previous.get(name, "")
-        clean[name] = normalize(name, value)
+        clean[name] = "" if allow_incomplete and not value.strip() else normalize(name, value)
     prompt = prompt.strip()
     if len(prompt) > 20000:
         raise ValueError("Промпт должен содержать не более 20000 символов.")

@@ -12,6 +12,7 @@ from collections import deque
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
 from memory import context_for, ensure_local_memory, load_memory
+from profiles import load_profiles, prompt_for
 from paths import data_dir
 from rewards import RewardListener
 from twitch_auth import get_access_token
@@ -83,11 +84,14 @@ def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
 def call_ai(cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             model: str | None = None,
-            history: tuple[tuple[str, str], ...] = ()) -> str:
+            history: tuple[tuple[str, str], ...] = (),
+            personal_prompt: str = "") -> str:
     messages = []
     prompt = cfg.get("AI_PROMPT", SYSTEM_PROMPT).strip()
     if prompt:
         messages.append({"role": "system", "content": prompt})
+    if personal_prompt:
+        messages.append({"role": "system", "content": personal_prompt})
     is_streamer = user.casefold() == cfg.get("TWITCH_CHANNEL", "").casefold()
     if memory_data is not None:
         context = context_for(memory_data, user, user_id)
@@ -138,7 +142,8 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
 
 
 class AIModelRouter:
-    def __init__(self):
+    def __init__(self, profiles: list[dict] | None = None):
+        self.profiles = profiles or []
         self.primary_failures = 0
         self.primary_disabled_until = 0.0
 
@@ -153,7 +158,11 @@ class AIModelRouter:
         last_error = None
         for model in models:
             try:
-                answer = call_ai(cfg, user, question, memory_data, user_id, model=model, history=history)
+                kwargs = {"model": model, "history": history}
+                personal_prompt = prompt_for(self.profiles, user, user_id)
+                if personal_prompt:
+                    kwargs["personal_prompt"] = personal_prompt
+                answer = call_ai(cfg, user, question, memory_data, user_id, **kwargs)
             except TemporaryAIError as exc:
                 last_error = exc
                 if model == primary:
@@ -182,7 +191,7 @@ class Bot:
         self.memory = load_memory(ensure_local_memory(ROOT / "memory.json"))
         self.last_sent = 0.0
         self._say_lock = asyncio.Lock()
-        self.ai_router = AIModelRouter()
+        self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"))
         self.histories: dict[str, deque[tuple[str, str]]] = {}
         self.seen_redemptions: set[str] = set()
         self.recent_redemptions: deque[str] = deque()
