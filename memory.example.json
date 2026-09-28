@@ -5,7 +5,7 @@
   },
   "viewers": [],
   "_example_viewer_copy_into_viewers": {
-    "login": "pelmen",
+    "login": "viewer_login",
     "user_id": "",
     "facts": ["Любит хорроры", "Боится скримеров"],
     "jokes": ["Можно дружески подкалывать про скримеры"],

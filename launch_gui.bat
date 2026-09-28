@@ -14,11 +14,11 @@ if errorlevel 1 (
     ".venv\Scripts\python.exe" -m pip install -r requirements.txt
     if errorlevel 1 goto failed
 )
-".venv\Scripts\python.exe" start.py %*
+".venv\Scripts\python.exe" app.py
 if errorlevel 1 goto failed
 exit /b 0
 :failed
 echo.
-echo Could not start Twitch AI Bot. Press any key to close.
+echo Could not start TwitchAIBot GUI. Press any key to close.
 pause >nul
 exit /b 1

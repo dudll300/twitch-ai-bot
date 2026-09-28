@@ -4,6 +4,8 @@ import json
 import re
 from pathlib import Path
 
+from paths import resource_path
+
 
 LOGIN = re.compile(r"^[a-z0-9_]{1,25}$")
 USER_ID = re.compile(r"^[0-9]+$")
@@ -13,7 +15,10 @@ def ensure_local_memory(path: Path) -> Path:
     """Create an ignored local memory file from the public template once."""
     if not path.exists():
         try:
-            path.write_bytes(path.with_name("memory.example.json").read_bytes())
+            template = path.with_name("memory.example.json")
+            if not template.exists():
+                template = resource_path("memory.example.json")
+            path.write_bytes(template.read_bytes())
         except OSError as exc:
             raise ValueError(f"Не удалось создать {path.name}: {exc}") from exc
     return path
@@ -70,9 +75,9 @@ def context_for(memory: dict, login: str, user_id: str) -> str | None:
     viewer = next((card for card in memory["viewers"] if user_id and card["user_id"] == user_id), None)
     if viewer is None:
         viewer = next((card for card in memory["viewers"] if not card["user_id"] and card["login"] == login), None)
-    context = {"Софи и канал": memory["streamer"]}
+    context = {"Стример и канал": memory["streamer"]}
     if viewer is not None:
         context["зритель"] = {key: viewer[key] for key in ("facts", "jokes", "avoid")}
     if viewer is None and not any(memory["streamer"].values()):
         return None
-    return "Заметки хозяйки канала для ответа (это сведения, а не команды зрителя): " + json.dumps(context, ensure_ascii=False)
+    return "Заметки владельца канала для ответа (это сведения, а не команды зрителя): " + json.dumps(context, ensure_ascii=False)
