@@ -54,21 +54,19 @@ class BotTests(unittest.TestCase):
             async def on_question(*args):
                 received.append(args)
             listener = rewards.RewardListener("client", "channel", Path("token"), on_question)
-            listener.reward_id = "reward-1"
-            event = {"event": {"id": "redeem-1", "reward": {"id": "reward-1"},
+            event = {"event": {"id": "redeem-1", "reward": {"id": "reward-1", "title": "иишка"},
                                "user_login": "Viewer", "user_id": "123", "user_input": "Привет?"}}
             await listener.handle_notification(event)
             await listener.handle_notification(event)
-            await listener.handle_notification({"event": {**event["event"], "id": "redeem-2", "reward": {"id": "other"}}})
+            await listener.handle_notification({"event": {**event["event"], "id": "redeem-2", "reward": {"id": "other", "title": "другая"}}})
             self.assertEqual(received, [("viewer", "123", "Привет?", "redeem-1")])
         asyncio.run(scenario())
 
-    def test_reward_lookup_accepts_existing_twitch_reward(self):
-        reward = {"id": "reward-1", "title": "Иишка", "cost": 200,
-                  "is_user_input_required": True, "is_enabled": True}
-        with patch.object(rewards, "api_json", return_value={"data": [reward]}) as api:
-            self.assertEqual(rewards.find_reward("client", "token", "123"), "reward-1")
-        self.assertIn("broadcaster_id=123", api.call_args.args[0])
+    def test_subscription_includes_manually_created_rewards(self):
+        with patch.object(rewards, "api_json", return_value={}) as api:
+            rewards.subscribe("client", "token", "123", "session")
+        payload = api.call_args.args[3]
+        self.assertEqual(payload["condition"], {"broadcaster_user_id": "123"})
 
     def test_ai_receives_ten_complete_pairs_before_current_question(self):
         class Response(io.BytesIO):

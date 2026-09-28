@@ -3,7 +3,6 @@
 import asyncio
 import json
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections import deque
 from pathlib import Path
@@ -42,26 +41,12 @@ def api_json(path: str, client_id: str, token: str, payload: dict | None = None)
         raise RuntimeError(f"Twitch API вернул HTTP {exc.code}: {str(detail)[:200]}") from None
 
 
-def find_reward(client_id: str, token: str, broadcaster_id: str) -> str:
-    query = urllib.parse.urlencode({"broadcaster_id": broadcaster_id})
-    rewards = api_json("/channel_points/custom_rewards?" + query, client_id, token)["data"]
-    reward = next((item for item in rewards if item["title"].casefold() == REWARD_TITLE.casefold()), None)
-    if reward is None:
-        raise RuntimeError(f"На канале не найдена награда «{REWARD_TITLE}».")
-    if not reward["is_user_input_required"]:
-        raise RuntimeError(f"В награде «{REWARD_TITLE}» включите обязательный ввод текста вопроса.")
-    if not reward["is_enabled"]:
-        raise RuntimeError(f"Награда «{REWARD_TITLE}» выключена в Twitch.")
-    print(f"Награда «{REWARD_TITLE}» найдена: {reward['cost']} баллов.", flush=True)
-    return reward["id"]
-
-
 def subscribe(client_id: str, token: str, broadcaster_id: str,
-              reward_id: str, session_id: str) -> None:
+              session_id: str) -> None:
     api_json("/eventsub/subscriptions", client_id, token, {
         "type": "channel.channel_points_custom_reward_redemption.add",
         "version": "1",
-        "condition": {"broadcaster_user_id": broadcaster_id, "reward_id": reward_id},
+        "condition": {"broadcaster_user_id": broadcaster_id},
         "transport": {"method": "websocket", "session_id": session_id},
     })
 
@@ -74,7 +59,6 @@ class RewardListener:
         self.token_path = token_path
         self.on_question = on_question
         self.broadcaster_id = ""
-        self.reward_id = ""
         self.seen_ids: set[str] = set()
         self.recent_ids: deque[str] = deque()
 
@@ -90,9 +74,6 @@ class RewardListener:
         self.broadcaster_id = str((info or {}).get("user_id", ""))
         if not self.broadcaster_id:
             raise RuntimeError("Twitch не вернул ID аккаунта стримерши.")
-        self.reward_id = await asyncio.to_thread(
-            find_reward, self.client_id, token, self.broadcaster_id,
-        )
 
     async def _welcome(self, websocket) -> tuple[str, int]:
         message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=15))
@@ -112,7 +93,7 @@ class RewardListener:
 
     async def handle_notification(self, payload: dict) -> None:
         event = payload.get("event", {})
-        if event.get("reward", {}).get("id") != self.reward_id:
+        if event.get("reward", {}).get("title", "").strip().casefold() != REWARD_TITLE.casefold():
             return
         redemption_id = event.get("id", "")
         if not redemption_id or not self._remember_redemption(redemption_id):
@@ -131,7 +112,7 @@ class RewardListener:
             session_id, keepalive = await self._welcome(websocket)
             await asyncio.to_thread(
                 subscribe, self.client_id, token, self.broadcaster_id,
-                self.reward_id, session_id,
+                session_id,
             )
             print(f"Жду вопросов по награде «{REWARD_TITLE}».", flush=True)
             while True:
