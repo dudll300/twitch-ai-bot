@@ -16,7 +16,7 @@ from twitch_auth import REDEMPTION_SCOPES, get_access_token, validate
 
 API_URL = "https://api.twitch.tv/helix"
 WEBSOCKET_URL = "wss://eventsub.wss.twitch.tv/ws"
-REWARD_TITLE = "Иишка"
+REWARD_TITLE = "Вопрос ИИ"
 
 
 def api_json(path: str, client_id: str, token: str, payload: dict | None = None) -> dict:
@@ -53,7 +53,9 @@ def subscribe(client_id: str, token: str, broadcaster_id: str,
 
 class RewardListener:
     def __init__(self, client_id: str, channel_login: str, token_path: Path,
-                 on_question: Callable[[str, str, str, str], Awaitable[None]]):
+                 on_question: Callable[[str, str, str, str], Awaitable[None]],
+                 reward_title: str = REWARD_TITLE):
+        self.reward_title = reward_title.strip()
         self.client_id = client_id
         self.channel_login = channel_login
         self.token_path = token_path
@@ -73,7 +75,7 @@ class RewardListener:
         info = await asyncio.to_thread(validate, token)
         self.broadcaster_id = str((info or {}).get("user_id", ""))
         if not self.broadcaster_id:
-            raise RuntimeError("Twitch не вернул ID аккаунта стримерши.")
+            raise RuntimeError("Twitch не вернул ID аккаунта владельца канала.")
 
     async def _welcome(self, websocket) -> tuple[str, int]:
         message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=15))
@@ -93,7 +95,7 @@ class RewardListener:
 
     async def handle_notification(self, payload: dict) -> None:
         event = payload.get("event", {})
-        if event.get("reward", {}).get("title", "").strip().casefold() != REWARD_TITLE.casefold():
+        if event.get("reward", {}).get("title", "").strip().casefold() != self.reward_title.casefold():
             return
         redemption_id = event.get("id", "")
         if not redemption_id or not self._remember_redemption(redemption_id):
@@ -107,14 +109,14 @@ class RewardListener:
         await self.on_question(login, user_id, question, redemption_id)
 
     async def _listen(self, token: str) -> None:
-        websocket = await connect(WEBSOCKET_URL, ping_interval=20)
+        websocket = await connect(WEBSOCKET_URL, ping_interval=None)
         try:
             session_id, keepalive = await self._welcome(websocket)
             await asyncio.to_thread(
                 subscribe, self.client_id, token, self.broadcaster_id,
                 session_id,
             )
-            print(f"Жду вопросов по награде «{REWARD_TITLE}».", flush=True)
+            print(f"Жду вопросов по награде «{self.reward_title}».", flush=True)
             while True:
                 message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=keepalive + 10))
                 kind = message.get("metadata", {}).get("message_type")
@@ -122,7 +124,7 @@ class RewardListener:
                     await self.handle_notification(message.get("payload", {}))
                 elif kind == "session_reconnect":
                     reconnect_url = message["payload"]["session"]["reconnect_url"]
-                    replacement = await connect(reconnect_url, ping_interval=20)
+                    replacement = await connect(reconnect_url, ping_interval=None)
                     try:
                         _, keepalive = await self._welcome(replacement)
                     except Exception:
@@ -132,7 +134,7 @@ class RewardListener:
                     websocket = replacement
                     print("EventSub переподключён.", flush=True)
                 elif kind == "revocation":
-                    raise RuntimeError("Twitch отозвал подписку на награду; проверьте разрешения аккаунта стримерши.")
+                    raise RuntimeError("Twitch отозвал подписку на награду; проверьте разрешения аккаунта владельца канала.")
         finally:
             await websocket.close()
 

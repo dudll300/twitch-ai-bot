@@ -12,7 +12,7 @@ def resource_path(name: str) -> Path:
 def data_dir() -> Path:
     if getattr(sys, "frozen", False):
         base = Path(os.environ.get("APPDATA") or Path.home())
-        path = base / "ChundaBot"
+        path = base / "TwitchAIBot"
         path.mkdir(parents=True, exist_ok=True)
         return path
     return Path(__file__).resolve().parent

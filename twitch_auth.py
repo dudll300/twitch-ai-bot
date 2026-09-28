@@ -43,7 +43,10 @@ def read_tokens(path: Path) -> dict:
     if not path.exists():
         return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        tokens = json.loads(path.read_text(encoding="utf-8-sig"))
+        if not isinstance(tokens, dict) or any(not isinstance(tokens.get(key, ""), str) for key in ("access_token", "refresh_token")):
+            return {}
+        return tokens
     except (ValueError, OSError):
         return {}
 
@@ -52,6 +55,8 @@ def save_tokens(path: Path, tokens: dict) -> None:
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(tokens), encoding="utf-8")
     os.replace(temporary, path)
+    if os.name != "nt":
+        path.chmod(0o600)
 
 
 def authorize_device(client_id: str, scopes: set[str], expected_login: str) -> dict:
@@ -93,7 +98,11 @@ def get_access_token(client_id: str, expected_login: str, path: Path,
     tokens = read_tokens(path)
     access = tokens.get("access_token", "")
     info = validate(access) if access else None
-    if info is not None and not required_scopes.issubset(set(info.get("scopes", []))):
+    if info is not None and (info.get("client_id") != client_id or info.get("login", "").lower() != expected_login.lower()):
+        tokens = {}
+        info = None
+    if info is not None and (not required_scopes.issubset(set(info.get("scopes", [])))
+                             or info.get("expires_in", 3600) < 60):
         info = None
     if info is None and tokens.get("refresh_token"):
         try:
@@ -113,7 +122,7 @@ def get_access_token(client_id: str, expected_login: str, path: Path,
         info = validate(tokens["access_token"])
         if info is None:
             raise RuntimeError("Twitch не подтвердил новый токен")
-    if info.get("client_id") != client_id or info.get("login", "").lower() != expected_login:
+    if info.get("client_id") != client_id or info.get("login", "").lower() != expected_login.lower():
         raise RuntimeError(f"Twitch авторизован не под аккаунтом {expected_login} или другим приложением")
     if not required_scopes.issubset(set(info.get("scopes", []))):
         raise RuntimeError("Токен Twitch не содержит разрешения: " + ", ".join(sorted(required_scopes)))

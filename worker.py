@@ -13,7 +13,7 @@ def main() -> int:
             print("WORKER_READY", flush=True)
             return 0
         if len(sys.argv) != 1:
-            print("Использование: ChundaWorker.exe [--self-test]", flush=True)
+            print("Использование: worker.py [--self-test]", flush=True)
             return 2
         asyncio.run(Bot(config()).run())
     except (ValueError, RuntimeError) as exc:

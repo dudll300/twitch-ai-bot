@@ -7,7 +7,7 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXE = Path(os.environ.get("CHUNDA_TEST_EXE", str(ROOT / "dist" / "Chunda.exe")))
+EXE = Path(os.environ.get("TWITCH_AI_TEST_EXE", str(ROOT / "dist" / "TwitchAIBot.exe")))
 
 
 def main() -> None:
@@ -20,9 +20,9 @@ def main() -> None:
         assert missing.returncode == 1, missing.returncode
         assert "TWITCH_CHANNEL" in log_path.read_text(encoding="utf-8")
 
-        data = Path(temporary) / "ChundaBot"
+        data = Path(temporary) / "TwitchAIBot"
         (data / ".env").write_text(
-            "TWITCH_CHANNEL=sophie\nTWITCH_BOT_NAME=chundabot\n"
+            "TWITCH_CHANNEL=streamer\nTWITCH_BOT_NAME=helper_bot\n"
             "TWITCH_CLIENT_ID=client123\nAI_BASE_URL=https://ai.starimg.ru/v1\n"
             "AI_API_KEY=sk-test\nAI_MODEL=deepseek-v4.1-pro\n", encoding="utf-8",
         )

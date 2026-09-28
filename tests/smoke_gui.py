@@ -23,16 +23,21 @@ def main() -> None:
             window = gui.MainWindow()
         assert window.api_key.echoMode() == QLineEdit.Password
         assert window.model.count() == 3
-        assert not window.model.isEditable()
-        window.channel.setText("https://www.twitch.tv/Sophie")
-        window.bot_name.setText("ChundaBot")
+        assert window.model.isEditable()
+        assert window.prompt.toPlainText() == ""
+        window.channel.setText("https://www.twitch.tv/Streamer")
+        window.bot_name.setText("HelperBot")
         window.client_id.setText("client123")
         window.api_key.setText("sk-test")
-        window.model.setCurrentText("deepseek-v4.1-pro")
+        window.model.setCurrentText("custom/model")
+        window.reward_title.setText("Ask AI")
+        window.fallback_models.setText("backup/model")
         window.prompt.setPlainText("Новый промпт")
         assert window._save()
         values = read_config(root / ".env")
-        assert values["AI_MODEL"] == "deepseek-v4.1-pro"
+        assert values["AI_MODEL"] == "custom/model"
+        assert values["TWITCH_REWARD_TITLE"] == "Ask AI"
+        assert values["AI_FALLBACK_MODELS"] == "backup/model"
         assert values["AI_API_KEY"] == "sk-test"
         assert window.api_key.text() == ""
         assert (root / "prompt.txt").read_text(encoding="utf-8").strip() == "Новый промпт"
@@ -40,6 +45,14 @@ def main() -> None:
         window._log_path.write_text("GUI_LOG_TEST\n", encoding="utf-8")
         window._poll_log()
         assert "GUI_LOG_TEST" in window.log.toPlainText()
+        window.reset_prompt.click()
+        assert window._save()
+        assert not (root / "prompt.txt").read_text(encoding="utf-8").strip()
+        window._kill_timer.start(3000)
+        window._on_finished(0, window.process.ExitStatus.NormalExit)
+        assert not window._kill_timer.isActive()
+        window._set_running(True)
+        assert not window.reset_prompt.isEnabled()
         window.close()
     app.quit()
     print("GUI settings form works.")

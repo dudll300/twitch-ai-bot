@@ -19,6 +19,6 @@ if errorlevel 1 goto failed
 exit /b 0
 :failed
 echo.
-echo Could not start Chunda GUI. Press any key to close.
+echo Could not start TwitchAIBot GUI. Press any key to close.
 pause >nul
 exit /b 1

@@ -13,39 +13,39 @@ class SettingsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             values = {
-                "TWITCH_CHANNEL": "https://www.twitch.tv/Sophie",
-                "TWITCH_BOT_NAME": "ChundaBot",
+                "TWITCH_CHANNEL": "https://www.twitch.tv/Streamer",
+                "TWITCH_BOT_NAME": "HelperBot",
                 "TWITCH_CLIENT_ID": "client123",
                 "AI_BASE_URL": "https://ai.starimg.ru/v1",
                 "AI_API_KEY": "sk-test",
                 "AI_MODEL": "deepseek-v4.1-pro",
             }
-            settings.save_settings(values, "Новый характер Чунды", root)
+            settings.save_settings(values, "Мой системный промпт", root)
             values["AI_API_KEY"] = ""
-            settings.save_settings(values, "Новый характер Чунды", root)
+            settings.save_settings(values, "Мой системный промпт", root)
             loaded, prompt = settings.load_settings(root)
-            self.assertEqual(loaded["TWITCH_CHANNEL"], "sophie")
-            self.assertEqual(loaded["TWITCH_BOT_NAME"], "chundabot")
+            self.assertEqual(loaded["TWITCH_CHANNEL"], "streamer")
+            self.assertEqual(loaded["TWITCH_BOT_NAME"], "helperbot")
             self.assertEqual(loaded["AI_API_KEY"], "sk-test")
             self.assertEqual(loaded["AI_MODEL"], "deepseek-v4.1-pro")
-            self.assertEqual(prompt.strip(), "Новый характер Чунды")
+            self.assertEqual(prompt.strip(), "Мой системный промпт")
             with patch.object(bot, "ROOT", root), patch.dict(os.environ, {}, clear=True):
                 config = bot.config()
             self.assertEqual(config["AI_MODEL"], "deepseek-v4.1-pro")
-            self.assertEqual(config["AI_PROMPT"], "Новый характер Чунды")
+            self.assertEqual(config["AI_PROMPT"], "Мой системный промпт")
 
-    def test_previous_model_is_replaced_by_default(self):
+    def test_custom_model_is_preserved(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / ".env").write_text(
-                "TWITCH_CHANNEL=sophie\nTWITCH_BOT_NAME=chundabot\n"
+                "TWITCH_CHANNEL=streamer\nTWITCH_BOT_NAME=helperbot\n"
                 "TWITCH_CLIENT_ID=client123\nAI_BASE_URL=https://ai.starimg.ru/v1\n"
                 "AI_API_KEY=sk-test\nAI_MODEL=deepseek-v4-pro\n", encoding="utf-8",
             )
             values, _prompt = settings.load_settings(root)
-            self.assertEqual(values["AI_MODEL"], bot.AI_MODEL)
+            self.assertEqual(values["AI_MODEL"], "deepseek-v4-pro")
             with patch.object(bot, "ROOT", root), patch.dict(os.environ, {}, clear=True):
-                self.assertEqual(bot.config()["AI_MODEL"], bot.AI_MODEL)
+                self.assertEqual(bot.config()["AI_MODEL"], "deepseek-v4-pro")
 
     def test_selected_backup_is_not_tried_twice(self):
         router = bot.AIModelRouter()
@@ -57,7 +57,7 @@ class SettingsTests(unittest.TestCase):
 
         with patch.object(bot, "call_ai", side_effect=unavailable):
             with self.assertRaises(bot.TemporaryAIError):
-                router.ask({"AI_MODEL": "deepseek-v4.1-pro"}, "viewer", "вопрос")
+                router.ask({"AI_MODEL": "deepseek-v4.1-pro", "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS)}, "viewer", "вопрос")
         self.assertEqual(attempts, [
             "deepseek-v4.1-pro", "deepseek-v4.1-flash", "deepseek-v4-flash",
         ])

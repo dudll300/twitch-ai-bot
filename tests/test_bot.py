@@ -19,7 +19,7 @@ class BotTests(unittest.TestCase):
     def test_reward_events_only_and_history_per_viewer(self):
         async def scenario():
             instance = bot.Bot.__new__(bot.Bot)
-            instance.cfg = {"AI_MODEL": bot.AI_MODEL}
+            instance.cfg = {"AI_MODEL": bot.AI_MODEL, "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS)}
             instance.memory = {"streamer": {"facts": [], "jokes": []}, "viewers": []}
             instance.histories = {}
             calls = []
@@ -54,7 +54,7 @@ class BotTests(unittest.TestCase):
             async def on_question(*args):
                 received.append(args)
             listener = rewards.RewardListener("client", "channel", Path("token"), on_question)
-            event = {"event": {"id": "redeem-1", "reward": {"id": "reward-1", "title": "иишка"},
+            event = {"event": {"id": "redeem-1", "reward": {"id": "reward-1", "title": "вопрос ии"},
                                "user_login": "Viewer", "user_id": "123", "user_input": "Привет?"}}
             await listener.handle_notification(event)
             await listener.handle_notification(event)
@@ -86,8 +86,8 @@ class BotTests(unittest.TestCase):
         history = tuple((f"Вопрос {i}", f"Ответ {i}") for i in range(12))
         with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
             bot.call_ai(cfg, "viewer", "Новый вопрос", history=history)
-        self.assertEqual(len(captured), 22)
-        self.assertEqual(captured[1]["content"], "Зритель viewer спрашивает: Вопрос 2")
+        self.assertEqual(len(captured), 21)
+        self.assertEqual(captured[0]["content"], "Зритель viewer спрашивает: Вопрос 2")
         self.assertEqual(captured[-2]["content"], "Ответ 11")
         self.assertEqual(captured[-1]["content"], "Зритель viewer спрашивает: Новый вопрос")
 
@@ -105,9 +105,8 @@ class BotTests(unittest.TestCase):
             self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
             payload = json.loads(request.data)
             self.assertEqual(payload["model"], bot.AI_MODEL)
-            self.assertIn("Ты Чунда", payload["messages"][0]["content"])
-            self.assertIn("Мат — привычная часть", payload["messages"][0]["content"])
-            self.assertEqual(len(payload["messages"]), 2)
+            self.assertEqual(payload["messages"][0]["role"], "user")
+            self.assertEqual(len(payload["messages"]), 1)
             return Response(json.dumps({"choices": [{"message": {"content": "Привет!\nКак дела?"}}]}).encode())
 
         with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
@@ -117,7 +116,7 @@ class BotTests(unittest.TestCase):
             }, "viewer", "Привет")
         self.assertEqual(answer, "Привет! Как дела?")
 
-    def test_channel_owner_gets_a_distinct_tone(self):
+    def test_channel_owner_has_no_hidden_persona(self):
         class Response(io.BytesIO):
             def __enter__(self):
                 return self
@@ -132,24 +131,24 @@ class BotTests(unittest.TestCase):
             return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
 
         cfg = {
-            "TWITCH_CHANNEL": "chundon", "AI_MODEL": bot.AI_MODEL,
+            "TWITCH_CHANNEL": "streamer", "AI_MODEL": bot.AI_MODEL,
             "AI_API_KEY": "test-key", "AI_CHAT_URL": "https://api.example.com/chat/completions",
             "AI_PROMPT": "Пользовательский промпт",
         }
         with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
-            bot.call_ai(cfg, "Chundon", "Привет")
+            bot.call_ai(cfg, "Streamer", "Привет")
             bot.call_ai(cfg, "viewer", "Привет")
 
         owner, viewer = requests
         self.assertEqual(owner[0]["content"], "Пользовательский промпт")
-        self.assertIn("госпожа", owner[1]["content"])
-        self.assertIn("Стримерша Chundon", owner[-1]["content"])
+        self.assertEqual(len(owner), 2)
+        self.assertIn("Владелец канала Streamer", owner[-1]["content"])
         self.assertEqual(len(viewer), 2)
         self.assertIn("Зритель viewer", viewer[-1]["content"])
 
     def test_temporary_failure_uses_backup_and_cooldown_then_probes_primary(self):
         router = bot.AIModelRouter()
-        cfg = {"AI_MODEL": bot.AI_MODEL}
+        cfg = {"AI_MODEL": bot.AI_MODEL, "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS)}
         clock = {"now": 0.0}
         attempts = []
         primary_calls = 0
@@ -185,7 +184,7 @@ class BotTests(unittest.TestCase):
 
     def test_fallbacks_are_tried_in_order_until_one_answers(self):
         router = bot.AIModelRouter()
-        cfg = {"AI_MODEL": bot.AI_MODEL}
+        cfg = {"AI_MODEL": bot.AI_MODEL, "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS)}
         attempts = []
 
         def fake_call_ai(_cfg, _user, _question, _memory, _user_id, model, history):
@@ -227,7 +226,7 @@ class BotTests(unittest.TestCase):
                 self.close()
 
         cfg = {
-            "AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "sk-test",
+            "AI_MODEL": bot.AI_MODEL, "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS), "AI_API_KEY": "sk-test",
             "AI_CHAT_URL": "https://api.example.com/chat/completions",
         }
         attempts = []
@@ -250,14 +249,14 @@ class BotTests(unittest.TestCase):
     def test_memory_is_valid_and_only_current_viewer_is_sent(self):
         data = memory.load_memory(Path(__file__).resolve().parents[1] / "memory.example.json")
         self.assertEqual(data["viewers"], [])  # The example card is ignored.
-        data["streamer"]["facts"] = ["Софи любит хорроры"]
+        data["streamer"]["facts"] = ["Стример любит хорроры"]
         data["viewers"] = [
             {"login": "pelmen", "user_id": "123", "facts": ["Боится скримеров"], "jokes": [], "avoid": []},
             {"login": "other", "user_id": "456", "facts": ["Любит шахматы"], "jokes": [], "avoid": []},
         ]
         context = memory.context_for(data, "renamed_pelmen", "123")
         self.assertIn("Боится скримеров", context)
-        self.assertIn("Софи любит хорроры", context)
+        self.assertIn("Стример любит хорроры", context)
         self.assertNotIn("Любит шахматы", context)
         self.assertNotIn("Боится скримеров", memory.context_for(data, "pelmen", "456"))
         self.assertNotIn("Боится скримеров", memory.context_for(data, "pelmen", ""))
@@ -288,8 +287,8 @@ class BotTests(unittest.TestCase):
 
         def fake_urlopen(request, timeout):
             messages = json.loads(request.data)["messages"]
-            self.assertEqual(len(messages), 3)
-            self.assertIn("Любит хорроры", messages[1]["content"])
+            self.assertEqual(len(messages), 2)
+            self.assertIn("Любит хорроры", messages[0]["content"])
             return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
 
         with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
@@ -315,13 +314,13 @@ class BotTests(unittest.TestCase):
             self.assertEqual(post.call_args.args[0], "/token")
             self.assertEqual(json.loads(path.read_text())["refresh_token"], "next")
 
-    def test_wrong_twitch_account_is_rejected(self):
+    def test_wrong_new_twitch_account_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / ".twitch_token.json"
             path.write_text(json.dumps({"access_token": "valid"}))
             with patch.object(twitch_auth, "validate", return_value={
                 "client_id": "client", "login": "someone_else", "scopes": ["chat:read", "chat:edit"]
-            }):
+            }), patch.object(twitch_auth, "authorize_device", return_value={"access_token": "wrong"}):
                 with self.assertRaisesRegex(RuntimeError, "не под аккаунтом bot"):
                     twitch_auth.get_access_token("client", "bot", path)
 
@@ -330,7 +329,7 @@ class BotTests(unittest.TestCase):
             path = Path(directory) / ".env"
             answers = iter([
                 "https://www.twitch.tv/Streamer", "Helper_bot", "client123",
-                "https://api.example.com/v1/chat/completions",
+                "Ask AI", "https://api.example.com/v1/chat/completions", "", "",
             ])
             with patch("builtins.input", side_effect=lambda _: next(answers)), patch.object(
                 start.getpass, "getpass", return_value="secret-key"
