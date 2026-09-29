@@ -11,6 +11,7 @@ from collections import deque
 
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
+from autonomous import Autonomous
 from memory import context_for, ensure_local_memory, load_memory
 from profiles import load_profiles, prompt_for
 from paths import data_dir
@@ -193,6 +194,8 @@ class Bot:
         self._say_lock = asyncio.Lock()
         self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"))
         self.histories: dict[str, deque[tuple[str, str]]] = {}
+        self._paid_busy = False
+        self.autonomous = Autonomous(cfg, ROOT)
         self.seen_redemptions: set[str] = set()
         self.recent_redemptions: deque[str] = deque()
 
@@ -208,9 +211,21 @@ class Bot:
             await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{clean_text(message, 450)}")
             self.last_sent = time.monotonic()
 
+    async def say_autonomous(self, writer, message, valid, reserve):
+        # Never hold the paid-send lock or wait for a paid request / rate-limit slot.
+        # No await between the last guard and write: a redemption cannot interleave.
+        if not valid() or self._say_lock.locked() or time.monotonic() - self.last_sent < 1.6:
+            return False
+        reserve()
+        writer.write((f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}\r\n").encode("utf-8"))
+        self.last_sent = time.monotonic()
+        await writer.drain()
+        return True
+
     async def worker(self, writer: asyncio.StreamWriter, queue: asyncio.Queue) -> None:
         while True:
             user, user_id, question, redemption_id = await queue.get()
+            self._paid_busy = True
             try:
                 key = user_id or user.casefold()
                 history = tuple(self.histories.get(key, ()))
@@ -230,6 +245,7 @@ class Bot:
                 except Exception:
                     pass
             finally:
+                self._paid_busy = False
                 queue.task_done()
 
     async def connection(self) -> None:
@@ -239,6 +255,7 @@ class Bot:
         )
         queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUED_QUESTIONS)
         async def on_question(user: str, user_id: str, question: str, redemption_id: str) -> None:
+            self.autonomous.interrupt()
             try:
                 queue.put_nowait((user, user_id, question, redemption_id))
             except asyncio.QueueFull:
@@ -261,12 +278,18 @@ class Bot:
         worker = asyncio.create_task(self.worker(writer, queue))
         rewards_task = None
         reader_task = None
+        autonomous_task = None
         try:
             await self.send(writer, "PASS oauth:" + access_token)
             await self.send(writer, "NICK " + self.cfg["TWITCH_BOT_NAME"])
             await self.send(writer, "CAP REQ :twitch.tv/tags twitch.tv/commands")
             await self.send(writer, "JOIN #" + self.cfg["TWITCH_CHANNEL"])
             rewards_task = asyncio.create_task(listener.run())
+            self.autonomous.connect(
+                lambda text, valid, reserve: self.say_autonomous(writer, text, valid, reserve),
+                lambda: self._paid_busy or not queue.empty(),
+            )
+            autonomous_task = asyncio.create_task(self.autonomous.run())
             async def read_chat() -> None:
                 while raw := await reader.readline():
                     line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
@@ -277,20 +300,25 @@ class Bot:
                         return
                     elif command == "NOTICE" and "Login authentication failed" in line:
                         raise RuntimeError("Twitch отклонил OAuth-токен")
+                    elif command == "PRIVMSG":
+                        self.autonomous.receive(line)
                     elif command == "NOTICE":
                         print("Twitch: " + line.split(" :", 1)[-1], flush=True)
 
             reader_task = asyncio.create_task(read_chat())
-            done, _ = await asyncio.wait((reader_task, rewards_task), return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait((reader_task, rewards_task, autonomous_task), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
         finally:
+            self.autonomous.disconnect()
+            if autonomous_task is not None:
+                autonomous_task.cancel()
             worker.cancel()
             if reader_task is not None:
                 reader_task.cancel()
             if rewards_task is not None:
                 rewards_task.cancel()
-            await asyncio.gather(*(task for task in (worker, reader_task, rewards_task) if task), return_exceptions=True)
+            await asyncio.gather(*(task for task in (worker, reader_task, rewards_task, autonomous_task) if task), return_exceptions=True)
             while not queue.empty():
                 user, _, _, redemption_id = queue.get_nowait()
                 print(f"Награда {redemption_id} от {user}: соединение закрыто до ответа; проверьте возврат баллов вручную.", flush=True)
@@ -302,14 +330,17 @@ class Bot:
                 pass
 
     async def run(self) -> None:
-        while True:
-            try:
-                print(f"Подключаюсь к чату #{self.cfg['TWITCH_CHANNEL']}...", flush=True)
-                await self.connection()
-                print("Соединение закрыто; повтор через 5 секунд", flush=True)
-            except (OSError, asyncio.IncompleteReadError) as exc:
-                print(f"Ошибка соединения: {exc}", flush=True)
-            await asyncio.sleep(5)
+        try:
+            while True:
+                try:
+                    print(f"Подключаюсь к чату #{self.cfg['TWITCH_CHANNEL']}...", flush=True)
+                    await self.connection()
+                    print("Соединение закрыто; повтор через 5 секунд", flush=True)
+                except (OSError, asyncio.IncompleteReadError) as exc:
+                    print(f"Ошибка соединения: {exc}", flush=True)
+                await asyncio.sleep(5)
+        finally:
+            self.autonomous.close()
 
 
 if __name__ == "__main__":

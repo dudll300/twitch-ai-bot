@@ -15,3 +15,7 @@ dist/
 *.spec
 profiles.json
 profiles.tmp
+autonomous.json
+autonomous.tmp
+autonomous-quota.json
+autonomous-quota.tmp

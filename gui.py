@@ -2,6 +2,7 @@
 
 import codecs
 import html
+import json
 import sys
 
 from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from autonomous_gui import AutonomousPage
 from configuration import AI_FALLBACK_MODELS, FIELDS, normalize, read_config
 from gui_theme import STYLE
 from paths import data_dir, resource_path
@@ -24,6 +26,7 @@ PAGES = (
     ("Подключение", "Подключите Twitch и выберите сервис для ответов."),
     ("Поведение", "Задайте общий характер, язык и правила общения."),
     ("Зрители", "Личные инструкции для тех, кого бот должен узнавать."),
+    ("Самостоятельные реплики", "Уместные шутки и вопросы чату — с приоритетом наград."),
     ("Активность", "Подключение, вопросы и ответы текущего запуска."),
 )
 
@@ -37,7 +40,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Twitch AI Bot")
         available = available_screen_size()
-        self._expanded_minimum = QSize(min(1200, available.width() - 24), min(820, available.height() - 48))
+        self._expanded_minimum = QSize(min(1240, available.width() - 24), min(820, available.height() - 48))
         self._collapsed_minimum = QSize(min(1000, available.width() - 24), self._expanded_minimum.height())
         self.resize(min(1240, available.width() - 24), min(860, available.height() - 48))
         self.setMinimumSize(self._expanded_minimum)
@@ -72,7 +75,7 @@ class MainWindow(QMainWindow):
         shell = QHBoxLayout(body)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
-        self.sidebar = SlidingSidebar()
+        self.sidebar = SlidingSidebar(240)
         side = QVBoxLayout(self.sidebar.panel)
         side.setContentsMargins(20, 32, 20, 24)
         side.setSpacing(6)
@@ -82,7 +85,7 @@ class MainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
         for index, (name, _) in enumerate(PAGES):
-            button = QPushButton(name)
+            button = QPushButton(name.replace("Самостоятельные реплики", "Самостоятельные\nреплики"))
             button.setProperty("variant", "nav")
             button.setCheckable(True)
             self.nav_group.addButton(button, index)
@@ -135,6 +138,8 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_behavior(prompt))
         self.profiles_editor = ProfilesEditor(self._root / "profiles.json")
         self.pages.addWidget(self.profiles_editor)
+        self.autonomous_page = AutonomousPage(self._root)
+        self.pages.addWidget(self.autonomous_page)
         self.pages.addWidget(self._build_activity())
         self._page_effect = QGraphicsOpacityEffect(self.pages)
         self.pages.setGraphicsEffect(self._page_effect)
@@ -370,6 +375,7 @@ class MainWindow(QMainWindow):
                 "AI_MODEL": self.model, "AI_FALLBACK_MODELS": self.fallback_models}
 
     def _set_running(self, running):
+        self.autonomous_page.set_running(running)
         for widget in (*self._field_widgets().values(), self.prompt, self.reset_prompt, self.save_button):
             widget.setEnabled(not running)
         self.profiles_editor.set_editable(not running)
@@ -377,7 +383,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(not running)
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
-        self.save_hint.setText("Для изменения настроек остановите бота" if running else
+        self.save_hint.setText("Самостоятельные реплики можно менять во время работы" if running else
                                "Есть несохранённые изменения" if self._dirty else "Все изменения сохранены")
 
     def _fields(self) -> dict[str, str]:
@@ -407,7 +413,8 @@ class MainWindow(QMainWindow):
         self._auth_url = ""
         self._auth_account = ""
         self.auth_hint.setVisible(False)
-        self._navigate(3)
+        self._navigate(4)
+        self.autonomous_page.log.clear()
         self._question_count = self._answer_count = 0
         self.questions_label.setText("0")
         self.answers_label.setText("0")
@@ -474,6 +481,14 @@ class MainWindow(QMainWindow):
             self._append_log(line.rstrip("\r"))
 
     def _append_log(self, line: str) -> None:
+        if line.startswith("AUTO_EVENT "):
+            try:
+                event = json.loads(line.removeprefix("AUTO_EVENT "))
+                if isinstance(event, dict):
+                    self.autonomous_page.push_event(event)
+            except ValueError:
+                pass
+            return
         self.log.appendPlainText(line)
         if line.startswith("Вопрос от ") and "принят" in line:
             self._question_count += 1

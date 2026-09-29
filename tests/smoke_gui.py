@@ -1,6 +1,7 @@
 """Exercise the settings form without Twitch or AI network calls."""
 
 import os
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -17,6 +18,7 @@ from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 import gui
 from start import read_config
 from profiles import load_profiles
+from autonomous import load_settings as load_auto_settings
 from ui_widgets import russian_question
 
 
@@ -75,7 +77,33 @@ def main() -> None:
             window = gui.MainWindow()
         window.show()
         app.processEvents()
-        assert window.pages.count() == 4
+        assert window.pages.count() == 5
+        auto_page = window.autonomous_page
+        assert not auto_page.enabled.isChecked()
+        assert auto_page.mode.currentData() == "preview"
+        assert auto_page.inputs["hourly_limit"].value() == 8
+        assert auto_page.inputs["hourly_limit"].maximum() == 8
+        window._set_running(True)
+        assert auto_page.enabled.isEnabled()
+        auto_page.enabled.setChecked(True)
+        assert load_auto_settings(root / "autonomous.json")[0].enabled
+        auto_page.mode.setCurrentIndex(1)
+        assert load_auto_settings(root / "autonomous.json")[0].mode == "publish"
+        auto_page.inputs["context_count"].setValue(30)
+        auto_page.inputs["hourly_limit"].setValue(6)
+        assert auto_page.apply()
+        assert load_auto_settings(root / "autonomous.json")[0].context_count == 30
+        assert load_auto_settings(root / "autonomous.json")[0].hourly_limit == 6
+        auto_page.inputs["check_min_seconds"].setValue(500)
+        auto_page.inputs["check_max_seconds"].setValue(20)
+        assert not auto_page.apply()
+        # Disabling is never blocked by invalid numeric edits.
+        auto_page.enabled.setChecked(False)
+        assert not load_auto_settings(root / "autonomous.json")[0].enabled
+        window._append_log("AUTO_EVENT " + json.dumps({"time":"12:00:00", "status":"preview", "action":"joke", "text":"Тестовая шутка"}))
+        assert "Тестовая шутка" in auto_page.log.toPlainText()
+        assert "AUTO_EVENT" not in window.log.toPlainText()
+        window._set_running(False)
         for index, button in enumerate(window.nav_buttons):
             button.click()
             assert window.pages.currentIndex() == index
@@ -147,13 +175,13 @@ def main() -> None:
         assert window.width() >= 1000
         window.menu_button.click()
         QTest.qWait(250)
-        assert window.sidebar.width() == 200
+        assert window.sidebar.width() == 240
         assert window.width() >= 1200
         window.menu_button.click()
         QTest.qWait(50)
         window.menu_button.click()
         QTest.qWait(250)
-        assert window.sidebar.width() == 200
+        assert window.sidebar.width() == 240
         assert window.profiles_editor.remove_button.property("variant") == "danger"
         window._navigate(1)
         QTest.qWait(180)
@@ -163,6 +191,10 @@ def main() -> None:
         with patch.object(gui, "data_dir", return_value=root):
             reopened = gui.MainWindow()
         assert len(reopened.profiles_editor.rows) == 2
+        assert reopened.autonomous_page.inputs["context_count"].value() == 30
+        assert reopened.autonomous_page.inputs["hourly_limit"].value() == 6
+        assert reopened.autonomous_page.mode.currentData() == "publish"
+        assert not reopened.autonomous_page.enabled.isChecked()
         assert not reopened.profiles_editor.rows[1]["enabled"]
         reopened.prompt.setPlainText("Черновик")
         with patch.object(gui, "russian_question", return_value=QMessageBox.Cancel):

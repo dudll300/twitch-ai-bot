@@ -15,14 +15,19 @@ QLabel[role="caption"] { color: #c9cbd0; font-size: 13px; }
 QLabel[role="number"] { font-size: 28px; font-weight: 600; }
 QLabel[role="error"] { color: #f0aaaa; background: #302123; padding: 12px; border-radius: 12px; }
 QLabel#status { background: #24262a; color: #c8cbd1; border-radius: 12px; padding: 10px 12px; font-size: 12px; }
-QLineEdit, QPlainTextEdit, QComboBox {
+QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {
     background: #141517; color: #e9eaec; border: 1px solid #3b3e44;
     border-radius: 12px; padding: 10px 12px;
     selection-background-color: #50555e; selection-color: #ffffff;
 }
-QLineEdit, QComboBox { min-height: 20px; }
-QLineEdit:hover, QPlainTextEdit:hover, QComboBox:hover { border-color: #60656e; }
-QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus { border: 1px solid #b7bbc4; }
+QLineEdit, QComboBox, QSpinBox { min-height: 20px; }
+QLineEdit:hover, QPlainTextEdit:hover, QComboBox:hover, QSpinBox:hover { border-color: #60656e; }
+QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus { border: 1px solid #b7bbc4; }
+QSpinBox { padding-right: 36px; }
+QSpinBox::up-button, QSpinBox::down-button { subcontrol-origin: border; width: 28px; background: #30343b; border: none; }
+QSpinBox::up-button { subcontrol-position: top right; border-top-right-radius: 12px; }
+QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-radius: 12px; }
+QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #50555e; }
 QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled { color: #858993; border-color: #303238; }
 QComboBox QLineEdit { border: none; padding: 0; background: transparent; }
 QComboBox::drop-down { border: none; width: 28px; }
