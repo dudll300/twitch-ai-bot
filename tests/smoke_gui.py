@@ -9,17 +9,28 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize
+from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 
 import gui
 from start import read_config
 from profiles import load_profiles
+from ui_widgets import russian_question
 
 
 def main() -> None:
     app = QApplication([])
+    app.setStyle("Fusion")
+    for font_file in ("segoeui.ttf", "seguisb.ttf"):
+        font_path = Path("C:/Windows/Fonts") / font_file
+        if font_path.exists():
+            QFontDatabase.addApplicationFont(str(font_path))
+    app.setFont(QFont("Segoe UI", 10))
+    app.setStyleSheet(gui.STYLE)
+    screen_patch = patch.object(gui, "available_screen_size", return_value=QSize(1920, 1080))
+    screen_patch.start()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         with patch.object(gui, "data_dir", return_value=root):
@@ -123,19 +134,42 @@ def main() -> None:
         assert window.answers_label.text() == "1"
         window.resize(1000, 720)
         app.processEvents()
-        assert window.width() == 1000
+        assert window.width() >= 1200
+        assert window.height() >= 820
         assert window.start_button.geometry().right() <= window.start_button.parentWidget().width()
+        # The menu can be reversed mid-animation and restored at the minimum width.
+        window.menu_button.click()
+        QTest.qWait(250)
+        assert window.sidebar.width() == 0
+        assert window.status.isVisible()
+        assert window.menu_button.accessibleName() == "Показать меню"
+        window.resize(900, 700)
+        assert window.width() >= 1000
+        window.menu_button.click()
+        QTest.qWait(250)
+        assert window.sidebar.width() == 200
+        assert window.width() >= 1200
+        window.menu_button.click()
+        QTest.qWait(50)
+        window.menu_button.click()
+        QTest.qWait(250)
+        assert window.sidebar.width() == 200
+        assert window.profiles_editor.remove_button.property("variant") == "danger"
+        window._navigate(1)
+        QTest.qWait(180)
+        assert window._page_effect.opacity() == 1.0
+        assert not any("Настроить" in button.text() for button in window.pages.widget(1).findChildren(gui.QPushButton))
         window.close()
         with patch.object(gui, "data_dir", return_value=root):
             reopened = gui.MainWindow()
         assert len(reopened.profiles_editor.rows) == 2
         assert not reopened.profiles_editor.rows[1]["enabled"]
         reopened.prompt.setPlainText("Черновик")
-        with patch.object(gui.QMessageBox, "question", return_value=QMessageBox.Cancel):
+        with patch.object(gui, "russian_question", return_value=QMessageBox.Cancel):
             reopened.show()
             reopened.close()
             assert reopened.isVisible()
-        with patch.object(gui.QMessageBox, "question", return_value=QMessageBox.Save):
+        with patch.object(gui, "russian_question", return_value=QMessageBox.Save):
             reopened.close()
         assert (root / "prompt.txt").read_text(encoding="utf-8").strip() == "Черновик"
         # Corrupt profile files are visible and never silently overwritten.
@@ -150,6 +184,29 @@ def main() -> None:
         assert not broken.profiles_editor.load_error
         assert broken._save()
         broken.close()
+    for buttons, default, expected in (
+        (QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save,
+         {QMessageBox.Save: "Сохранить", QMessageBox.Discard: "Не сохранять", QMessageBox.Cancel: "Отмена"}),
+        (QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+         {QMessageBox.Yes: "Да", QMessageBox.No: "Нет"}),
+    ):
+        def check_dialog(dialog):
+            for standard, caption in expected.items():
+                assert dialog.button(standard).text() == caption
+            assert dialog.defaultButton() == dialog.button(default)
+            return default
+        with patch.object(QMessageBox, "exec", check_dialog):
+            assert russian_question(None, "Проверка", "Текст", buttons, default) == default
+    with tempfile.TemporaryDirectory() as directory, patch.object(gui, "data_dir", return_value=Path(directory)), patch.object(
+        gui, "available_screen_size", return_value=QSize(1280, 720)
+    ):
+        small = gui.MainWindow()
+        small.show()
+        app.processEvents()
+        assert small.height() <= 672
+        assert small.width() <= 1256
+        small.close()
+    screen_patch.stop()
     app.quit()
     print("GUI settings form works.")
 

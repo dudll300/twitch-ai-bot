@@ -4,10 +4,10 @@ import codecs
 import html
 import sys
 
-from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
+from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout,
+    QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout, QGraphicsOpacityEffect,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -18,7 +18,7 @@ from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
 from profiles_gui import ProfilesEditor
 from settings import load_settings, save_settings
-from ui_widgets import card, field, label, scroll_page
+from ui_widgets import SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
 
 PAGES = (
     ("Подключение", "Подключите Twitch и выберите сервис для ответов."),
@@ -28,12 +28,20 @@ PAGES = (
 )
 
 
+def available_screen_size():
+    return QApplication.primaryScreen().availableGeometry().size()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Twitch AI Bot")
-        self.resize(1180, 820)
-        self.setMinimumSize(1000, 720)
+        available = available_screen_size()
+        self._expanded_minimum = QSize(min(1200, available.width() - 24), min(820, available.height() - 48))
+        self._collapsed_minimum = QSize(min(1000, available.width() - 24), self._expanded_minimum.height())
+        self.resize(min(1240, available.width() - 24), min(860, available.height() - 48))
+        self.setMinimumSize(self._expanded_minimum)
+        self._sidebar_expanded = available.width() >= 1200
         self._root = data_dir()
         values, prompt = load_settings(self._root)
         self._has_saved_key = bool(values.get("AI_API_KEY"))
@@ -64,10 +72,8 @@ class MainWindow(QMainWindow):
         shell = QHBoxLayout(body)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
-        sidebar = QFrame()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(200)
-        side = QVBoxLayout(sidebar)
+        self.sidebar = SlidingSidebar()
+        side = QVBoxLayout(self.sidebar.panel)
         side.setContentsMargins(20, 32, 20, 24)
         side.setSpacing(6)
         side.addWidget(label("Twitch AI", "brand"))
@@ -87,13 +93,12 @@ class MainWindow(QMainWindow):
         self.status = label("Остановлен")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
-        side.addWidget(self.status)
         side.addSpacing(12)
         folder = QPushButton("Папка с данными")
         folder.setProperty("variant", "quiet")
         folder.clicked.connect(self._open_folder)
         side.addWidget(folder)
-        shell.addWidget(sidebar)
+        shell.addWidget(self.sidebar)
 
         main = QVBoxLayout()
         main.setContentsMargins(0, 0, 0, 0)
@@ -108,7 +113,20 @@ class MainWindow(QMainWindow):
         heading.setSpacing(6)
         heading.addWidget(self.page_title)
         heading.addWidget(self.page_description)
-        content_layout.addLayout(heading)
+        header = QHBoxLayout()
+        header.setSpacing(16)
+        self.menu_button = QPushButton()
+        self.menu_button.setIcon(menu_icon())
+        self.menu_button.setIconSize(QSize(22, 22))
+        self.menu_button.setObjectName("menuToggle")
+        self.menu_button.setFixedSize(44, 44)
+        self.menu_button.setCheckable(True)
+        self.menu_button.clicked.connect(self._toggle_sidebar)
+        header.addWidget(self.menu_button, 0, Qt.AlignVCenter)
+        header.addLayout(heading, 1)
+        self.status.setMaximumWidth(220)
+        header.addWidget(self.status, 0, Qt.AlignVCenter)
+        content_layout.addLayout(header)
         self.notice = label("", "error", True)
         self.notice.hide()
         content_layout.addWidget(self.notice)
@@ -118,6 +136,12 @@ class MainWindow(QMainWindow):
         self.profiles_editor = ProfilesEditor(self._root / "profiles.json")
         self.pages.addWidget(self.profiles_editor)
         self.pages.addWidget(self._build_activity())
+        self._page_effect = QGraphicsOpacityEffect(self.pages)
+        self.pages.setGraphicsEffect(self._page_effect)
+        self._page_effect.setOpacity(1.0)
+        self._page_animation = QPropertyAnimation(self._page_effect, b"opacity", self)
+        self._page_animation.setDuration(150)
+        self._page_animation.setEasingCurve(QEasingCurve.OutCubic)
         content_layout.addWidget(self.pages, 1)
         main.addWidget(content, 1)
 
@@ -126,7 +150,7 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout(footer)
         actions.setContentsMargins(32, 18, 32, 18)
         actions.setSpacing(12)
-        self.save_hint = label("Все изменения сохранены", "muted")
+        self.save_hint = label("Все изменения сохранены", "muted", True)
         actions.addWidget(self.save_hint, 1)
         self.save_button = QPushButton("Сохранить")
         self.save_button.setToolTip("Сохранить настройки и профили · Ctrl+S")
@@ -143,6 +167,7 @@ class MainWindow(QMainWindow):
         main.addWidget(footer)
         shell.addLayout(main, 1)
         self.setCentralWidget(body)
+        self._set_sidebar(self._sidebar_expanded, animate=False)
         self._navigate(0)
         for widget in (self.channel, self.bot_name, self.client_id, self.reward_title,
                        self.base_url, self.api_key, self.fallback_models):
@@ -154,8 +179,26 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence.Save, self, activated=lambda: self._save())
         self._update_prompt_count()
 
+    def _toggle_sidebar(self, expanded):
+        self._set_sidebar(expanded)
+
+    def _set_sidebar(self, expanded, animate=True):
+        self._sidebar_expanded = expanded
+        self.menu_button.setChecked(expanded)
+        caption = "Скрыть меню" if expanded else "Показать меню"
+        self.menu_button.setToolTip(caption)
+        self.menu_button.setAccessibleName(caption)
+        self.setMinimumSize(self._expanded_minimum if expanded else self._collapsed_minimum)
+        self.sidebar.set_expanded(expanded, animate)
+
     def _navigate(self, index):
+        changed = self.pages.currentIndex() != index
         self.pages.setCurrentIndex(index)
+        if changed:
+            self._page_animation.stop()
+            self._page_animation.setStartValue(0.65)
+            self._page_animation.setEndValue(1.0)
+            self._page_animation.start()
         self.nav_buttons[index].setChecked(True)
         self.page_title.setText(PAGES[index][0])
         self.page_description.setText(PAGES[index][1])
@@ -231,16 +274,6 @@ class MainWindow(QMainWindow):
         row.addWidget(self.reset_prompt)
         main_layout.addLayout(row)
         layout.addWidget(main, 1)
-        extra, extra_layout = card()
-        summary = QHBoxLayout()
-        summary.addWidget(label("Личный подход к зрителям", "section"), 1)
-        action = QPushButton("Настроить →")
-        action.setProperty("variant", "quiet")
-        action.clicked.connect(lambda: self._navigate(2))
-        summary.addWidget(action)
-        extra_layout.addLayout(summary)
-        extra_layout.addWidget(label("Общий промпт + личная инструкция + контекст разговора.", "muted", True))
-        layout.addWidget(extra)
         return scroll_page(page)
 
     def _build_activity(self):
@@ -465,14 +498,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._dirty:
-            choice = QMessageBox.question(self, "Несохранённые изменения",
+            choice = russian_question(self, "Несохранённые изменения",
                 "Сохранить настройки и профили перед закрытием?",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
             if choice == QMessageBox.Cancel or (choice == QMessageBox.Save and not self._save()):
                 event.ignore()
                 return
         if self.process.state() != QProcess.NotRunning:
-            choice = QMessageBox.question(self, "Бот работает", "Остановить бота и закрыть приложение?",
+            choice = russian_question(self, "Бот работает", "Остановить бота и закрыть приложение?",
                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if choice != QMessageBox.Yes:
                 event.ignore()
