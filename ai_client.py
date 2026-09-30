@@ -1,5 +1,6 @@
 """Shared chat request construction and transport; no Twitch connection or writes."""
 
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -15,12 +16,14 @@ def redact_secret(text: str, api_key: str) -> str:
 
 
 def clean_text(value: str, limit: int) -> str:
-    value = " ".join(value.replace("\x00", " ").replace("\r", " ").replace("\n", " ").split())
+    # Strip protocol controls too (for example IRC CTCP), not only newlines.
+    value = "".join(" " if ord(char) < 32 or 127 <= ord(char) <= 159 else char for char in value)
+    value = " ".join(value.split())
     return value[:limit].rstrip()
 
 
 def clean_question(value: str) -> str:
-    return " ".join(value.split())[:400].rstrip()
+    return clean_text(value, 400)
 
 
 class TemporaryAIError(RuntimeError):
@@ -30,7 +33,7 @@ class TemporaryAIError(RuntimeError):
 def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
     try:
         raw = exc.read(4096)
-    except (AttributeError, OSError, ValueError):
+    except (AttributeError, OSError, ValueError, http.client.HTTPException):
         return ""
     if not raw:
         return ""
@@ -91,6 +94,14 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
 
 
 def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
+    answer = clean_text(redact_secret(request_completion(cfg, model, messages), cfg["AI_API_KEY"]), 300)
+    if not answer:
+        raise TemporaryAIError("AI API вернул пустой ответ")
+    return answer
+
+
+def request_completion(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
+    """One exact-model request; callers apply their own text/JSON constraints."""
     payload = {
         "model": model,
         "messages": messages,
@@ -120,6 +131,9 @@ def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
         if isinstance(exc.reason, TimeoutError):
             raise TemporaryAIError("Превышено время ожидания AI API (20 с).") from None
         raise TemporaryAIError(f"AI API недоступен: {type(exc).__name__}") from None
+    except (OSError, http.client.HTTPException) as exc:
+        # Never include the exception body: it may contain response bytes or a key.
+        raise TemporaryAIError(f"Соединение с AI API прервано: {type(exc).__name__}") from None
     except ValueError:
         raise TemporaryAIError("AI API вернул некорректный JSON") from None
     try:
@@ -127,9 +141,6 @@ def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
     except (KeyError, IndexError, TypeError):
         raise TemporaryAIError("AI API вернул некорректный ответ") from None
     if not isinstance(answer, str) or not answer.strip():
-        raise TemporaryAIError("AI API вернул пустой ответ")
-    answer = clean_text(redact_secret(answer, cfg["AI_API_KEY"]), 300)
-    if not answer:
         raise TemporaryAIError("AI API вернул пустой ответ")
     return answer
 

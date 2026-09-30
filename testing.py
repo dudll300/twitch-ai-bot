@@ -1,5 +1,6 @@
 """Read-only AI comparisons with immutable drafts and exact model IDs."""
 
+import http.client
 import json
 import time
 import urllib.error
@@ -49,7 +50,7 @@ def fetch_models(auth: Credentials) -> tuple[Model, ...]:
             payload = json.load(response)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Каталог: HTTP {exc.code}{http_error_detail(exc, auth.api_key)}") from None
-    except (urllib.error.URLError, TimeoutError):
+    except (OSError, http.client.HTTPException):
         raise RuntimeError("Каталог недоступен: ошибка сети или таймаут (20 с).") from None
     except ValueError:
         raise RuntimeError("Каталог вернул некорректный JSON.") from None

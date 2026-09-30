@@ -25,6 +25,7 @@ ROOT = data_dir()
 AI_PRIMARY_FAILURE_LIMIT = 3
 AI_PRIMARY_COOLDOWN_SECONDS = 5 * 60
 MAX_QUEUED_QUESTIONS = 10
+MAX_HISTORY_VIEWERS = 1000
 
 
 def config() -> dict[str, str]:
@@ -58,8 +59,9 @@ class AIModelRouter:
             memory_data: dict | None = None, user_id: str = "",
             history: tuple[tuple[str, str], ...] = ()) -> str:
         primary = cfg["AI_MODEL"]
-        backups = dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",") if name.strip())
-        models = tuple(name for name in backups if name != primary)
+        backups = tuple(dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",")
+                                      if name.strip() and name.strip() != primary))
+        models = backups
         if not models or time.monotonic() >= self.primary_disabled_until:
             models = (primary,) + models
         last_error = None
@@ -139,7 +141,12 @@ class Bot:
                     self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history,
                 )
                 await self.say(writer, f"@{user} {answer}")
-                self.histories.setdefault(key, deque(maxlen=10)).append((question, answer))
+                # Refresh insertion order only after a successful publication.
+                pairs = self.histories.pop(key, deque(maxlen=10))
+                pairs.append((question, answer))
+                self.histories[key] = pairs
+                if len(self.histories) > MAX_HISTORY_VIEWERS:
+                    del self.histories[next(iter(self.histories))]
                 print(f"Ответ отправлен для {user}", flush=True)
             except asyncio.CancelledError:
                 print(f"Награда {redemption_id} от {user}: ответ прерван; проверьте возврат баллов вручную.", flush=True)

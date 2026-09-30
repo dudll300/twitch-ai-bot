@@ -12,8 +12,11 @@ from pathlib import Path
 import random
 import re
 import time
+# Shared module reference retained for existing network test hooks.
 import urllib.request
 import uuid
+
+from ai_client import redact_secret, request_completion
 
 
 @dataclass(frozen=True)
@@ -176,13 +179,13 @@ def request_decision(cfg, messages, settings):
     context = [{"author": row["author"], "text": row["text"],
                 "time": datetime.fromtimestamp(row["time"], timezone.utc).isoformat()} for row in messages]
     prompt.append({"role": "user", "content": json.dumps({"chat_context": context}, ensure_ascii=False)})
-    request = urllib.request.Request(cfg["AI_CHAT_URL"], method="POST", headers={
-        "Authorization": "Bearer " + cfg["AI_API_KEY"], "Content-Type": "application/json",
-    }, data=json.dumps({"model": cfg["AI_MODEL"], "messages": prompt,
-                        "max_tokens": 512, "stream": False}, ensure_ascii=False).encode("utf-8"))
-    with urllib.request.urlopen(request, timeout=20) as response:
-        data = json.load(response)
-    return parse_decision(data["choices"][0]["message"]["content"], settings.max_chars)
+    content = request_completion(cfg, cfg["AI_MODEL"], prompt)
+    action, text = parse_decision(content, settings.max_chars)
+    # Redact after JSON decoding so keys with escaped characters are covered.
+    text = redact_secret(text, cfg["AI_API_KEY"])
+    if len(text) > settings.max_chars:
+        raise ValueError("Самостоятельная реплика слишком длинная после скрытия ключа.")
+    return action, text
 
 
 class Autonomous:
