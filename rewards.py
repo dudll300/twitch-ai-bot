@@ -12,6 +12,7 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from twitch_auth import REDEMPTION_SCOPES, get_access_token, validate
+from ai_client import clean_question
 
 
 API_URL = "https://api.twitch.tv/helix"
@@ -102,7 +103,7 @@ class RewardListener:
             return
         login = event.get("user_login", "").lower()
         user_id = str(event.get("user_id", ""))
-        question = " ".join(str(event.get("user_input", "")).split())[:400].rstrip()
+        question = clean_question(str(event.get("user_input", "")))
         if not login or not question:
             print(f"Погашение {redemption_id}: нет логина или текста вопроса; проверьте награду в Twitch.", flush=True)
             return

@@ -77,7 +77,7 @@ def main() -> None:
             window = gui.MainWindow()
         window.show()
         app.processEvents()
-        assert window.pages.count() == 5
+        assert window.pages.count() == 6
         auto_page = window.autonomous_page
         assert not auto_page.enabled.isChecked()
         assert auto_page.mode.currentData() == "preview"

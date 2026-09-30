@@ -21,6 +21,7 @@ jobs:
       - run: python -m pip install -r requirements.txt pyinstaller==6.22.3
       - run: python -m unittest discover -s tests -v
       - run: python tests/smoke_gui.py
+      - run: python tests/smoke_testing.py
       - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name TwitchAIBot --add-data "memory.example.json;." app.py
       - run: python tests/smoke_package.py
       - uses: actions/upload-artifact@v4

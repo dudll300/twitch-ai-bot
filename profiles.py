@@ -17,7 +17,7 @@ class ProfileError(ValueError):
         self.index = index
 
 
-def validate_profiles(profiles: object) -> list[dict]:
+def validate_profiles(profiles: object, *, allow_empty_prompt: bool = False) -> list[dict]:
     if not isinstance(profiles, list) or len(profiles) > MAX_PROFILES:
         raise ProfileError(f"Нужен список максимум из {MAX_PROFILES} профилей.")
     result, logins, ids = [], set(), set()
@@ -34,7 +34,7 @@ def validate_profiles(profiles: object) -> list[dict]:
                 raise ValueError("Twitch ID должен содержать только цифры, до 30 знаков.")
             if not login and not user_id:
                 raise ValueError("Укажите Twitch-логин или числовой ID.")
-            if not prompt or len(prompt) > MAX_PROFILE_PROMPT:
+            if (not prompt and not allow_empty_prompt) or len(prompt) > MAX_PROFILE_PROMPT:
                 raise ValueError(f"Личная инструкция должна содержать от 1 до {MAX_PROFILE_PROMPT} символов.")
             enabled = raw.get("enabled", True)
             if not isinstance(enabled, bool):

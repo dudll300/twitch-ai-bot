@@ -15,6 +15,7 @@ from ui_widgets import ToggleSwitch, card, field, label, scroll_page
 
 class ProfilesEditor(QWidget):
     changed = Signal()
+    test_requested = Signal(int)
 
     def __init__(self, path: Path):
         super().__init__()
@@ -114,6 +115,9 @@ class ProfilesEditor(QWidget):
         self.counter = label("", "muted")
         bottom.addWidget(self.counter)
         bottom.addStretch()
+        self.test_button = QPushButton("Проверить ответ")
+        self.test_button.clicked.connect(lambda: self.test_requested.emit(self.list.currentRow()))
+        bottom.addWidget(self.test_button)
         self.remove_button = QPushButton("Удалить профиль")
         self.remove_button.setProperty("variant", "danger")
         self.remove_button.clicked.connect(self._remove)

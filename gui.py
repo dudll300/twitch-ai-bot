@@ -4,6 +4,7 @@ import codecs
 import html
 import json
 import sys
+from copy import deepcopy
 
 from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QKeySequence, QShortcut
@@ -20,6 +21,8 @@ from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
 from profiles_gui import ProfilesEditor
 from settings import load_settings, save_settings
+from testing import credentials, make_snapshot, read_test_memory
+from testing_gui import TestingPage
 from ui_widgets import SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
 
 PAGES = (
@@ -28,6 +31,7 @@ PAGES = (
     ("Зрители", "Личные инструкции для тех, кого бот должен узнавать."),
     ("Самостоятельные реплики", "Уместные шутки и вопросы чату — с приоритетом наград."),
     ("Активность", "Подключение, вопросы и ответы текущего запуска."),
+    ("Тестирование", "Проверьте промпт и сравните модели без подключения Twitch."),
 )
 
 
@@ -137,10 +141,14 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_connection(values))
         self.pages.addWidget(self._build_behavior(prompt))
         self.profiles_editor = ProfilesEditor(self._root / "profiles.json")
+        self.profiles_editor.test_requested.connect(self._test_profile)
         self.pages.addWidget(self.profiles_editor)
         self.autonomous_page = AutonomousPage(self._root)
         self.pages.addWidget(self.autonomous_page)
         self.pages.addWidget(self._build_activity())
+        self.testing_page = TestingPage(self._test_credentials, self._test_snapshot,
+                                        lambda: self.profiles_editor.rows)
+        self.pages.addWidget(self.testing_page)
         self._page_effect = QGraphicsOpacityEffect(self.pages)
         self.pages.setGraphicsEffect(self._page_effect)
         self._page_effect.setOpacity(1.0)
@@ -181,6 +189,9 @@ class MainWindow(QMainWindow):
         self.prompt.textChanged.connect(self._mark_dirty)
         self.prompt.textChanged.connect(self._update_prompt_count)
         self.profiles_editor.changed.connect(self._mark_dirty)
+        self.profiles_editor.changed.connect(self.testing_page.refresh_profiles)
+        self.api_key.textChanged.connect(self.testing_page.invalidate_catalog)
+        self.base_url.textChanged.connect(self.testing_page.invalidate_catalog)
         QShortcut(QKeySequence.Save, self, activated=lambda: self._save())
         self._update_prompt_count()
 
@@ -197,6 +208,8 @@ class MainWindow(QMainWindow):
         self.sidebar.set_expanded(expanded, animate)
 
     def _navigate(self, index):
+        if index == 5:
+            self.testing_page.refresh_profiles()
         changed = self.pages.currentIndex() != index
         self.pages.setCurrentIndex(index)
         if changed:
@@ -207,6 +220,30 @@ class MainWindow(QMainWindow):
         self.nav_buttons[index].setChecked(True)
         self.page_title.setText(PAGES[index][0])
         self.page_description.setText(PAGES[index][1])
+
+    def _test_credentials(self):
+        saved_key = read_config(self._root / ".env").get("AI_API_KEY", "") if not self.api_key.text().strip() else ""
+        return credentials(self.base_url.text(), self.api_key.text(), saved_key)
+
+    def _test_snapshot(self, models, question, sender, login, profile_index):
+        # Only the key may come from saved settings. All drafts come from widgets.
+        auth = self._test_credentials()
+        profile = None
+        if sender == "profile":
+            if self.profiles_editor.load_error:
+                raise ValueError(self.profiles_editor.load_error)
+            if profile_index is not None and 0 <= profile_index < len(self.profiles_editor.rows):
+                profile = deepcopy(self.profiles_editor.rows[profile_index])
+        return make_snapshot(auth, models, question, self.prompt.toPlainText(), sender,
+                             login, profile, read_test_memory(self._root))
+
+    def _test_prompt(self):
+        self.testing_page.open_for_prompt()
+        self._navigate(5)
+
+    def _test_profile(self, index):
+        self.testing_page.open_for_profile(index)
+        self._navigate(5)
 
     def _open_folder(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._root)))
@@ -273,6 +310,9 @@ class MainWindow(QMainWindow):
         self.prompt_count = label("", "muted")
         row.addWidget(self.prompt_count)
         row.addStretch()
+        self.test_prompt_button = QPushButton("Проверить ответ")
+        self.test_prompt_button.clicked.connect(self._test_prompt)
+        row.addWidget(self.test_prompt_button)
         self.reset_prompt = QPushButton("Очистить")
         self.reset_prompt.setProperty("variant", "quiet")
         self.reset_prompt.clicked.connect(self.prompt.clear)
@@ -529,6 +569,7 @@ class MainWindow(QMainWindow):
         if self.process.state() != QProcess.NotRunning:
             self.process.kill()
             self.process.waitForFinished(1000)
+        self.testing_page.shutdown()
         super().closeEvent(event)
 
 

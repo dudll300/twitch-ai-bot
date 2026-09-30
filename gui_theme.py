@@ -58,6 +58,13 @@ QListWidget#profileList::item { padding: 12px; margin-bottom: 4px; border-radius
 QListWidget#profileList::item:hover { background: #24272c; }
 QListWidget#profileList::item:selected { background: #343840; color: #f3f4f6; }
 QListWidget#profileList::item:focus { border: 1px solid #9299a6; }
+QListWidget#modelList { background: #141517; color: #e9eaec; border: 1px solid #3b3e44; border-radius: 12px; padding: 6px; outline: none; }
+QListWidget#modelList::item { padding: 8px; border-radius: 6px; }
+QListWidget#modelList::item:hover { background: #24272c; }
+QListWidget#modelList::item:selected { background: #343840; }
+QListWidget#modelList::item:disabled { color: #858993; }
+QListWidget#modelList::indicator { width: 16px; height: 16px; border: 1px solid #747b88; border-radius: 4px; background: #191b1f; }
+QListWidget#modelList::indicator:checked { background: #d2d6de; border: 4px solid #575f6c; }
 QCheckBox { spacing: 8px; color: #c5c9d1; }
 QCheckBox::indicator { width: 18px; height: 18px; border-radius: 5px; border: 1px solid #747b88; background: #191b1f; }
 QCheckBox::indicator:checked { background: #d2d6de; border: 4px solid #575f6c; }
