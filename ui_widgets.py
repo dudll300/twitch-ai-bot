@@ -2,7 +2,14 @@
 
 from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox, QFrame, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget
+
+
+class NoWheelComboBox(QComboBox):
+    """Ignore wheel edits so scrolling a page cannot change a selected value."""
+
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 def menu_icon():

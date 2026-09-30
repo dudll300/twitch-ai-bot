@@ -56,6 +56,11 @@ def main():
         window.show()
         app.processEvents()
         page = window.testing_page
+        window._navigate(5)
+        app.processEvents()
+        assert page.models.height() >= 360
+        assert page.models.width() > page.width() * 0.75
+        assert "Владелец канала" in page.sender.itemText(page.sender.findData("owner"))
         assert not window.channel.text() and not window.bot_name.text() and not window.client_id.text()
         assert window._test_credentials().api_key == "saved-secret-key"
         window.api_key.setText("entered-secret-key")
@@ -95,6 +100,15 @@ def main():
         page.search.setText("exact/a")
         assert page.selected_models() == ["exact/a", "exact/b"]
         page.question.setPlainText("Один вопрос для обеих моделей")
+        page.reset_button.click()
+        assert page.selected_models() == []
+        assert page.models.count() == 4
+        assert page.search.text() == "exact/a"
+        assert page.question.toPlainText() == "Один вопрос для обеих моделей"
+        for i in range(page.models.count()):
+            item = page.models.item(i)
+            if item.data(Qt.UserRole) in ("exact/a", "exact/b"):
+                item.setCheckState(Qt.Checked)
         captured = []
         release = Event()
         lock = Lock()
@@ -114,6 +128,9 @@ def main():
                 page.run_button.click()
                 wait_for(lambda: len(captured) == 2)
                 assert page._testing_busy and not page.run_button.isEnabled()
+                assert not page.reset_button.isEnabled()
+                page.reset_selection()
+                assert page.selected_models() == ["exact/a", "exact/b"]
                 page.start_test()  # Guard also works for programmatic double clicks.
                 window.prompt.setPlainText("Изменение общего промпта после нажатия")
                 editor.prompt.setPlainText("Изменение профиля после нажатия")

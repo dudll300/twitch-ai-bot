@@ -10,8 +10,8 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QFont, QFontDatabase
+from PySide6.QtCore import Qt, QSize, QPoint, QPointF
+from PySide6.QtGui import QFont, QFontDatabase, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 
@@ -40,6 +40,7 @@ def main() -> None:
         assert window.api_key.echoMode() == QLineEdit.Password
         assert window.model.count() == 3
         assert window.model.isEditable()
+        assert not window.windowIcon().isNull()
         assert window.prompt.toPlainText() == ""
         window.channel.setText("https://www.twitch.tv/Streamer")
         window.bot_name.setText("HelperBot")
@@ -79,6 +80,34 @@ def main() -> None:
         app.processEvents()
         assert window.pages.count() == 6
         auto_page = window.autonomous_page
+        assert auto_page.advanced_panel.isHidden()
+        assert not auto_page.advanced_button.isChecked()
+        auto_page.advanced_button.click()
+        assert not auto_page.advanced_panel.isHidden()
+        auto_page.inputs["context_count"].setValue(31)
+        auto_page.advanced_button.click()
+        assert auto_page.advanced_panel.isHidden()
+        auto_page.advanced_button.click()
+        assert auto_page.inputs["context_count"].value() == 31
+        auto_page.inputs["context_count"].setValue(20)
+        auto_page.advanced_button.click()
+        # Wheel events must not edit values, even when controls have focus.
+        for widget in (auto_page.mode, window.model, *auto_page.inputs.values()):
+            before_value = widget.value() if hasattr(widget, "value") else widget.currentText()
+            widget.setFocus()
+            for delta in (-120, 120):
+                event = QWheelEvent(QPointF(5, 5), QPointF(widget.mapToGlobal(QPoint(5, 5))),
+                                    QPoint(), QPoint(0, delta), Qt.NoButton, Qt.NoModifier,
+                                    Qt.NoScrollPhase, False)
+                QApplication.sendEvent(widget, event)
+                after_value = widget.value() if hasattr(widget, "value") else widget.currentText()
+                assert after_value == before_value
+            if hasattr(widget, "value"):
+                before_value = widget.value()
+                QTest.keyClick(widget, Qt.Key_Up)
+                assert widget.value() == min(before_value + 1, widget.maximum())
+                widget.setValue(before_value)
+        assert not (root / "autonomous.json").exists()
         assert not auto_page.enabled.isChecked()
         assert auto_page.mode.currentData() == "preview"
         assert auto_page.inputs["hourly_limit"].value() == 8

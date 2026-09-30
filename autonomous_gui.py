@@ -3,10 +3,10 @@
 from dataclasses import asdict
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QAbstractSpinBox, QComboBox, QGridLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QSpinBox, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractSpinBox, QGridLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QSpinBox, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget
 
 from autonomous import AutoSettings, RANGES, load_settings, save_settings, validate_settings
-from ui_widgets import ToggleSwitch, card, field, label, scroll_page
+from ui_widgets import NoWheelComboBox, ToggleSwitch, card, field, label, scroll_page
 
 
 PARAMETERS = (
@@ -25,6 +25,9 @@ PARAMETERS = (
 
 class NumberInput(QSpinBox):
     """Keep step controls legible under the dark stylesheet on Windows."""
+
+    def wheelEvent(self, event):
+        event.ignore()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -64,7 +67,7 @@ class AutonomousPage(QWidget):
         self.enabled.setChecked(self.saved.enabled)
         controls.addWidget(self.enabled)
         controls.addStretch()
-        self.mode = QComboBox()
+        self.mode = NoWheelComboBox()
         self.mode.addItem("Предпросмотр", "preview")
         self.mode.addItem("Публикация", "publish")
         self.mode.setCurrentIndex(0 if self.saved.mode == "preview" else 1)
@@ -87,6 +90,13 @@ class AutonomousPage(QWidget):
         grid.setColumnStretch(0, 1)
         grid.setColumnStretch(1, 1)
         self.inputs = {}
+        self.advanced_panel = QWidget()
+        advanced_grid = QGridLayout(self.advanced_panel)
+        advanced_grid.setContentsMargins(0, 0, 0, 0)
+        advanced_grid.setHorizontalSpacing(24)
+        advanced_grid.setVerticalSpacing(16)
+        advanced_grid.setColumnStretch(0, 1)
+        advanced_grid.setColumnStretch(1, 1)
         for index, (key, title, suffix) in enumerate(PARAMETERS):
             spin = NumberInput()
             spin.setButtonSymbols(QAbstractSpinBox.PlusMinus)
@@ -95,9 +105,18 @@ class AutonomousPage(QWidget):
             spin.setSuffix(suffix)
             spin.setKeyboardTracking(False)
             self.inputs[key] = spin
-            grid.addWidget(field(title, spin), index // 2, index % 2)
+            target, position = (grid, index) if index < 2 else (advanced_grid, index - 2)
+            target.addWidget(field(title, spin), position // 2, position % 2)
             spin.valueChanged.connect(self._edited)
         options_layout.addLayout(grid)
+        self.advanced_button = QPushButton("Расширенные настройки")
+        self.advanced_button.setCheckable(True)
+        self.advanced_button.setProperty("variant", "quiet")
+        self.advanced_button.setAccessibleName("Показать расширенные настройки")
+        self.advanced_button.toggled.connect(self._toggle_advanced)
+        options_layout.addWidget(self.advanced_button, 0, Qt.AlignLeft)
+        self.advanced_panel.hide()
+        options_layout.addWidget(self.advanced_panel)
         options_layout.addWidget(label(
             "Лимит — до 8 реплик за скользящий час. Предпросмотр учитывает те же паузы и лимиты. "
             "Вопросы по награде всегда имеют приоритет. Проверки AI могут расходовать баланс API даже при решении промолчать.",
@@ -128,6 +147,12 @@ class AutonomousPage(QWidget):
     def _edited(self, *_):
         if not self._loading:
             self.hint.setText("Параметры изменены — нажмите «Применить»")
+
+    def _toggle_advanced(self, expanded):
+        self.advanced_panel.setVisible(expanded)
+        self.advanced_button.setText("Скрыть расширенные настройки" if expanded else "Расширенные настройки")
+        self.advanced_button.setAccessibleName("Скрыть расширенные настройки" if expanded else
+                                               "Показать расширенные настройки")
 
     def _live_change(self, *_):
         if self._loading:
@@ -161,6 +186,7 @@ class AutonomousPage(QWidget):
         try:
             settings = validate_settings(values)
         except ValueError as exc:
+            self.advanced_button.setChecked(True)
             self.error.setText(str(exc))
             self.error.show()
             return False

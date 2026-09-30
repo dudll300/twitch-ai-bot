@@ -4,14 +4,14 @@ from queue import Empty, Queue
 from threading import Event, Thread
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLineEdit, QListWidget,
+from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QListWidget,
                               QListWidgetItem, QPlainTextEdit, QPushButton,
                               QVBoxLayout, QWidget)
 
 from ai_client import redact_secret
 from configuration import normalize
 from testing import Model, fetch_models, test_model
-from ui_widgets import card, field, label, scroll_page
+from ui_widgets import NoWheelComboBox, card, field, label, scroll_page
 
 
 def catalog_worker(auth, output, cancel):
@@ -61,26 +61,25 @@ class TestingPage(QWidget):
         layout.addWidget(label(
             "Тестовые запросы могут расходовать баланс AI API. Base URL и ключ берутся из «Подключения». "
             "Вопросы и ответы теста не записываются в память, историю или журнал бота.", "muted", True))
-        columns = QHBoxLayout()
         request, request_layout = card("Пробный вопрос")
         self.question = QPlainTextEdit()
         self.question.setPlaceholderText("Что спросить у каждой выбранной модели?")
         self.question.setAccessibleName("Пробный вопрос")
         self.question.setMaximumHeight(110)
         request_layout.addWidget(self.question)
-        self.sender = QComboBox()
+        self.sender = NoWheelComboBox()
         for title, mode in (("Обычный зритель", "viewer"), ("Зритель из профилей", "profile"),
-                            ("Владелица канала · имитация роли", "owner")):
+                            ("Владелец канала · имитация роли", "owner")):
             self.sender.addItem(title, mode)
         request_layout.addWidget(field("Отправитель", self.sender))
-        self.viewer = QComboBox()
+        self.viewer = NoWheelComboBox()
         self.viewer.setAccessibleName("Выбор профиля для теста")
         request_layout.addWidget(self.viewer)
         self.login = QLineEdit()
         self.login.setPlaceholderText("Пробный логин · можно оставить пустым")
         self.login.setAccessibleName("Пробный логин")
         request_layout.addWidget(self.login)
-        request_layout.addWidget(label("Владелица канала — имитация роли без входа в Twitch.", "muted", True))
+        request_layout.addWidget(label("Владелец канала — имитация роли без входа в Twitch.", "muted", True))
         request_layout.addStretch()
         self.run_button = QPushButton("Получить ответы")
         self.run_button.setObjectName("primary")
@@ -88,7 +87,6 @@ class TestingPage(QWidget):
         request_layout.addWidget(self.run_button)
         self.status = label("", "muted", True)
         request_layout.addWidget(self.status)
-        columns.addWidget(request, 1)
 
         models, models_layout = card("Каталог моделей", "Выберите несколько моделей для сравнения")
         tools = QHBoxLayout()
@@ -102,10 +100,18 @@ class TestingPage(QWidget):
         self.refresh_button.clicked.connect(self.refresh_catalog)
         tools.addWidget(self.refresh_button)
         models_layout.addLayout(tools)
+        selection = QHBoxLayout()
+        self.selected_count = label("Выбрано: 0", "muted")
+        selection.addWidget(self.selected_count, 1)
+        self.reset_button = QPushButton("Сбросить выбор")
+        self.reset_button.clicked.connect(self.reset_selection)
+        selection.addWidget(self.reset_button)
+        models_layout.addLayout(selection)
         self.models = QListWidget()
         self.models.setObjectName("modelList")
         self.models.setAccessibleName("Модели для сравнения")
-        self.models.setMinimumHeight(180)
+        self.models.setMinimumHeight(360)
+        self.models.setMaximumHeight(520)
         self.models.itemChanged.connect(self._selection_count)
         models_layout.addWidget(self.models, 1)
         manual_row = QHBoxLayout()
@@ -117,12 +123,10 @@ class TestingPage(QWidget):
         self.manual.returnPressed.connect(self.add_manual)
         manual_row.addWidget(self.add_button)
         models_layout.addLayout(manual_row)
-        self.selected_count = label("Выбрано: 0", "muted")
-        models_layout.addWidget(self.selected_count)
         self.catalog_status = label("Нажмите «Обновить список». Доступность без отметки проверяется при запросе.", "muted", True)
         models_layout.addWidget(self.catalog_status)
-        columns.addWidget(models, 1)
-        layout.addLayout(columns)
+        layout.addWidget(models)
+        layout.addWidget(request)
         results, results_layout = card("Ответы моделей")
         self.context = label("Контекст будет показан после нажатия «Получить ответы».", "muted", True)
         self.context.setTextFormat(Qt.PlainText)
@@ -221,9 +225,19 @@ class TestingPage(QWidget):
     def _selection_count(self, *_):
         self.selected_count.setText(f"Выбрано: {len(self.selected_models())}")
 
+    def reset_selection(self):
+        if self._testing_busy or self._catalog_busy or self._closed:
+            return
+        self.models.blockSignals(True)
+        for i in range(self.models.count()):
+            self.models.item(i).setCheckState(Qt.Unchecked)
+        self.models.blockSignals(False)
+        self.models.clearSelection()
+        self._selection_count()
+
     def _set_busy(self):
         busy = self._testing_busy or self._catalog_busy
-        for widget in (self.run_button, self.refresh_button, self.add_button, self.manual,
+        for widget in (self.run_button, self.refresh_button, self.add_button, self.reset_button, self.manual,
                        self.models, self.sender, self.viewer, self.login, self.question):
             widget.setEnabled(not busy)
         self.run_button.setText("Получаем ответы…" if self._testing_busy else "Получить ответы")

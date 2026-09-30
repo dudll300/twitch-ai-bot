@@ -7,9 +7,9 @@ import sys
 from copy import deepcopy
 
 from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout, QGraphicsOpacityEffect,
+    QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QGraphicsOpacityEffect,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -23,7 +23,7 @@ from profiles_gui import ProfilesEditor
 from settings import load_settings, save_settings
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
-from ui_widgets import SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
+from ui_widgets import NoWheelComboBox, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
 
 PAGES = (
     ("Подключение", "Подключите Twitch и выберите сервис для ответов."),
@@ -43,6 +43,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Twitch AI Bot")
+        self.setWindowIcon(QIcon(str(resource_path("assets/app.ico"))))
         available = available_screen_size()
         self._expanded_minimum = QSize(min(1240, available.width() - 24), min(820, available.height() - 48))
         self._collapsed_minimum = QSize(min(1000, available.width() - 24), self._expanded_minimum.height())
@@ -278,7 +279,7 @@ class MainWindow(QMainWindow):
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("Ключ сохранён" if self._has_saved_key else "Ключ вашего AI-сервиса")
-        self.model = QComboBox()
+        self.model = NoWheelComboBox()
         self.model.setEditable(True)
         self.model.addItems(AI_FALLBACK_MODELS)
         self.model.setCurrentText(values.get("AI_MODEL", AI_FALLBACK_MODELS[0]))
@@ -575,6 +576,7 @@ class MainWindow(QMainWindow):
 
 def run_gui() -> int:
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(resource_path("assets/app.ico"))))
     app.setFont(QFont("Segoe UI", 10))
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
