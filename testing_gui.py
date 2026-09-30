@@ -4,23 +4,15 @@ from queue import Empty, Queue
 from threading import Event, Thread
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QListWidget,
-                              QListWidgetItem, QPlainTextEdit, QPushButton,
+from PySide6.QtWidgets import (QHBoxLayout, QLineEdit,
+                              QListWidgetItem, QPushButton,
                               QVBoxLayout, QWidget)
 
 from ai_client import redact_secret
 from configuration import normalize
-from testing import Model, fetch_models, test_model
-from ui_widgets import NoWheelComboBox, card, field, label, scroll_page
-
-
-def catalog_worker(auth, output, cancel):
-    try:
-        result = ("catalog", auth, fetch_models(auth), "")
-    except Exception as exc:
-        result = ("catalog", auth, (), redact_secret(str(exc), auth.api_key))
-    if not cancel.is_set():
-        output.put(result)
+from testing import Model, test_model
+from model_catalog_gui import catalog_worker
+from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, field, label, scroll_page
 
 
 def comparison_worker(snapshot, pending, output, cancel):
@@ -62,7 +54,7 @@ class TestingPage(QWidget):
             "Тестовые запросы могут расходовать баланс AI API. Base URL и ключ берутся из «Подключения». "
             "Вопросы и ответы теста не записываются в память, историю или журнал бота.", "muted", True))
         request, request_layout = card("Пробный вопрос")
-        self.question = QPlainTextEdit()
+        self.question = ScrollPlainTextEdit()
         self.question.setPlaceholderText("Что спросить у каждой выбранной модели?")
         self.question.setAccessibleName("Пробный вопрос")
         self.question.setMaximumHeight(110)
@@ -107,7 +99,7 @@ class TestingPage(QWidget):
         self.reset_button.clicked.connect(self.reset_selection)
         selection.addWidget(self.reset_button)
         models_layout.addLayout(selection)
-        self.models = QListWidget()
+        self.models = ScrollListWidget()
         self.models.setObjectName("modelList")
         self.models.setAccessibleName("Модели для сравнения")
         self.models.setMinimumHeight(360)
@@ -277,7 +269,7 @@ class TestingPage(QWidget):
         self._result_widgets = {}
         pending = Queue()
         for model in snapshot.models:
-            result = QPlainTextEdit()
+            result = ScrollPlainTextEdit()
             result.setReadOnly(True)
             result.setMinimumHeight(90)
             result.setMaximumHeight(140)

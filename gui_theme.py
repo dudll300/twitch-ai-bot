@@ -30,7 +30,9 @@ QSpinBox::down-button { subcontrol-position: bottom right; border-bottom-right-r
 QSpinBox::up-button:hover, QSpinBox::down-button:hover { background: #50555e; }
 QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled { color: #858993; border-color: #303238; }
 QComboBox QLineEdit { border: none; padding: 0; background: transparent; }
-QComboBox::drop-down { border: none; width: 28px; }
+QComboBox { padding-right: 36px; }
+QComboBox::drop-down { subcontrol-origin: border; subcontrol-position: top right; border: none; width: 32px; }
+QComboBox::down-arrow { image: none; }
 QComboBox QAbstractItemView { background: #24262a; selection-background-color: #3b3e44; border: 1px solid #50545c; padding: 6px; }
 QPushButton { background: #2b2d32; color: #e5e7eb; border: 1px solid #40434a; border-radius: 12px; padding: 10px 16px; font-weight: 600; }
 QPushButton:hover { background: #36393f; border-color: #60656e; }

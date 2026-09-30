@@ -3,10 +3,10 @@
 from dataclasses import asdict
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QAbstractSpinBox, QGridLayout, QHBoxLayout, QPlainTextEdit, QPushButton, QSpinBox, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractSpinBox, QGridLayout, QHBoxLayout, QPushButton, QSpinBox, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget
 
-from autonomous import AutoSettings, RANGES, load_settings, save_settings, validate_settings
-from ui_widgets import NoWheelComboBox, ToggleSwitch, card, field, label, scroll_page
+from autonomous import AutoSettings, MINIMUM_VALUES, load_settings, save_settings, validate_settings
+from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page
 
 
 PARAMETERS = (
@@ -100,7 +100,7 @@ class AutonomousPage(QWidget):
         for index, (key, title, suffix) in enumerate(PARAMETERS):
             spin = NumberInput()
             spin.setButtonSymbols(QAbstractSpinBox.PlusMinus)
-            spin.setRange(*RANGES[key])
+            spin.setRange(MINIMUM_VALUES[key], 2147483647)  # QSpinBox's native integer capacity.
             spin.setValue(getattr(self.saved, key))
             spin.setSuffix(suffix)
             spin.setKeyboardTracking(False)
@@ -118,19 +118,22 @@ class AutonomousPage(QWidget):
         self.advanced_panel.hide()
         options_layout.addWidget(self.advanced_panel)
         options_layout.addWidget(label(
-            "Лимит — до 8 реплик за скользящий час. Предпросмотр учитывает те же паузы и лимиты. "
+            "Максимум за час задаётся вами. Предпросмотр учитывает те же паузы и лимиты. "
             "Вопросы по награде всегда имеют приоритет. Проверки AI могут расходовать баланс API даже при решении промолчать.",
             "muted", True))
         actions = QHBoxLayout()
         self.hint = label("Параметры сохранены", "muted", True)
         actions.addWidget(self.hint, 1)
+        self.reset_button = QPushButton("Сбросить настройки")
+        self.reset_button.clicked.connect(self.reset)
+        actions.addWidget(self.reset_button)
         self.apply_button = QPushButton("Применить параметры")
         self.apply_button.clicked.connect(self.apply)
         actions.addWidget(self.apply_button)
         options_layout.addLayout(actions)
         layout.addWidget(options)
         journal, journal_layout = card("Решения и реплики", "Текущий запуск. Сообщения зрителей в журнал не записываются.")
-        self.log = QPlainTextEdit()
+        self.log = ScrollPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(240)
         self.log.document().setMaximumBlockCount(1000)
@@ -191,6 +194,21 @@ class AutonomousPage(QWidget):
             self.error.show()
             return False
         return self._save(settings)
+
+    def reset(self):
+        defaults = AutoSettings()
+        if not self._save(defaults):
+            return False
+        self._loading = True
+        try:
+            self.enabled.setChecked(defaults.enabled)
+            self.mode.setCurrentIndex(self.mode.findData(defaults.mode))
+            for key, widget in self.inputs.items():
+                widget.setValue(getattr(defaults, key))
+        finally:
+            self._loading = False
+        self.hint.setText("Настройки по умолчанию сохранены. Режим выключен.")
+        return True
 
     def set_running(self, running):
         self._running = running

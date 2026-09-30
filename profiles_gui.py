@@ -5,12 +5,12 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QGridLayout, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QCheckBox, QGridLayout, QHBoxLayout, QLineEdit, QListWidgetItem,
+    QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from profiles import MAX_PROFILE_PROMPT, ProfileError, load_profiles, validate_profiles
-from ui_widgets import ToggleSwitch, card, field, label, scroll_page
+from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page
 
 
 class ProfilesEditor(QWidget):
@@ -62,7 +62,7 @@ class ProfilesEditor(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         left_layout.addWidget(self.search)
-        self.list = QListWidget()
+        self.list = ScrollListWidget()
         self.list.setObjectName("profileList")
         self.list.setAccessibleName("Профили зрителей")
         self.list.currentRowChanged.connect(self._select)
@@ -107,7 +107,7 @@ class ProfilesEditor(QWidget):
         editor_layout.addLayout(grid)
         editor_layout.addWidget(label(
             "Достаточно логина или ID. Если указан ID, используем его — даже после смены ника.", "muted", True))
-        self.prompt = QPlainTextEdit()
+        self.prompt = ScrollPlainTextEdit()
         self.prompt.setPlaceholderText("Например: обращайся по имени Алекс. Отвечай дружелюбно и кратко. Не шути про возраст.")
         self.prompt.setMinimumHeight(180)
         editor_layout.addWidget(field("Личная инструкция", self.prompt), 1)

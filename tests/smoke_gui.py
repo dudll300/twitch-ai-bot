@@ -119,7 +119,7 @@ def main() -> None:
         assert not auto_page.enabled.isChecked()
         assert auto_page.mode.currentData() == "preview"
         assert auto_page.inputs["hourly_limit"].value() == 8
-        assert auto_page.inputs["hourly_limit"].maximum() == 8
+        assert auto_page.inputs["hourly_limit"].maximum() > 8
         window._set_running(True)
         assert auto_page.enabled.isEnabled()
         auto_page.enabled.setChecked(True)

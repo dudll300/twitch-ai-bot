@@ -35,12 +35,12 @@ class AutoSettings:
     max_chars: int = 220
 
 
-RANGES = {
-    "context_count": (1, 100), "freshness_seconds": (60, 600),
-    "active_seconds": (10, 120), "check_min_seconds": (15, 3600),
-    "check_max_seconds": (15, 3600), "pause_seconds": (30, 3600),
-    "hourly_limit": (1, 8), "min_messages": (1, 100),
-    "min_authors": (1, 10), "max_chars": (50, 300),
+MINIMUM_VALUES = {
+    "context_count": 1, "freshness_seconds": 0,
+    "active_seconds": 0, "check_min_seconds": 0,
+    "check_max_seconds": 0, "pause_seconds": 0,
+    "hourly_limit": 0, "min_messages": 1,
+    "min_authors": 1, "max_chars": 1,
 }
 
 
@@ -51,9 +51,9 @@ def validate_settings(raw: dict) -> AutoSettings:
     values.update({key: value for key, value in raw.items() if key in values})
     if type(values["enabled"]) is not bool or values["mode"] not in ("preview", "publish"):
         raise ValueError("Некорректный режим самостоятельных реплик.")
-    for key, (low, high) in RANGES.items():
-        if type(values[key]) is not int or not low <= values[key] <= high:
-            raise ValueError(f"{key}: допустимо от {low} до {high}.")
+    for key, minimum in MINIMUM_VALUES.items():
+        if type(values[key]) is not int or values[key] < minimum:
+            raise ValueError(f"{key}: нужно целое число не меньше {minimum}.")
     if values["check_min_seconds"] > values["check_max_seconds"]:
         raise ValueError("Минимальный интервал проверки не может быть больше максимального.")
     if values["active_seconds"] > values["freshness_seconds"]:

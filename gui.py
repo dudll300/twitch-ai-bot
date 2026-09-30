@@ -10,20 +10,21 @@ from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize, QPropertyAnimation
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QGraphicsOpacityEffect,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from autonomous_gui import AutonomousPage
 from configuration import AI_FALLBACK_MODELS, FIELDS, normalize, read_config
 from gui_theme import STYLE
+from model_catalog_gui import ModelCatalogControl
 from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
 from profiles_gui import ProfilesEditor
 from settings import load_settings, save_settings
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
-from ui_widgets import NoWheelComboBox, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
+from ui_widgets import ScrollPlainTextEdit, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
 
 PAGES = (
     ("Подключение", "Подключите Twitch и выберите сервис для ответов."),
@@ -193,6 +194,8 @@ class MainWindow(QMainWindow):
         self.profiles_editor.changed.connect(self.testing_page.refresh_profiles)
         self.api_key.textChanged.connect(self.testing_page.invalidate_catalog)
         self.base_url.textChanged.connect(self.testing_page.invalidate_catalog)
+        self.api_key.textChanged.connect(self.model_catalog.invalidate)
+        self.base_url.textChanged.connect(self.model_catalog.invalidate)
         QShortcut(QKeySequence.Save, self, activated=lambda: self._save())
         self._update_prompt_count()
 
@@ -279,15 +282,12 @@ class MainWindow(QMainWindow):
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("Ключ сохранён" if self._has_saved_key else "Ключ вашего AI-сервиса")
-        self.model = NoWheelComboBox()
-        self.model.setEditable(True)
-        self.model.addItems(AI_FALLBACK_MODELS)
-        self.model.setCurrentText(values.get("AI_MODEL", AI_FALLBACK_MODELS[0]))
-        self.model.setToolTip("Выберите модель или введите её ID у вашего провайдера")
+        self.model_catalog = ModelCatalogControl(values.get("AI_MODEL", AI_FALLBACK_MODELS[0]), self._test_credentials)
+        self.model = self.model_catalog.combo
         self.fallback_models = QLineEdit(values.get("AI_FALLBACK_MODELS", ""))
         self.fallback_models.setPlaceholderText("model-a, model-b")
         for caption, widget in (("Base URL", self.base_url), ("API-ключ", self.api_key),
-                                ("Основная модель", self.model), ("Запасные модели · необязательно", self.fallback_models)):
+                                ("Основная модель", self.model_catalog), ("Запасные модели · необязательно", self.fallback_models)):
             ai_layout.addWidget(field(caption, widget))
         ai_layout.addWidget(label("Запасные модели вызываются по порядку при сбоях основной.", "muted", True))
         ai_layout.addStretch()
@@ -302,7 +302,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(20)
         main, main_layout = card("Общий промпт", "Эти инструкции действуют для всех зрителей. Можно оставить пустым.")
-        self.prompt = QPlainTextEdit(prompt)
+        self.prompt = ScrollPlainTextEdit(prompt)
         self.prompt.setAccessibleName("Общий системный промпт")
         self.prompt.setPlaceholderText("Опишите характер бота, язык и стиль ответов.\n\nНапример: отвечай по-русски, дружелюбно и кратко. Укладывайся в 300 символов. Не используй Markdown.")
         self.prompt.setMinimumHeight(240)
@@ -346,7 +346,7 @@ class MainWindow(QMainWindow):
         self.auth_hint.hide()
         layout.addWidget(self.auth_hint)
         journal, journal_layout = card("Журнал работы")
-        self.log = QPlainTextEdit()
+        self.log = ScrollPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setAccessibleName("Журнал работы бота")
         self.log.setPlaceholderText("Здесь появятся события подключения и ответы.\nЗапустите бота, когда настройки будут готовы.")
@@ -417,6 +417,7 @@ class MainWindow(QMainWindow):
 
     def _set_running(self, running):
         self.autonomous_page.set_running(running)
+        self.model_catalog.set_editable(not running)
         for widget in (*self._field_widgets().values(), self.prompt, self.reset_prompt, self.save_button):
             widget.setEnabled(not running)
         self.profiles_editor.set_editable(not running)
@@ -571,6 +572,7 @@ class MainWindow(QMainWindow):
             self.process.kill()
             self.process.waitForFinished(1000)
         self.testing_page.shutdown()
+        self.model_catalog.shutdown()
         super().closeEvent(event)
 
 

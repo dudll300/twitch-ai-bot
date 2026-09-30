@@ -78,6 +78,13 @@ class AutoTests(unittest.IsolatedAsyncioTestCase):
         parse.assert_not_called()
         self.assertEqual(self.executor.calls, [])
 
+    async def test_zero_hourly_limit_prevents_ai_checks(self):
+        self.configure(hourly_limit=0, pause_seconds=0)
+        self.chat()
+        await self.start_check()
+        self.assertFalse(self.controller.eligible())
+        self.assertEqual(self.executor.calls, [])
+
     async def test_quiet_and_stale_chat_never_call_ai(self):
         await self.start_check()
         self.controller.receive(line())
@@ -251,7 +258,7 @@ class AutoProtocolTests(unittest.TestCase):
         self.assertFalse(buffer.add_irc(line(), "channel", "helper", 13, settings))
 
     def test_settings_validation_and_round_trip(self):
-        for changes in ({"hourly_limit": 9}, {"context_count": 0}, {"enabled": 1},
+        for changes in ({"hourly_limit": -1}, {"context_count": 0}, {"enabled": 1},
                         {"check_min_seconds": 100, "check_max_seconds": 20},
                         {"context_count": 2, "min_messages": 3}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
@@ -264,6 +271,19 @@ class AutoProtocolTests(unittest.TestCase):
             self.assertNotEqual(auto.load_settings(path)[1], first)
             self.assertFalse(settings.enabled)
             self.assertEqual(settings.hourly_limit, 8)
+
+    def test_user_defined_numbers_have_no_previous_artificial_bounds(self):
+        values = {"pause_seconds": 0, "hourly_limit": 50, "context_count": 500,
+                  "freshness_seconds": 1000, "active_seconds": 900,
+                  "check_min_seconds": 0, "check_max_seconds": 10000,
+                  "min_messages": 101, "min_authors": 11, "max_chars": 1000}
+        settings = auto.validate_settings(values)
+        for key, value in values.items():
+            self.assertEqual(getattr(settings, key), value)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "autonomous.json"
+            auto.save_settings(path, settings)
+            self.assertEqual(auto.load_settings(path)[0], settings)
 
     def test_strict_decision_parser(self):
         for raw in ('[]', '```json\n{}\n```', '{"action":"say","text":"hi"}',

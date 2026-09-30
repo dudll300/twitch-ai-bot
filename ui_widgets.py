@@ -2,14 +2,63 @@
 
 from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFrame, QLabel, QMessageBox, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QLabel, QListView, QListWidget,
+                              QMessageBox, QPlainTextEdit, QScrollArea, QScrollBar,
+                              QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget)
+
+
+class ContainedScrollBar(QScrollBar):
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+        event.accept()
+
+
+class ContainedWheel:
+    """Keep wheel input in a nested scroller, including at either boundary."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setVerticalScrollBar(ContainedScrollBar(Qt.Vertical, self))
+        self.setHorizontalScrollBar(ContainedScrollBar(Qt.Horizontal, self))
+
+    def wheelEvent(self, event):
+        super().wheelEvent(event)
+        event.accept()
+
+
+class ScrollListView(ContainedWheel, QListView):
+    pass
+
+
+class ScrollListWidget(ContainedWheel, QListWidget):
+    pass
+
+
+class ScrollPlainTextEdit(ContainedWheel, QPlainTextEdit):
+    pass
 
 
 class NoWheelComboBox(QComboBox):
     """Ignore wheel edits so scrolling a page cannot change a selected value."""
 
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setView(ScrollListView(self))
+        self.setMaxVisibleItems(15)
+
     def wheelEvent(self, event):
         event.ignore()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        option = QStyleOptionComboBox()
+        self.initStyleOption(option)
+        center = self.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxArrow, self).center()
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor("#d5d8de" if self.isEnabled() else "#737781"), 1.5))
+        painter.drawLine(center.x() - 4, center.y() - 2, center.x(), center.y() + 2)
+        painter.drawLine(center.x(), center.y() + 2, center.x() + 4, center.y() - 2)
 
 
 def menu_icon():
