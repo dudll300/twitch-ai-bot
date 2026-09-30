@@ -4,6 +4,7 @@ import os
 import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,13 @@ from start import read_config
 from profiles import load_profiles
 from autonomous import load_settings as load_auto_settings
 from ui_widgets import russian_question
+
+
+def wait_for(predicate, message, seconds=3):
+    deadline = time.monotonic() + seconds
+    while not predicate() and time.monotonic() < deadline:
+        QTest.qWait(20)
+    assert predicate(), message
 
 
 def main() -> None:
@@ -196,24 +204,24 @@ def main() -> None:
         assert window.start_button.geometry().right() <= window.start_button.parentWidget().width()
         # The menu can be reversed mid-animation and restored at the minimum width.
         window.menu_button.click()
-        QTest.qWait(250)
+        wait_for(lambda: window.sidebar.width() == 0, "Sidebar did not finish collapsing")
         assert window.sidebar.width() == 0
         assert window.status.isVisible()
         assert window.menu_button.accessibleName() == "Показать меню"
         window.resize(900, 700)
         assert window.width() >= 1000
         window.menu_button.click()
-        QTest.qWait(250)
+        wait_for(lambda: window.sidebar.width() == 240, "Sidebar did not finish expanding")
         assert window.sidebar.width() == 240
         assert window.width() >= 1200
         window.menu_button.click()
         QTest.qWait(50)
         window.menu_button.click()
-        QTest.qWait(250)
+        wait_for(lambda: window.sidebar.width() == 240, "Sidebar did not recover after reversing animation")
         assert window.sidebar.width() == 240
         assert window.profiles_editor.remove_button.property("variant") == "danger"
         window._navigate(1)
-        QTest.qWait(180)
+        wait_for(lambda: window._page_effect.opacity() == 1.0, "Page transition did not finish")
         assert window._page_effect.opacity() == 1.0
         assert not any("Настроить" in button.text() for button in window.pages.widget(1).findChildren(gui.QPushButton))
         window.close()
