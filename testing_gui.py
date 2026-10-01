@@ -72,6 +72,10 @@ class TestingPage(QWidget):
         self.login.setAccessibleName("Пробный логин")
         request_layout.addWidget(self.login)
         request_layout.addWidget(label("Владелец канала — имитация роли без входа в Twitch.", "muted", True))
+        request_layout.addWidget(label(
+            "Чтобы проверить узнавание другого зрителя, выберите обычного отправителя и упомяните ник, "
+            "русский вариант или другое имя из профиля в вопросе. Учитываются текущие изменения всех профилей.",
+            "muted", True))
         request_layout.addStretch()
         self.run_button = QPushButton("Получить ответы")
         self.run_button.setObjectName("primary")

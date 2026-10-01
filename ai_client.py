@@ -12,7 +12,12 @@ AI_REQUEST_TIMEOUT_SECONDS = 20
 
 
 def redact_secret(text: str, api_key: str) -> str:
-    return text.replace(api_key, "[ключ скрыт]") if api_key else text
+    if api_key:
+        # Context previews can contain JSON-escaped strings as well as plain text.
+        variants = {api_key, json.dumps(api_key, ensure_ascii=False)[1:-1], json.dumps(api_key)[1:-1]}
+        for variant in sorted(variants, key=len, reverse=True):
+            text = text.replace(variant, "[ключ скрыт]")
+    return text
 
 
 def clean_text(value: str, limit: int) -> str:
@@ -50,8 +55,7 @@ def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
         pass
     if not isinstance(detail, str):
         detail = str(detail)
-    if api_key:
-        detail = detail.replace(api_key, "[ключ скрыт]")
+    detail = redact_secret(detail, api_key)
     detail = clean_text(detail, 240)
     return f": {detail}" if detail else ""
 
@@ -59,7 +63,8 @@ def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
 def build_messages(cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             history: tuple[tuple[str, str], ...] = (),
-            personal_prompt: str = "", sender_role: str | None = None) -> list[dict]:
+            personal_prompt: str = "", sender_role: str | None = None,
+            viewer_context: str = "") -> list[dict]:
     messages = []
     prompt = cfg.get("AI_PROMPT", SYSTEM_PROMPT).strip()
     if prompt:
@@ -75,6 +80,8 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
         if context:
             messages.append({"role": "system", "content": context})
     author = "Владелец канала" if is_streamer else "Зритель"
+    if viewer_context:
+        messages.append({"role": "system", "content": viewer_context})
     for previous_question, previous_answer in history[-10:]:
         messages.append({"role": "user", "content": f"{author} {user} спрашивает: {previous_question}"})
         messages.append({"role": "assistant", "content": previous_answer})
@@ -86,10 +93,11 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             model: str | None = None,
             history: tuple[tuple[str, str], ...] = (),
-            personal_prompt: str = "", sender_role: str | None = None) -> str:
+            personal_prompt: str = "", sender_role: str | None = None,
+            viewer_context: str = "") -> str:
     messages = build_messages(cfg, user, question, memory_data, user_id,
                               history=history, personal_prompt=personal_prompt,
-                              sender_role=sender_role)
+                              sender_role=sender_role, viewer_context=viewer_context)
     return send_messages(cfg, model or cfg["AI_MODEL"], messages)
 
 

@@ -10,6 +10,8 @@ from PySide6.QtWidgets import (
 )
 
 from profiles import MAX_PROFILE_PROMPT, ProfileError, load_profiles, validate_profiles
+from configuration import normalize
+from viewer_recognition import russian_name
 from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page
 
 
@@ -57,7 +59,7 @@ class ProfilesEditor(QWidget):
         header.addWidget(self.add_button)
         left_layout.addLayout(header)
         self.search = QLineEdit()
-        self.search.setPlaceholderText("Найти логин или ID")
+        self.search.setPlaceholderText("Логин, имя или ID")
         self.search.setAccessibleName("Поиск зрителей")
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
@@ -107,6 +109,19 @@ class ProfilesEditor(QWidget):
         editor_layout.addLayout(grid)
         editor_layout.addWidget(label(
             "Достаточно логина или ID. Если указан ID, используем его — даже после смены ника.", "muted", True))
+        self.aliases = QLineEdit()
+        self.aliases.setPlaceholderText("Например: лопотик, лопотика, Лёха")
+        editor_layout.addWidget(field("Другие имена / ники · через запятую", self.aliases))
+        alias_row = QHBoxLayout()
+        self.russian_hint = label("", "muted", True)
+        alias_row.addWidget(self.russian_hint, 1)
+        self.suggest_alias_button = QPushButton("Добавить русский вариант")
+        self.suggest_alias_button.clicked.connect(self._suggest_alias)
+        alias_row.addWidget(self.suggest_alias_button)
+        editor_layout.addLayout(alias_row)
+        editor_layout.addWidget(label(
+            "Бот узнаёт эти имена в вопросах других зрителей и в чате. Русский вариант логина распознаётся "
+            "автоматически; его можно уточнить здесь. Небольшие опечатки допускаются при однозначном совпадении.", "muted", True))
         self.prompt = ScrollPlainTextEdit()
         self.prompt.setPlaceholderText("Например: обращайся по имени Алекс. Отвечай дружелюбно и кратко. Не шути про возраст.")
         self.prompt.setMinimumHeight(180)
@@ -124,12 +139,13 @@ class ProfilesEditor(QWidget):
         bottom.addWidget(self.remove_button)
         editor_layout.addLayout(bottom)
         editor_layout.addWidget(label(
-            "Добавляется к общему промпту только для этого зрителя. Изменения применяются после сохранения и перезапуска бота.",
+            "Инструкция действует для этого зрителя, а также при обращении к нему или обсуждении его другими людьми. "
+            "Тестирование учитывает черновики; работающий бот — сохранённые профили после перезапуска.",
             "muted", True))
         self.stack.addWidget(scroll_page(editor))
         columns.addWidget(self.stack, 3)
         outer.addLayout(columns, 1)
-        for widget in (self.login, self.user_id):
+        for widget in (self.login, self.user_id, self.aliases):
             widget.textChanged.connect(self._store)
         self.prompt.textChanged.connect(self._store)
         self.enabled.toggled.connect(self._store)
@@ -174,6 +190,7 @@ class ProfilesEditor(QWidget):
         row = self.rows[index]
         self.login.setText(row["login"])
         self.user_id.setText(row["user_id"])
+        self.aliases.setText(", ".join(row.get("aliases", [])))
         self.prompt.setPlainText(row["prompt"])
         self.enabled.setChecked(row["enabled"])
         self._loading = False
@@ -183,13 +200,31 @@ class ProfilesEditor(QWidget):
     def _update_caption(self):
         self.editor_title.setText(self.login.text().strip() or ("ID " + self.user_id.text().strip() if self.user_id.text().strip() else "Новый профиль"))
         self.counter.setText(f"{len(self.prompt.toPlainText()):,} / {MAX_PROFILE_PROMPT:,}".replace(",", " "))
+        suggested = self._russian_suggestion()
+        self.russian_hint.setText("Автоматический вариант: " + suggested if suggested else "Укажите привычные имена вручную.")
+        self.suggest_alias_button.setEnabled(self._editable and not self.load_error and bool(suggested))
+
+    def _suggest_alias(self):
+        if not self._editable or self.load_error:
+            return
+        suggested = self._russian_suggestion()
+        aliases = [part.strip() for part in self.aliases.text().split(",") if part.strip()]
+        if suggested and suggested.casefold() not in {alias.casefold() for alias in aliases}:
+            self.aliases.setText(", ".join(aliases + [suggested]))
+
+    def _russian_suggestion(self):
+        try:
+            return russian_name(normalize("TWITCH_CHANNEL", self.login.text()))
+        except ValueError:
+            return ""
 
     def _store(self, *_):
         index = self.list.currentRow()
         if self._loading or index < 0:
             return
         self.rows[index] = {"login": self.login.text(), "user_id": self.user_id.text(),
-                            "prompt": self.prompt.toPlainText(), "enabled": self.enabled.isChecked()}
+                            "prompt": self.prompt.toPlainText(), "enabled": self.enabled.isChecked(),
+                            "aliases": [part.strip() for part in self.aliases.text().split(",") if part.strip()]}
         self.list.item(index).setText(self._item_text(self.rows[index]))
         self._update_caption()
         self.error.hide()
@@ -199,7 +234,8 @@ class ProfilesEditor(QWidget):
         query = self.search.text().strip().casefold().lstrip("@")
         visible = 0
         for index, row in enumerate(self.rows):
-            matches = query in row["login"].casefold() or query in row["user_id"]
+            matches = (query in row["login"].casefold() or query in row["user_id"] or
+                       any(query in alias.casefold() for alias in row.get("aliases", [])))
             self.list.item(index).setHidden(not matches)
             visible += matches
         self.empty_search.setText("Ничего не найдено" if self.rows else "Пока нет персональных инструкций")
@@ -209,7 +245,7 @@ class ProfilesEditor(QWidget):
         if not self._editable or self.load_error:
             return
         self.search.clear()
-        self.rows.append({"login": "", "user_id": "", "prompt": "", "enabled": True})
+        self.rows.append({"login": "", "user_id": "", "prompt": "", "enabled": True, "aliases": []})
         self._rebuild(len(self.rows) - 1)
         self.login.setFocus()
         self.changed.emit()
@@ -255,5 +291,6 @@ class ProfilesEditor(QWidget):
     def set_editable(self, editable):
         self._editable = editable
         for widget in (self.add_button, self.remove_button, self.undo_button, self.login,
-                       self.user_id, self.prompt, self.enabled):
+                       self.user_id, self.aliases, self.prompt, self.enabled):
             widget.setEnabled(editable and not self.load_error)
+        self._update_caption()

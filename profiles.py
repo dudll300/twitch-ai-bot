@@ -9,6 +9,7 @@ from configuration import normalize
 
 MAX_PROFILE_PROMPT = 10000
 MAX_PROFILES = 1000
+MAX_ALIASES = 20
 
 
 class ProfileError(ValueError):
@@ -39,13 +40,26 @@ def validate_profiles(profiles: object, *, allow_empty_prompt: bool = False) -> 
             enabled = raw.get("enabled", True)
             if not isinstance(enabled, bool):
                 raise ValueError("enabled должен быть true или false.")
+            aliases = raw.get("aliases", [])
+            if not isinstance(aliases, list) or len(aliases) > MAX_ALIASES:
+                raise ValueError(f"Нужен список максимум из {MAX_ALIASES} альтернативных имён.")
+            clean_aliases = []
+            for alias in aliases:
+                if not isinstance(alias, str):
+                    raise ValueError("Альтернативные имена должны быть строками.")
+                alias = alias.strip().lstrip("@")
+                if not 1 <= len(alias) <= 64 or not re.fullmatch(r"[\w-]+", alias):
+                    raise ValueError("Каждое альтернативное имя: 1–64 буквы, цифры, подчёркивания или дефисы, без пробелов.")
+                if alias.casefold() not in {item.casefold() for item in clean_aliases}:
+                    clean_aliases.append(alias)
             if (login and login in logins) or (user_id and user_id in ids):
                 raise ValueError("Профиль с таким логином или Twitch ID уже существует.")
             if login:
                 logins.add(login)
             if user_id:
                 ids.add(user_id)
-            result.append({"login": login, "user_id": user_id, "prompt": prompt, "enabled": enabled})
+            result.append({"login": login, "user_id": user_id, "prompt": prompt,
+                           "enabled": enabled, "aliases": clean_aliases})
         except ValueError as exc:
             raise ProfileError(f"Профиль {index + 1}: {exc}", index) from exc
     return result
@@ -74,10 +88,15 @@ def save_profiles(path: Path, profiles: list[dict]) -> None:
         path.chmod(0o600)
 
 
-def prompt_for(profiles: list[dict], login: str, user_id: str = "") -> str:
+def profile_for(profiles: list[dict], login: str, user_id: str = "") -> dict | None:
     # A disabled ID profile also blocks an overlapping login-only profile.
     profile = next((row for row in profiles if user_id and row["user_id"] == user_id), None)
     if profile is None:
         profile = next((row for row in profiles if not row["user_id"] and
                         row["login"] == login.casefold()), None)
+    return profile
+
+
+def prompt_for(profiles: list[dict], login: str, user_id: str = "") -> str:
+    profile = profile_for(profiles, login, user_id)
     return profile["prompt"] if profile is not None and profile["enabled"] else ""

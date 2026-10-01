@@ -11,9 +11,10 @@ from pathlib import Path
 from ai_client import (AI_REQUEST_TIMEOUT_SECONDS, build_messages, clean_question, clean_text,
                        http_error_detail, redact_secret, send_messages)
 from configuration import normalize
-from memory import load_memory
+from memory import context_for, load_memory
 from paths import resource_path
 from profiles import prompt_for, validate_profiles
+from viewer_recognition import related_context
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ class TestSnapshot:
 
 def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: str,
                   sender: str, login: str = "", profile: dict | None = None,
-                  memory_data: dict | None = None) -> TestSnapshot:
+                  memory_data: dict | None = None, profiles: list[dict] | None = None) -> TestSnapshot:
     model_ids = tuple(dict.fromkeys(normalize("AI_MODEL", model) for model in models))
     if not model_ids:
         raise ValueError("Выберите модель или добавьте её ID вручную.")
@@ -108,14 +109,25 @@ def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: s
     prompt = prompt.strip()
     if len(prompt) > 20000:
         raise ValueError("Общий промпт должен содержать не более 20 000 символов.")
-    personal, user_id = "", ""
+    personal, user_id, sender_profile = "", "", None
+    rows = validate_profiles(profiles or [], allow_empty_prompt=True)
     if sender == "profile":
         if profile is None:
             raise ValueError("Выберите зрителя из вкладки «Зрители».")
         # A draft can have an empty instruction; testing then applies none.
         # Saving profiles continues to use the strict validation by default.
-        rows = validate_profiles([profile], allow_empty_prompt=True)
-        login, user_id = rows[0]["login"], rows[0]["user_id"]
+        selected = validate_profiles([profile], allow_empty_prompt=True)[0]
+        login, user_id = selected["login"], selected["user_id"]
+        index = next((i for i, row in enumerate(rows) if
+                      (user_id and row["user_id"] == user_id) or
+                      (not user_id and not row["user_id"] and row["login"] == login)), None)
+        if index is None:
+            index = len(rows)
+            rows.append(selected)
+        else:
+            rows[index] = selected
+        rows = validate_profiles(rows, allow_empty_prompt=True)
+        sender_profile = rows[index]
         personal = prompt_for(rows, login, user_id)
     elif sender == "viewer":
         login = normalize("TWITCH_CHANNEL", login) if login.strip() else "test_viewer"
@@ -124,12 +136,13 @@ def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: s
         login = normalize("TWITCH_CHANNEL", login) if login.strip() else ""
     else:
         raise ValueError("Неизвестный отправитель теста.")
+    related = related_context(rows, question, memory_data, sender_profile=sender_profile)
     messages = build_messages({"AI_PROMPT": prompt}, login, question, memory_data,
                               user_id, personal_prompt=personal,
-                              sender_role="owner" if sender == "owner" else "viewer")
+                              sender_role="owner" if sender == "owner" else "viewer",
+                              viewer_context=related.prompt)
     # Derive the displayed context from exactly the messages sent to every model.
-    notes = messages[int(bool(prompt)) + int(bool(personal)):-1]
-    note_text = notes[0]["content"] if notes else ""
+    note_text = context_for(memory_data, login, user_id) if memory_data is not None else ""
     channel_notes, viewer_notes = "не применены", "не применены"
     if note_text:
         content = json.loads(note_text.split(": ", 1)[1])
@@ -144,6 +157,9 @@ def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: s
         "Личная инструкция: " + (clean_text(redact_secret(personal, auth.api_key), 220) if personal else "не применяется"),
         "Заметки о канале: " + channel_notes,
         "Заметки о зрителе: " + viewer_notes,
+        "Распознанные зрители и применённые профили:\n" + ("\n".join(
+            clean_text(redact_secret(line, auth.api_key), 600) for line in related.diagnostics)
+            if related.diagnostics else "Упоминаний зрителей с профилями не найдено."),
         "История реальных разговоров недоступна и не учитывалась.",
         "Вопрос ограничен 400 символами, ответ — 300, как у бота.",
     ))

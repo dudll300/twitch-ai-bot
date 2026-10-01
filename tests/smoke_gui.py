@@ -151,9 +151,11 @@ def main() -> None:
         editor.login.setText("@Viewer")
         editor.user_id.setText("123")
         editor.prompt.setPlainText("Личная инструкция")
+        editor.aliases.setText("Ваня, вьювер")
         assert window._dirty
         assert window._save()
         assert load_profiles(root / "profiles.json")[0]["login"] == "viewer"
+        assert load_profiles(root / "profiles.json")[0]["aliases"] == ["Ваня", "вьювер"]
         assert not window._dirty
         # Starting a draft points to the missing connection fields, without launching.
         with patch.object(window.process, "start") as start:
@@ -165,6 +167,7 @@ def main() -> None:
         editor.add_profile()
         editor.user_id.setText("456")
         editor.prompt.setPlainText("Другой зритель")
+        editor.aliases.setText("Другой")
         editor.enabled.setFocus()
         QTest.keyClick(editor.enabled, Qt.Key_Space)
         assert not editor.enabled.isChecked()
@@ -180,6 +183,7 @@ def main() -> None:
         editor.undo_button.click()
         assert len(editor.rows) == 2
         assert not editor.rows[1]["enabled"]
+        assert editor.rows[1]["aliases"] == ["Другой"]
         assert window._save()
         assert len(load_profiles(root / "profiles.json")) == 2
         # Duplicates must not overwrite the last valid saved data.
@@ -192,6 +196,7 @@ def main() -> None:
         window._set_running(True)
         assert not editor.add_button.isEnabled()
         assert not editor.prompt.isEnabled()
+        assert not editor.aliases.isEnabled()
         window._set_running(False)
         window._append_log("Вопрос от viewer принят (в очереди: 1)")
         window._append_log("Ответ отправлен для viewer")
@@ -233,6 +238,7 @@ def main() -> None:
         assert reopened.autonomous_page.mode.currentData() == "publish"
         assert not reopened.autonomous_page.enabled.isChecked()
         assert not reopened.profiles_editor.rows[1]["enabled"]
+        assert reopened.profiles_editor.rows[0]["aliases"] == ["Ваня", "вьювер"]
         reopened.prompt.setPlainText("Черновик")
         with patch.object(gui, "russian_question", return_value=QMessageBox.Cancel):
             reopened.show()

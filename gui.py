@@ -232,14 +232,15 @@ class MainWindow(QMainWindow):
     def _test_snapshot(self, models, question, sender, login, profile_index):
         # Only the key may come from saved settings. All drafts come from widgets.
         auth = self._test_credentials()
+        if self.profiles_editor.load_error:
+            raise ValueError(self.profiles_editor.load_error)
         profile = None
         if sender == "profile":
-            if self.profiles_editor.load_error:
-                raise ValueError(self.profiles_editor.load_error)
             if profile_index is not None and 0 <= profile_index < len(self.profiles_editor.rows):
                 profile = deepcopy(self.profiles_editor.rows[profile_index])
         return make_snapshot(auth, models, question, self.prompt.toPlainText(), sender,
-                             login, profile, read_test_memory(self._root))
+                             login, profile, read_test_memory(self._root),
+                             profiles=deepcopy(self.profiles_editor.rows))
 
     def _test_prompt(self):
         self.testing_page.open_for_prompt()

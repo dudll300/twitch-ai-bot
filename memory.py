@@ -71,10 +71,15 @@ def load_memory(path: Path) -> dict:
     return {"streamer": streamer, "viewers": viewers}
 
 
-def context_for(memory: dict, login: str, user_id: str) -> str | None:
+def viewer_for(memory: dict, login: str, user_id: str) -> dict | None:
     viewer = next((card for card in memory["viewers"] if user_id and card["user_id"] == user_id), None)
     if viewer is None:
         viewer = next((card for card in memory["viewers"] if not card["user_id"] and card["login"] == login), None)
+    return viewer
+
+
+def context_for(memory: dict, login: str, user_id: str) -> str | None:
+    viewer = viewer_for(memory, login, user_id)
     context = {"Стример и канал": memory["streamer"]}
     if viewer is not None:
         context["зритель"] = {key: viewer[key] for key in ("facts", "jokes", "avoid")}

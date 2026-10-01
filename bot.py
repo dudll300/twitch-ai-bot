@@ -11,11 +11,12 @@ from collections import deque
 
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
-from ai_client import AI_REQUEST_TIMEOUT_SECONDS, TemporaryAIError, call_ai, clean_text
+from ai_client import AI_REQUEST_TIMEOUT_SECONDS, TemporaryAIError, call_ai, clean_question, clean_text
 
 from autonomous import Autonomous
 from memory import ensure_local_memory, load_memory
-from profiles import load_profiles, prompt_for
+from profiles import load_profiles, profile_for, prompt_for
+from viewer_recognition import related_context
 from paths import data_dir
 from rewards import RewardListener
 from twitch_auth import get_access_token
@@ -64,13 +65,17 @@ class AIModelRouter:
         models = backups
         if not models or time.monotonic() >= self.primary_disabled_until:
             models = (primary,) + models
+        personal_prompt = prompt_for(self.profiles, user, user_id)
+        context = related_context(self.profiles, clean_question(question), memory_data,
+                                  sender_profile=profile_for(self.profiles, user, user_id))
         last_error = None
         for model in models:
             try:
                 kwargs = {"model": model, "history": history}
-                personal_prompt = prompt_for(self.profiles, user, user_id)
                 if personal_prompt:
                     kwargs["personal_prompt"] = personal_prompt
+                if context.prompt:
+                    kwargs["viewer_context"] = context.prompt
                 answer = call_ai(cfg, user, question, memory_data, user_id, **kwargs)
             except TemporaryAIError as exc:
                 last_error = exc
@@ -103,7 +108,7 @@ class Bot:
         self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"))
         self.histories: dict[str, deque[tuple[str, str]]] = {}
         self._paid_busy = False
-        self.autonomous = Autonomous(cfg, ROOT)
+        self.autonomous = Autonomous(cfg, ROOT, profiles=self.ai_router.profiles, memory_data=self.memory)
         self.seen_redemptions: set[str] = set()
         self.recent_redemptions: deque[str] = deque()
 

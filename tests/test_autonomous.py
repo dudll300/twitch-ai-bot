@@ -19,10 +19,12 @@ def line(author="viewer", text="Как игра?", tags=""):
 class FakeExecutor:
     def __init__(self):
         self.calls = []
+        self.kwargs = []
         self.futures = []
 
-    def submit(self, *args):
+    def submit(self, *args, **kwargs):
         self.calls.append(args)
+        self.kwargs.append(kwargs)
         future = Future()
         self.futures.append(future)
         return future
@@ -84,6 +86,31 @@ class AutoTests(unittest.IsolatedAsyncioTestCase):
         await self.start_check()
         self.assertFalse(self.controller.eligible())
         self.assertEqual(self.executor.calls, [])
+
+    async def test_profiles_are_resolved_in_background_and_paid_priority_stays_in_force(self):
+        rows = [{"login": "lopotik", "user_id": "123", "prompt": "Личная инструкция",
+                 "enabled": True, "aliases": ["лопотик"]}]
+        self.controller.profiles = rows
+        self.controller.cfg.update(AI_MODEL="primary", AI_API_KEY="test-key",
+                                   AI_CHAT_URL="https://example.com/chat/completions")
+        self.configure(mode="publish")
+        self.chat(prefix="Привет лоптик")
+        await self.start_check()
+        self.assertEqual(self.executor.kwargs[0]["profiles"], rows)
+        captured = []
+        def request(req, timeout):
+            captured.append(json.loads(req.data))
+            return io.BytesIO(json.dumps({"choices": [{"message": {
+                "content": '{"action":"joke","text":"Привет!"}'}}]}).encode())
+        func, *args = self.executor.calls[0]
+        with patch.object(auto.urllib.request, "urlopen", side_effect=request):
+            result = func(*args, **self.executor.kwargs[0])
+        self.assertIn("Личная инструкция", str(captured[0]["messages"]))
+        self.executor.futures[0].set_result(result)
+        self.busy = True
+        await self.controller.tick()
+        self.assertFalse(self.sent)
+        self.assertFalse(self.controller.quota)
 
     async def test_quiet_and_stale_chat_never_call_ai(self):
         await self.start_check()

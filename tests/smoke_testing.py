@@ -44,11 +44,13 @@ def main():
                                                "AI_API_KEY": "saved-secret-key"}), encoding="utf-8")
         (root / "prompt.txt").write_text("Старый общий промпт", encoding="utf-8")
         (root / "profiles.json").write_text(json.dumps({"version": 1, "profiles": [
-            {"login": "viewer", "user_id": "123", "prompt": "Старая личная инструкция", "enabled": True}]}), encoding="utf-8")
+            {"login": "viewer", "user_id": "123", "prompt": "Старая личная инструкция", "enabled": True},
+            {"login": "lopotik", "user_id": "456", "prompt": "Старый промпт Лопотика", "enabled": True}]}), encoding="utf-8")
         (root / "memory.json").write_text(json.dumps({
             "streamer": {"facts": ["Заметка о канале"], "jokes": []}, "viewers": [
                 {"login": "renamed", "user_id": "123", "facts": ["Заметка по ID"], "jokes": [], "avoid": []},
-                {"login": "viewer", "user_id": "", "facts": ["Заметка по логину"], "jokes": [], "avoid": []}]
+                {"login": "viewer", "user_id": "", "facts": ["Заметка по логину"], "jokes": [], "avoid": []},
+                {"login": "renamed_lopotik", "user_id": "456", "facts": ["Любит пельмени"], "jokes": [], "avoid": []}]
         }), encoding="utf-8")
         before = {path.name: path.read_bytes() for path in root.iterdir()}
         with patch.object(gui, "data_dir", return_value=root):
@@ -168,6 +170,62 @@ def main():
             page.run_button.click()
             wait_for(lambda: not page._testing_busy)
         assert "Владелец канала" in window._test_snapshot(["manual/model"], "Q", "owner", "", None).messages[-1][1]
+
+        # Any sender can mention another viewer using current, unsaved profile edits.
+        editor.list.setCurrentRow(1)
+        editor.suggest_alias_button.click()
+        assert "лопотик" in editor.aliases.text()
+        editor.aliases.setText("лопотик, хомячок")
+        editor.prompt.setPlainText("Несохранённый промпт Лопотика")
+        editor.search.setText("хомячок")
+        assert not editor.list.item(1).isHidden() and editor.list.item(0).isHidden()
+        editor.search.clear()
+        page.sender.setCurrentIndex(page.sender.findData("viewer"))
+        page.login.setText("someone_else")
+        page.question.setPlainText("Расскажи про хомячк")
+        mentioned_payloads, mention_release = [], Event()
+        def mention_request(req, timeout):
+            assert get_ident() != main_thread
+            with lock:
+                mentioned_payloads.append(json.loads(req.data))
+            assert mention_release.wait(4)
+            return response({"choices": [{"message": {"content": "Ответ про Лопотика"}}]})
+        with patch.object(ai_client.urllib.request, "urlopen", side_effect=mention_request), patch.object(
+                window.process, "start") as start, patch.object(gui, "save_settings") as save:
+            try:
+                page.run_button.click()
+                wait_for(lambda: len(mentioned_payloads) == 2)
+                assert "lopotik" in page.context.text()
+                assert "опечатка" in page.context.text()
+                assert "Несохранённый промпт Лопотика" in page.context.text()
+                assert "Любит пельмени" in page.context.text()
+                editor.prompt.setPlainText("Изменён после нажатия")
+                editor.aliases.setText("НовоеИмя")
+                assert mentioned_payloads[0]["messages"] == mentioned_payloads[1]["messages"]
+                assert "Несохранённый промпт Лопотика" in str(mentioned_payloads[0])
+                assert "Изменён после нажатия" not in str(mentioned_payloads[0])
+                assert mentioned_payloads[0]["messages"][-1]["content"].startswith("Зритель someone_else")
+                mention_release.set()
+                wait_for(lambda: not page._testing_busy)
+                start.assert_not_called()
+                save.assert_not_called()
+            finally:
+                mention_release.set()
+        assert "Ответ про Лопотика" in page._result_widgets["exact/b"].toPlainText()
+        editor.enabled.setChecked(False)
+        disabled_mention = window._test_snapshot(["one"], "лопотик", "viewer", "someone_else", None)
+        assert "Изменён после нажатия" not in str(disabled_mention.messages)
+        assert "отключена" in disabled_mention.context
+        assert before == {path.name: path.read_bytes() for path in root.iterdir()}
+        # Colliding names are shown explicitly instead of attaching another person's prompt.
+        editor.list.setCurrentRow(0)
+        editor.aliases.setText("ОбщееИмя")
+        editor.list.setCurrentRow(1)
+        editor.aliases.setText("ОбщееИмя")
+        ambiguous = window._test_snapshot(["one"], "ОбщееИмя", "viewer", "someone_else", None)
+        assert "неоднозначное" in ambiguous.context
+        assert "Изменён после нажатия" not in str(ambiguous.messages)
+        editor.list.setCurrentRow(0)
 
         with patch.object(testing.urllib.request, "urlopen", side_effect=TimeoutError()):
             page.refresh_button.click()

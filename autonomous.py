@@ -17,6 +17,7 @@ import urllib.request
 import uuid
 
 from ai_client import redact_secret, request_completion
+from viewer_recognition import related_context
 
 
 @dataclass(frozen=True)
@@ -136,7 +137,8 @@ class ChatBuffer:
         self.seen.append((now, fingerprint, tags.get("id", ""), author))
         self.sequence += 1
         self.messages.append({"author": author, "text": text, "time": now,
-                              "sequence": self.sequence})
+                              "sequence": self.sequence,
+                              "user_id": tags.get("user-id", "") if re.fullmatch(r"[0-9]{1,30}", tags.get("user-id", "")) else ""})
         self.fresh(now, settings)
         return True
 
@@ -160,7 +162,10 @@ def parse_decision(content, max_chars):
     return action, text
 
 
-def request_decision(cfg, messages, settings):
+def request_decision(cfg, messages, settings, *, viewer_context="", profiles=(), memory_data=None):
+    if profiles:
+        viewer_context = related_context(profiles, "\n".join(row["text"] for row in messages),
+                                         memory_data, participants=messages).prompt
     instructions = (
         "Ты выбираешь, стоит ли самостоятельно вступить в разговор Twitch-чата. "
         "Предпочитай молчание, если нет уместного повода. Верни только JSON с двумя полями: "
@@ -175,6 +180,8 @@ def request_decision(cfg, messages, settings):
     prompt = []
     if cfg.get("AI_PROMPT", "").strip():
         prompt.append({"role": "system", "content": cfg["AI_PROMPT"]})
+    if viewer_context:
+        prompt.append({"role": "system", "content": viewer_context})
     prompt.append({"role": "system", "content": instructions})
     context = [{"author": row["author"], "text": row["text"],
                 "time": datetime.fromtimestamp(row["time"], timezone.utc).isoformat()} for row in messages]
@@ -189,9 +196,11 @@ def request_decision(cfg, messages, settings):
 
 
 class Autonomous:
-    def __init__(self, cfg, root, *, clock=time.time, choose_delay=random.uniform, request=request_decision, emit=None):
+    def __init__(self, cfg, root, *, profiles=None, memory_data=None,
+                 clock=time.time, choose_delay=random.uniform, request=request_decision, emit=None):
         self.cfg, self.root = cfg, root
         self.clock, self.choose_delay, self.request = clock, choose_delay, request
+        self.profiles, self.memory_data = profiles or [], memory_data
         self.emit = emit or self._print_event
         self.settings = AutoSettings()
         self.revision = ""
@@ -327,7 +336,9 @@ class Autonomous:
         self.last_checked = rows[-1]["sequence"]
         if self.executor is None:
             self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autonomous-ai")
-        future = self.executor.submit(self.request, self.cfg, rows, self.settings)
+        # Recognition and HTTP both run in the same background worker, never in IRC's event loop.
+        kwargs = {"profiles": self.profiles, "memory_data": self.memory_data} if self.profiles else {}
+        future = self.executor.submit(self.request, self.cfg, rows, self.settings, **kwargs)
         self.pending = (future, self.generation, rows[0]["time"])
         self.event("pending", reason="Проверяю, уместна ли реплика.")
 
