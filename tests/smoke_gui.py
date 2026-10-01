@@ -1,25 +1,46 @@
 """Exercise the settings form without Twitch or AI network calls."""
 
 import os
+import json
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QSize, QPoint, QPointF
+from PySide6.QtGui import QFont, QFontDatabase, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
 
 import gui
 from start import read_config
 from profiles import load_profiles
+from autonomous import load_settings as load_auto_settings
+from ui_widgets import russian_question
+
+
+def wait_for(predicate, message, seconds=3):
+    deadline = time.monotonic() + seconds
+    while not predicate() and time.monotonic() < deadline:
+        QTest.qWait(20)
+    assert predicate(), message
 
 
 def main() -> None:
     app = QApplication([])
+    app.setStyle("Fusion")
+    for font_file in ("segoeui.ttf", "seguisb.ttf"):
+        font_path = Path("C:/Windows/Fonts") / font_file
+        if font_path.exists():
+            QFontDatabase.addApplicationFont(str(font_path))
+    app.setFont(QFont("Segoe UI", 10))
+    app.setStyleSheet(gui.STYLE)
+    screen_patch = patch.object(gui, "available_screen_size", return_value=QSize(1920, 1080))
+    screen_patch.start()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         with patch.object(gui, "data_dir", return_value=root):
@@ -27,6 +48,7 @@ def main() -> None:
         assert window.api_key.echoMode() == QLineEdit.Password
         assert window.model.count() == 3
         assert window.model.isEditable()
+        assert not window.windowIcon().isNull()
         assert window.prompt.toPlainText() == ""
         window.channel.setText("https://www.twitch.tv/Streamer")
         window.bot_name.setText("HelperBot")
@@ -64,7 +86,61 @@ def main() -> None:
             window = gui.MainWindow()
         window.show()
         app.processEvents()
-        assert window.pages.count() == 4
+        assert window.pages.count() == 6
+        auto_page = window.autonomous_page
+        assert auto_page.advanced_panel.isHidden()
+        assert not auto_page.advanced_button.isChecked()
+        auto_page.advanced_button.click()
+        assert not auto_page.advanced_panel.isHidden()
+        auto_page.inputs["context_count"].setValue(31)
+        auto_page.advanced_button.click()
+        assert auto_page.advanced_panel.isHidden()
+        auto_page.advanced_button.click()
+        assert auto_page.inputs["context_count"].value() == 31
+        auto_page.inputs["context_count"].setValue(20)
+        auto_page.advanced_button.click()
+        # Wheel events must not edit values, even when controls have focus.
+        for widget in (auto_page.mode, window.model, *auto_page.inputs.values()):
+            before_value = widget.value() if hasattr(widget, "value") else widget.currentText()
+            widget.setFocus()
+            for delta in (-120, 120):
+                event = QWheelEvent(QPointF(5, 5), QPointF(widget.mapToGlobal(QPoint(5, 5))),
+                                    QPoint(), QPoint(0, delta), Qt.NoButton, Qt.NoModifier,
+                                    Qt.NoScrollPhase, False)
+                QApplication.sendEvent(widget, event)
+                after_value = widget.value() if hasattr(widget, "value") else widget.currentText()
+                assert after_value == before_value
+            if hasattr(widget, "value"):
+                before_value = widget.value()
+                QTest.keyClick(widget, Qt.Key_Up)
+                assert widget.value() == min(before_value + 1, widget.maximum())
+                widget.setValue(before_value)
+        assert not (root / "autonomous.json").exists()
+        assert not auto_page.enabled.isChecked()
+        assert auto_page.mode.currentData() == "preview"
+        assert auto_page.inputs["hourly_limit"].value() == 8
+        assert auto_page.inputs["hourly_limit"].maximum() > 8
+        window._set_running(True)
+        assert auto_page.enabled.isEnabled()
+        auto_page.enabled.setChecked(True)
+        assert load_auto_settings(root / "autonomous.json")[0].enabled
+        auto_page.mode.setCurrentIndex(1)
+        assert load_auto_settings(root / "autonomous.json")[0].mode == "publish"
+        auto_page.inputs["context_count"].setValue(30)
+        auto_page.inputs["hourly_limit"].setValue(6)
+        assert auto_page.apply()
+        assert load_auto_settings(root / "autonomous.json")[0].context_count == 30
+        assert load_auto_settings(root / "autonomous.json")[0].hourly_limit == 6
+        auto_page.inputs["check_min_seconds"].setValue(500)
+        auto_page.inputs["check_max_seconds"].setValue(20)
+        assert not auto_page.apply()
+        # Disabling is never blocked by invalid numeric edits.
+        auto_page.enabled.setChecked(False)
+        assert not load_auto_settings(root / "autonomous.json")[0].enabled
+        window._append_log("AUTO_EVENT " + json.dumps({"time":"12:00:00", "status":"preview", "action":"joke", "text":"Тестовая шутка"}))
+        assert "Тестовая шутка" in auto_page.log.toPlainText()
+        assert "AUTO_EVENT" not in window.log.toPlainText()
+        window._set_running(False)
         for index, button in enumerate(window.nav_buttons):
             button.click()
             assert window.pages.currentIndex() == index
@@ -123,19 +199,46 @@ def main() -> None:
         assert window.answers_label.text() == "1"
         window.resize(1000, 720)
         app.processEvents()
-        assert window.width() == 1000
+        assert window.width() >= 1200
+        assert window.height() >= 820
         assert window.start_button.geometry().right() <= window.start_button.parentWidget().width()
+        # The menu can be reversed mid-animation and restored at the minimum width.
+        window.menu_button.click()
+        wait_for(lambda: window.sidebar.width() == 0, "Sidebar did not finish collapsing")
+        assert window.sidebar.width() == 0
+        assert window.status.isVisible()
+        assert window.menu_button.accessibleName() == "Показать меню"
+        window.resize(900, 700)
+        assert window.width() >= 1000
+        window.menu_button.click()
+        wait_for(lambda: window.sidebar.width() == 240, "Sidebar did not finish expanding")
+        assert window.sidebar.width() == 240
+        assert window.width() >= 1200
+        window.menu_button.click()
+        QTest.qWait(50)
+        window.menu_button.click()
+        wait_for(lambda: window.sidebar.width() == 240, "Sidebar did not recover after reversing animation")
+        assert window.sidebar.width() == 240
+        assert window.profiles_editor.remove_button.property("variant") == "danger"
+        window._navigate(1)
+        wait_for(lambda: window._page_effect.opacity() == 1.0, "Page transition did not finish")
+        assert window._page_effect.opacity() == 1.0
+        assert not any("Настроить" in button.text() for button in window.pages.widget(1).findChildren(gui.QPushButton))
         window.close()
         with patch.object(gui, "data_dir", return_value=root):
             reopened = gui.MainWindow()
         assert len(reopened.profiles_editor.rows) == 2
+        assert reopened.autonomous_page.inputs["context_count"].value() == 30
+        assert reopened.autonomous_page.inputs["hourly_limit"].value() == 6
+        assert reopened.autonomous_page.mode.currentData() == "publish"
+        assert not reopened.autonomous_page.enabled.isChecked()
         assert not reopened.profiles_editor.rows[1]["enabled"]
         reopened.prompt.setPlainText("Черновик")
-        with patch.object(gui.QMessageBox, "question", return_value=QMessageBox.Cancel):
+        with patch.object(gui, "russian_question", return_value=QMessageBox.Cancel):
             reopened.show()
             reopened.close()
             assert reopened.isVisible()
-        with patch.object(gui.QMessageBox, "question", return_value=QMessageBox.Save):
+        with patch.object(gui, "russian_question", return_value=QMessageBox.Save):
             reopened.close()
         assert (root / "prompt.txt").read_text(encoding="utf-8").strip() == "Черновик"
         # Corrupt profile files are visible and never silently overwritten.
@@ -150,6 +253,29 @@ def main() -> None:
         assert not broken.profiles_editor.load_error
         assert broken._save()
         broken.close()
+    for buttons, default, expected in (
+        (QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save,
+         {QMessageBox.Save: "Сохранить", QMessageBox.Discard: "Не сохранять", QMessageBox.Cancel: "Отмена"}),
+        (QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+         {QMessageBox.Yes: "Да", QMessageBox.No: "Нет"}),
+    ):
+        def check_dialog(dialog):
+            for standard, caption in expected.items():
+                assert dialog.button(standard).text() == caption
+            assert dialog.defaultButton() == dialog.button(default)
+            return default
+        with patch.object(QMessageBox, "exec", check_dialog):
+            assert russian_question(None, "Проверка", "Текст", buttons, default) == default
+    with tempfile.TemporaryDirectory() as directory, patch.object(gui, "data_dir", return_value=Path(directory)), patch.object(
+        gui, "available_screen_size", return_value=QSize(1280, 720)
+    ):
+        small = gui.MainWindow()
+        small.show()
+        app.processEvents()
+        assert small.height() <= 672
+        assert small.width() <= 1256
+        small.close()
+    screen_patch.stop()
     app.quit()
     print("GUI settings form works.")
 

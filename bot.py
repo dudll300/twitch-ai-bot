@@ -5,13 +5,16 @@ import json
 import os
 import ssl
 import time
-import urllib.error
+# Kept as a shared module reference for existing network test hooks.
 import urllib.request
 from collections import deque
 
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
-from memory import context_for, ensure_local_memory, load_memory
+from ai_client import AI_REQUEST_TIMEOUT_SECONDS, TemporaryAIError, call_ai, clean_text
+
+from autonomous import Autonomous
+from memory import ensure_local_memory, load_memory
 from profiles import load_profiles, prompt_for
 from paths import data_dir
 from rewards import RewardListener
@@ -19,10 +22,10 @@ from twitch_auth import get_access_token
 
 
 ROOT = data_dir()
-AI_REQUEST_TIMEOUT_SECONDS = 20
 AI_PRIMARY_FAILURE_LIMIT = 3
 AI_PRIMARY_COOLDOWN_SECONDS = 5 * 60
 MAX_QUEUED_QUESTIONS = 10
+MAX_HISTORY_VIEWERS = 1000
 
 
 def config() -> dict[str, str]:
@@ -37,11 +40,6 @@ def config() -> dict[str, str]:
     return result
 
 
-def clean_text(value: str, limit: int) -> str:
-    value = " ".join(value.replace("\x00", " ").replace("\r", " ").replace("\n", " ").split())
-    return value[:limit].rstrip()
-
-
 def irc_command(line: str) -> str:
     parts = line.split()
     if parts and parts[0].startswith("@"):
@@ -49,96 +47,6 @@ def irc_command(line: str) -> str:
     if parts and parts[0].startswith(":"):
         parts.pop(0)
     return parts[0] if parts else ""
-
-
-class TemporaryAIError(RuntimeError):
-    """A model request may work again or through another model."""
-
-
-def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
-    try:
-        raw = exc.read(4096)
-    except (AttributeError, OSError, ValueError):
-        return ""
-    if not raw:
-        return ""
-    detail = raw.decode("utf-8", errors="replace")
-    try:
-        payload = json.loads(detail)
-        if isinstance(payload, dict):
-            error = payload.get("error", payload)
-            if isinstance(error, dict):
-                detail = error.get("message") or error.get("detail") or error.get("code") or ""
-            elif isinstance(error, str):
-                detail = error
-    except ValueError:
-        pass
-    if not isinstance(detail, str):
-        detail = str(detail)
-    if api_key:
-        detail = detail.replace(api_key, "[ключ скрыт]")
-    detail = clean_text(detail, 240)
-    return f": {detail}" if detail else ""
-
-
-def call_ai(cfg: dict[str, str], user: str, question: str,
-            memory_data: dict | None = None, user_id: str = "",
-            model: str | None = None,
-            history: tuple[tuple[str, str], ...] = (),
-            personal_prompt: str = "") -> str:
-    messages = []
-    prompt = cfg.get("AI_PROMPT", SYSTEM_PROMPT).strip()
-    if prompt:
-        messages.append({"role": "system", "content": prompt})
-    if personal_prompt:
-        messages.append({"role": "system", "content": personal_prompt})
-    is_streamer = user.casefold() == cfg.get("TWITCH_CHANNEL", "").casefold()
-    if memory_data is not None:
-        context = context_for(memory_data, user, user_id)
-        if context:
-            messages.append({"role": "system", "content": context})
-    author = "Владелец канала" if is_streamer else "Зритель"
-    for previous_question, previous_answer in history[-10:]:
-        messages.append({"role": "user", "content": f"{author} {user} спрашивает: {previous_question}"})
-        messages.append({"role": "assistant", "content": previous_answer})
-    messages.append({"role": "user", "content": f"{author} {user} спрашивает: {question}"})
-    payload = {
-        "model": model or cfg["AI_MODEL"],
-        "messages": messages,
-        "max_tokens": 512,
-        "stream": False,
-    }
-    request = urllib.request.Request(
-        cfg["AI_CHAT_URL"],
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": "Bearer " + cfg["AI_API_KEY"],
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=AI_REQUEST_TIMEOUT_SECONDS) as response:
-            data = json.load(response)
-    except urllib.error.HTTPError as exc:
-        message = f"AI API вернул HTTP {exc.code}{http_error_detail(exc, cfg['AI_API_KEY'])}"
-        if exc.code in (400, 408, 429, 500, 502, 503, 504):
-            raise TemporaryAIError(message) from None
-        raise RuntimeError(message) from None
-    except (urllib.error.URLError, TimeoutError) as exc:
-        raise TemporaryAIError(f"AI API недоступен: {type(exc).__name__}") from None
-    except ValueError:
-        raise TemporaryAIError("AI API вернул некорректный JSON") from None
-    try:
-        answer = data["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError):
-        raise TemporaryAIError("AI API вернул некорректный ответ") from None
-    if not isinstance(answer, str) or not answer.strip():
-        raise TemporaryAIError("AI API вернул пустой ответ")
-    answer = clean_text(answer, 300)
-    if not answer:
-        raise TemporaryAIError("AI API вернул пустой ответ")
-    return answer
 
 
 class AIModelRouter:
@@ -151,8 +59,9 @@ class AIModelRouter:
             memory_data: dict | None = None, user_id: str = "",
             history: tuple[tuple[str, str], ...] = ()) -> str:
         primary = cfg["AI_MODEL"]
-        backups = dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",") if name.strip())
-        models = tuple(name for name in backups if name != primary)
+        backups = tuple(dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",")
+                                      if name.strip() and name.strip() != primary))
+        models = backups
         if not models or time.monotonic() >= self.primary_disabled_until:
             models = (primary,) + models
         last_error = None
@@ -193,6 +102,8 @@ class Bot:
         self._say_lock = asyncio.Lock()
         self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"))
         self.histories: dict[str, deque[tuple[str, str]]] = {}
+        self._paid_busy = False
+        self.autonomous = Autonomous(cfg, ROOT)
         self.seen_redemptions: set[str] = set()
         self.recent_redemptions: deque[str] = deque()
 
@@ -208,9 +119,21 @@ class Bot:
             await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{clean_text(message, 450)}")
             self.last_sent = time.monotonic()
 
+    async def say_autonomous(self, writer, message, valid, reserve):
+        # Never hold the paid-send lock or wait for a paid request / rate-limit slot.
+        # No await between the last guard and write: a redemption cannot interleave.
+        if not valid() or self._say_lock.locked() or time.monotonic() - self.last_sent < 1.6:
+            return False
+        reserve()
+        writer.write((f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}\r\n").encode("utf-8"))
+        self.last_sent = time.monotonic()
+        await writer.drain()
+        return True
+
     async def worker(self, writer: asyncio.StreamWriter, queue: asyncio.Queue) -> None:
         while True:
             user, user_id, question, redemption_id = await queue.get()
+            self._paid_busy = True
             try:
                 key = user_id or user.casefold()
                 history = tuple(self.histories.get(key, ()))
@@ -218,7 +141,12 @@ class Bot:
                     self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history,
                 )
                 await self.say(writer, f"@{user} {answer}")
-                self.histories.setdefault(key, deque(maxlen=10)).append((question, answer))
+                # Refresh insertion order only after a successful publication.
+                pairs = self.histories.pop(key, deque(maxlen=10))
+                pairs.append((question, answer))
+                self.histories[key] = pairs
+                if len(self.histories) > MAX_HISTORY_VIEWERS:
+                    del self.histories[next(iter(self.histories))]
                 print(f"Ответ отправлен для {user}", flush=True)
             except asyncio.CancelledError:
                 print(f"Награда {redemption_id} от {user}: ответ прерван; проверьте возврат баллов вручную.", flush=True)
@@ -230,6 +158,7 @@ class Bot:
                 except Exception:
                     pass
             finally:
+                self._paid_busy = False
                 queue.task_done()
 
     async def connection(self) -> None:
@@ -239,6 +168,7 @@ class Bot:
         )
         queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUED_QUESTIONS)
         async def on_question(user: str, user_id: str, question: str, redemption_id: str) -> None:
+            self.autonomous.interrupt()
             try:
                 queue.put_nowait((user, user_id, question, redemption_id))
             except asyncio.QueueFull:
@@ -261,12 +191,18 @@ class Bot:
         worker = asyncio.create_task(self.worker(writer, queue))
         rewards_task = None
         reader_task = None
+        autonomous_task = None
         try:
             await self.send(writer, "PASS oauth:" + access_token)
             await self.send(writer, "NICK " + self.cfg["TWITCH_BOT_NAME"])
             await self.send(writer, "CAP REQ :twitch.tv/tags twitch.tv/commands")
             await self.send(writer, "JOIN #" + self.cfg["TWITCH_CHANNEL"])
             rewards_task = asyncio.create_task(listener.run())
+            self.autonomous.connect(
+                lambda text, valid, reserve: self.say_autonomous(writer, text, valid, reserve),
+                lambda: self._paid_busy or not queue.empty(),
+            )
+            autonomous_task = asyncio.create_task(self.autonomous.run())
             async def read_chat() -> None:
                 while raw := await reader.readline():
                     line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
@@ -277,20 +213,25 @@ class Bot:
                         return
                     elif command == "NOTICE" and "Login authentication failed" in line:
                         raise RuntimeError("Twitch отклонил OAuth-токен")
+                    elif command == "PRIVMSG":
+                        self.autonomous.receive(line)
                     elif command == "NOTICE":
                         print("Twitch: " + line.split(" :", 1)[-1], flush=True)
 
             reader_task = asyncio.create_task(read_chat())
-            done, _ = await asyncio.wait((reader_task, rewards_task), return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait((reader_task, rewards_task, autonomous_task), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
         finally:
+            self.autonomous.disconnect()
+            if autonomous_task is not None:
+                autonomous_task.cancel()
             worker.cancel()
             if reader_task is not None:
                 reader_task.cancel()
             if rewards_task is not None:
                 rewards_task.cancel()
-            await asyncio.gather(*(task for task in (worker, reader_task, rewards_task) if task), return_exceptions=True)
+            await asyncio.gather(*(task for task in (worker, reader_task, rewards_task, autonomous_task) if task), return_exceptions=True)
             while not queue.empty():
                 user, _, _, redemption_id = queue.get_nowait()
                 print(f"Награда {redemption_id} от {user}: соединение закрыто до ответа; проверьте возврат баллов вручную.", flush=True)
@@ -302,14 +243,17 @@ class Bot:
                 pass
 
     async def run(self) -> None:
-        while True:
-            try:
-                print(f"Подключаюсь к чату #{self.cfg['TWITCH_CHANNEL']}...", flush=True)
-                await self.connection()
-                print("Соединение закрыто; повтор через 5 секунд", flush=True)
-            except (OSError, asyncio.IncompleteReadError) as exc:
-                print(f"Ошибка соединения: {exc}", flush=True)
-            await asyncio.sleep(5)
+        try:
+            while True:
+                try:
+                    print(f"Подключаюсь к чату #{self.cfg['TWITCH_CHANNEL']}...", flush=True)
+                    await self.connection()
+                    print("Соединение закрыто; повтор через 5 секунд", flush=True)
+                except (OSError, asyncio.IncompleteReadError) as exc:
+                    print(f"Ошибка соединения: {exc}", flush=True)
+                await asyncio.sleep(5)
+        finally:
+            self.autonomous.close()
 
 
 if __name__ == "__main__":

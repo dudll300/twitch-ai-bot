@@ -5,16 +5,17 @@ from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QGridLayout, QHBoxLayout, QLineEdit, QListWidget, QListWidgetItem,
-    QPlainTextEdit, QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QCheckBox, QGridLayout, QHBoxLayout, QLineEdit, QListWidgetItem,
+    QPushButton, QStackedWidget, QVBoxLayout, QWidget,
 )
 
 from profiles import MAX_PROFILE_PROMPT, ProfileError, load_profiles, validate_profiles
-from ui_widgets import ToggleSwitch, card, field, label, scroll_page
+from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page
 
 
 class ProfilesEditor(QWidget):
     changed = Signal()
+    test_requested = Signal(int)
 
     def __init__(self, path: Path):
         super().__init__()
@@ -43,7 +44,7 @@ class ProfilesEditor(QWidget):
         columns = QHBoxLayout()
         columns.setSpacing(20)
         left, left_layout = card()
-        left.setMinimumWidth(220)
+        left.setMinimumWidth(260)
         left.setMaximumWidth(300)
         left_layout.setContentsMargins(16, 16, 16, 16)
         header = QHBoxLayout()
@@ -61,7 +62,7 @@ class ProfilesEditor(QWidget):
         self.search.setClearButtonEnabled(True)
         self.search.textChanged.connect(self._filter)
         left_layout.addWidget(self.search)
-        self.list = QListWidget()
+        self.list = ScrollListWidget()
         self.list.setObjectName("profileList")
         self.list.setAccessibleName("Профили зрителей")
         self.list.currentRowChanged.connect(self._select)
@@ -106,7 +107,7 @@ class ProfilesEditor(QWidget):
         editor_layout.addLayout(grid)
         editor_layout.addWidget(label(
             "Достаточно логина или ID. Если указан ID, используем его — даже после смены ника.", "muted", True))
-        self.prompt = QPlainTextEdit()
+        self.prompt = ScrollPlainTextEdit()
         self.prompt.setPlaceholderText("Например: обращайся по имени Алекс. Отвечай дружелюбно и кратко. Не шути про возраст.")
         self.prompt.setMinimumHeight(180)
         editor_layout.addWidget(field("Личная инструкция", self.prompt), 1)
@@ -114,8 +115,11 @@ class ProfilesEditor(QWidget):
         self.counter = label("", "muted")
         bottom.addWidget(self.counter)
         bottom.addStretch()
+        self.test_button = QPushButton("Проверить ответ")
+        self.test_button.clicked.connect(lambda: self.test_requested.emit(self.list.currentRow()))
+        bottom.addWidget(self.test_button)
         self.remove_button = QPushButton("Удалить профиль")
-        self.remove_button.setProperty("variant", "quiet")
+        self.remove_button.setProperty("variant", "danger")
         self.remove_button.clicked.connect(self._remove)
         bottom.addWidget(self.remove_button)
         editor_layout.addLayout(bottom)

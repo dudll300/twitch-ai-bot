@@ -12,6 +12,8 @@ def main() -> int:
 
         app = QApplication([])
         window = MainWindow()
+        if window.windowIcon().isNull():
+            raise RuntimeError("Bundled application icon is missing")
         window.show()
         app.processEvents()
         window.close()

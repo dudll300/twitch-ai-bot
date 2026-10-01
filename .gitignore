@@ -10,8 +10,13 @@ memory.json
 .twitch_broadcaster_token.tmp
 __pycache__/
 .venv/
+.test-deps/
 build/
 dist/
 *.spec
 profiles.json
 profiles.tmp
+autonomous.json
+autonomous.tmp
+autonomous-quota.json
+autonomous-quota.tmp

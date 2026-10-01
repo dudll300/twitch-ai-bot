@@ -2,38 +2,55 @@
 
 import codecs
 import html
+import json
 import sys
+from copy import deepcopy
 
-from PySide6.QtCore import QProcess, Qt, QTimer, QUrl
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QKeySequence, QShortcut
+from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QComboBox, QFrame, QGridLayout, QHBoxLayout,
-    QLabel, QLineEdit, QMainWindow, QMessageBox, QPlainTextEdit, QPushButton,
+    QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QGraphicsOpacityEffect,
+    QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget,
 )
 
+from autonomous_gui import AutonomousPage
 from configuration import AI_FALLBACK_MODELS, FIELDS, normalize, read_config
 from gui_theme import STYLE
+from model_catalog_gui import ModelCatalogControl
 from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
 from profiles_gui import ProfilesEditor
 from settings import load_settings, save_settings
-from ui_widgets import card, field, label, scroll_page
+from testing import credentials, make_snapshot, read_test_memory
+from testing_gui import TestingPage
+from ui_widgets import ScrollPlainTextEdit, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
 
 PAGES = (
     ("Подключение", "Подключите Twitch и выберите сервис для ответов."),
     ("Поведение", "Задайте общий характер, язык и правила общения."),
     ("Зрители", "Личные инструкции для тех, кого бот должен узнавать."),
+    ("Самостоятельные реплики", "Уместные шутки и вопросы чату — с приоритетом наград."),
     ("Активность", "Подключение, вопросы и ответы текущего запуска."),
+    ("Тестирование", "Проверьте промпт и сравните модели без подключения Twitch."),
 )
+
+
+def available_screen_size():
+    return QApplication.primaryScreen().availableGeometry().size()
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Twitch AI Bot")
-        self.resize(1180, 820)
-        self.setMinimumSize(1000, 720)
+        self.setWindowIcon(QIcon(str(resource_path("assets/app.ico"))))
+        available = available_screen_size()
+        self._expanded_minimum = QSize(min(1240, available.width() - 24), min(820, available.height() - 48))
+        self._collapsed_minimum = QSize(min(1000, available.width() - 24), self._expanded_minimum.height())
+        self.resize(min(1240, available.width() - 24), min(860, available.height() - 48))
+        self.setMinimumSize(self._expanded_minimum)
+        self._sidebar_expanded = available.width() >= 1200
         self._root = data_dir()
         values, prompt = load_settings(self._root)
         self._has_saved_key = bool(values.get("AI_API_KEY"))
@@ -64,10 +81,8 @@ class MainWindow(QMainWindow):
         shell = QHBoxLayout(body)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
-        sidebar = QFrame()
-        sidebar.setObjectName("sidebar")
-        sidebar.setFixedWidth(200)
-        side = QVBoxLayout(sidebar)
+        self.sidebar = SlidingSidebar(240)
+        side = QVBoxLayout(self.sidebar.panel)
         side.setContentsMargins(20, 32, 20, 24)
         side.setSpacing(6)
         side.addWidget(label("Twitch AI", "brand"))
@@ -76,7 +91,7 @@ class MainWindow(QMainWindow):
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
         for index, (name, _) in enumerate(PAGES):
-            button = QPushButton(name)
+            button = QPushButton(name.replace("Самостоятельные реплики", "Самостоятельные\nреплики"))
             button.setProperty("variant", "nav")
             button.setCheckable(True)
             self.nav_group.addButton(button, index)
@@ -87,13 +102,12 @@ class MainWindow(QMainWindow):
         self.status = label("Остановлен")
         self.status.setObjectName("status")
         self.status.setWordWrap(True)
-        side.addWidget(self.status)
         side.addSpacing(12)
         folder = QPushButton("Папка с данными")
         folder.setProperty("variant", "quiet")
         folder.clicked.connect(self._open_folder)
         side.addWidget(folder)
-        shell.addWidget(sidebar)
+        shell.addWidget(self.sidebar)
 
         main = QVBoxLayout()
         main.setContentsMargins(0, 0, 0, 0)
@@ -108,7 +122,20 @@ class MainWindow(QMainWindow):
         heading.setSpacing(6)
         heading.addWidget(self.page_title)
         heading.addWidget(self.page_description)
-        content_layout.addLayout(heading)
+        header = QHBoxLayout()
+        header.setSpacing(16)
+        self.menu_button = QPushButton()
+        self.menu_button.setIcon(menu_icon())
+        self.menu_button.setIconSize(QSize(22, 22))
+        self.menu_button.setObjectName("menuToggle")
+        self.menu_button.setFixedSize(44, 44)
+        self.menu_button.setCheckable(True)
+        self.menu_button.clicked.connect(self._toggle_sidebar)
+        header.addWidget(self.menu_button, 0, Qt.AlignVCenter)
+        header.addLayout(heading, 1)
+        self.status.setMaximumWidth(220)
+        header.addWidget(self.status, 0, Qt.AlignVCenter)
+        content_layout.addLayout(header)
         self.notice = label("", "error", True)
         self.notice.hide()
         content_layout.addWidget(self.notice)
@@ -116,8 +143,20 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self._build_connection(values))
         self.pages.addWidget(self._build_behavior(prompt))
         self.profiles_editor = ProfilesEditor(self._root / "profiles.json")
+        self.profiles_editor.test_requested.connect(self._test_profile)
         self.pages.addWidget(self.profiles_editor)
+        self.autonomous_page = AutonomousPage(self._root)
+        self.pages.addWidget(self.autonomous_page)
         self.pages.addWidget(self._build_activity())
+        self.testing_page = TestingPage(self._test_credentials, self._test_snapshot,
+                                        lambda: self.profiles_editor.rows)
+        self.pages.addWidget(self.testing_page)
+        self._page_effect = QGraphicsOpacityEffect(self.pages)
+        self.pages.setGraphicsEffect(self._page_effect)
+        self._page_effect.setOpacity(1.0)
+        self._page_animation = QPropertyAnimation(self._page_effect, b"opacity", self)
+        self._page_animation.setDuration(150)
+        self._page_animation.setEasingCurve(QEasingCurve.OutCubic)
         content_layout.addWidget(self.pages, 1)
         main.addWidget(content, 1)
 
@@ -126,7 +165,7 @@ class MainWindow(QMainWindow):
         actions = QHBoxLayout(footer)
         actions.setContentsMargins(32, 18, 32, 18)
         actions.setSpacing(12)
-        self.save_hint = label("Все изменения сохранены", "muted")
+        self.save_hint = label("Все изменения сохранены", "muted", True)
         actions.addWidget(self.save_hint, 1)
         self.save_button = QPushButton("Сохранить")
         self.save_button.setToolTip("Сохранить настройки и профили · Ctrl+S")
@@ -143,6 +182,7 @@ class MainWindow(QMainWindow):
         main.addWidget(footer)
         shell.addLayout(main, 1)
         self.setCentralWidget(body)
+        self._set_sidebar(self._sidebar_expanded, animate=False)
         self._navigate(0)
         for widget in (self.channel, self.bot_name, self.client_id, self.reward_title,
                        self.base_url, self.api_key, self.fallback_models):
@@ -151,14 +191,63 @@ class MainWindow(QMainWindow):
         self.prompt.textChanged.connect(self._mark_dirty)
         self.prompt.textChanged.connect(self._update_prompt_count)
         self.profiles_editor.changed.connect(self._mark_dirty)
+        self.profiles_editor.changed.connect(self.testing_page.refresh_profiles)
+        self.api_key.textChanged.connect(self.testing_page.invalidate_catalog)
+        self.base_url.textChanged.connect(self.testing_page.invalidate_catalog)
+        self.api_key.textChanged.connect(self.model_catalog.invalidate)
+        self.base_url.textChanged.connect(self.model_catalog.invalidate)
         QShortcut(QKeySequence.Save, self, activated=lambda: self._save())
         self._update_prompt_count()
 
+    def _toggle_sidebar(self, expanded):
+        self._set_sidebar(expanded)
+
+    def _set_sidebar(self, expanded, animate=True):
+        self._sidebar_expanded = expanded
+        self.menu_button.setChecked(expanded)
+        caption = "Скрыть меню" if expanded else "Показать меню"
+        self.menu_button.setToolTip(caption)
+        self.menu_button.setAccessibleName(caption)
+        self.setMinimumSize(self._expanded_minimum if expanded else self._collapsed_minimum)
+        self.sidebar.set_expanded(expanded, animate)
+
     def _navigate(self, index):
+        if index == 5:
+            self.testing_page.refresh_profiles()
+        changed = self.pages.currentIndex() != index
         self.pages.setCurrentIndex(index)
+        if changed:
+            self._page_animation.stop()
+            self._page_animation.setStartValue(0.65)
+            self._page_animation.setEndValue(1.0)
+            self._page_animation.start()
         self.nav_buttons[index].setChecked(True)
         self.page_title.setText(PAGES[index][0])
         self.page_description.setText(PAGES[index][1])
+
+    def _test_credentials(self):
+        saved_key = read_config(self._root / ".env").get("AI_API_KEY", "") if not self.api_key.text().strip() else ""
+        return credentials(self.base_url.text(), self.api_key.text(), saved_key)
+
+    def _test_snapshot(self, models, question, sender, login, profile_index):
+        # Only the key may come from saved settings. All drafts come from widgets.
+        auth = self._test_credentials()
+        profile = None
+        if sender == "profile":
+            if self.profiles_editor.load_error:
+                raise ValueError(self.profiles_editor.load_error)
+            if profile_index is not None and 0 <= profile_index < len(self.profiles_editor.rows):
+                profile = deepcopy(self.profiles_editor.rows[profile_index])
+        return make_snapshot(auth, models, question, self.prompt.toPlainText(), sender,
+                             login, profile, read_test_memory(self._root))
+
+    def _test_prompt(self):
+        self.testing_page.open_for_prompt()
+        self._navigate(5)
+
+    def _test_profile(self, index):
+        self.testing_page.open_for_profile(index)
+        self._navigate(5)
 
     def _open_folder(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._root)))
@@ -193,15 +282,12 @@ class MainWindow(QMainWindow):
         self.api_key = QLineEdit()
         self.api_key.setEchoMode(QLineEdit.Password)
         self.api_key.setPlaceholderText("Ключ сохранён" if self._has_saved_key else "Ключ вашего AI-сервиса")
-        self.model = QComboBox()
-        self.model.setEditable(True)
-        self.model.addItems(AI_FALLBACK_MODELS)
-        self.model.setCurrentText(values.get("AI_MODEL", AI_FALLBACK_MODELS[0]))
-        self.model.setToolTip("Выберите модель или введите её ID у вашего провайдера")
+        self.model_catalog = ModelCatalogControl(values.get("AI_MODEL", AI_FALLBACK_MODELS[0]), self._test_credentials)
+        self.model = self.model_catalog.combo
         self.fallback_models = QLineEdit(values.get("AI_FALLBACK_MODELS", ""))
         self.fallback_models.setPlaceholderText("model-a, model-b")
         for caption, widget in (("Base URL", self.base_url), ("API-ключ", self.api_key),
-                                ("Основная модель", self.model), ("Запасные модели · необязательно", self.fallback_models)):
+                                ("Основная модель", self.model_catalog), ("Запасные модели · необязательно", self.fallback_models)):
             ai_layout.addWidget(field(caption, widget))
         ai_layout.addWidget(label("Запасные модели вызываются по порядку при сбоях основной.", "muted", True))
         ai_layout.addStretch()
@@ -216,7 +302,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(20)
         main, main_layout = card("Общий промпт", "Эти инструкции действуют для всех зрителей. Можно оставить пустым.")
-        self.prompt = QPlainTextEdit(prompt)
+        self.prompt = ScrollPlainTextEdit(prompt)
         self.prompt.setAccessibleName("Общий системный промпт")
         self.prompt.setPlaceholderText("Опишите характер бота, язык и стиль ответов.\n\nНапример: отвечай по-русски, дружелюбно и кратко. Укладывайся в 300 символов. Не используй Markdown.")
         self.prompt.setMinimumHeight(240)
@@ -225,22 +311,15 @@ class MainWindow(QMainWindow):
         self.prompt_count = label("", "muted")
         row.addWidget(self.prompt_count)
         row.addStretch()
+        self.test_prompt_button = QPushButton("Проверить ответ")
+        self.test_prompt_button.clicked.connect(self._test_prompt)
+        row.addWidget(self.test_prompt_button)
         self.reset_prompt = QPushButton("Очистить")
         self.reset_prompt.setProperty("variant", "quiet")
         self.reset_prompt.clicked.connect(self.prompt.clear)
         row.addWidget(self.reset_prompt)
         main_layout.addLayout(row)
         layout.addWidget(main, 1)
-        extra, extra_layout = card()
-        summary = QHBoxLayout()
-        summary.addWidget(label("Личный подход к зрителям", "section"), 1)
-        action = QPushButton("Настроить →")
-        action.setProperty("variant", "quiet")
-        action.clicked.connect(lambda: self._navigate(2))
-        summary.addWidget(action)
-        extra_layout.addLayout(summary)
-        extra_layout.addWidget(label("Общий промпт + личная инструкция + контекст разговора.", "muted", True))
-        layout.addWidget(extra)
         return scroll_page(page)
 
     def _build_activity(self):
@@ -267,7 +346,7 @@ class MainWindow(QMainWindow):
         self.auth_hint.hide()
         layout.addWidget(self.auth_hint)
         journal, journal_layout = card("Журнал работы")
-        self.log = QPlainTextEdit()
+        self.log = ScrollPlainTextEdit()
         self.log.setReadOnly(True)
         self.log.setAccessibleName("Журнал работы бота")
         self.log.setPlaceholderText("Здесь появятся события подключения и ответы.\nЗапустите бота, когда настройки будут готовы.")
@@ -337,6 +416,8 @@ class MainWindow(QMainWindow):
                 "AI_MODEL": self.model, "AI_FALLBACK_MODELS": self.fallback_models}
 
     def _set_running(self, running):
+        self.autonomous_page.set_running(running)
+        self.model_catalog.set_editable(not running)
         for widget in (*self._field_widgets().values(), self.prompt, self.reset_prompt, self.save_button):
             widget.setEnabled(not running)
         self.profiles_editor.set_editable(not running)
@@ -344,7 +425,7 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(not running)
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
-        self.save_hint.setText("Для изменения настроек остановите бота" if running else
+        self.save_hint.setText("Самостоятельные реплики можно менять во время работы" if running else
                                "Есть несохранённые изменения" if self._dirty else "Все изменения сохранены")
 
     def _fields(self) -> dict[str, str]:
@@ -374,7 +455,8 @@ class MainWindow(QMainWindow):
         self._auth_url = ""
         self._auth_account = ""
         self.auth_hint.setVisible(False)
-        self._navigate(3)
+        self._navigate(4)
+        self.autonomous_page.log.clear()
         self._question_count = self._answer_count = 0
         self.questions_label.setText("0")
         self.answers_label.setText("0")
@@ -441,6 +523,14 @@ class MainWindow(QMainWindow):
             self._append_log(line.rstrip("\r"))
 
     def _append_log(self, line: str) -> None:
+        if line.startswith("AUTO_EVENT "):
+            try:
+                event = json.loads(line.removeprefix("AUTO_EVENT "))
+                if isinstance(event, dict):
+                    self.autonomous_page.push_event(event)
+            except ValueError:
+                pass
+            return
         self.log.appendPlainText(line)
         if line.startswith("Вопрос от ") and "принят" in line:
             self._question_count += 1
@@ -465,14 +555,14 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._dirty:
-            choice = QMessageBox.question(self, "Несохранённые изменения",
+            choice = russian_question(self, "Несохранённые изменения",
                 "Сохранить настройки и профили перед закрытием?",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
             if choice == QMessageBox.Cancel or (choice == QMessageBox.Save and not self._save()):
                 event.ignore()
                 return
         if self.process.state() != QProcess.NotRunning:
-            choice = QMessageBox.question(self, "Бот работает", "Остановить бота и закрыть приложение?",
+            choice = russian_question(self, "Бот работает", "Остановить бота и закрыть приложение?",
                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if choice != QMessageBox.Yes:
                 event.ignore()
@@ -481,11 +571,14 @@ class MainWindow(QMainWindow):
         if self.process.state() != QProcess.NotRunning:
             self.process.kill()
             self.process.waitForFinished(1000)
+        self.testing_page.shutdown()
+        self.model_catalog.shutdown()
         super().closeEvent(event)
 
 
 def run_gui() -> int:
     app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(str(resource_path("assets/app.ico"))))
     app.setFont(QFont("Segoe UI", 10))
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)

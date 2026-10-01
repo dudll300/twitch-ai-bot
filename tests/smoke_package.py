@@ -3,6 +3,7 @@
 import os
 import json
 import subprocess
+import struct
 import tempfile
 from pathlib import Path
 
@@ -12,6 +13,24 @@ EXE = Path(os.environ.get("TWITCH_AI_TEST_EXE", str(ROOT / "dist" / "TwitchAIBot
 
 
 def main() -> None:
+    # PyInstaller's Windows dependencies include pefile. Verify the actual PE
+    # resources, not just a nonempty window icon (which could be Python's icon).
+    import pefile
+    source = (ROOT / "assets" / "app.ico").read_bytes()
+    count = struct.unpack_from("<H", source, 4)[0]
+    expected = set()
+    for index in range(count):
+        length, offset = struct.unpack_from("<II", source, 6 + index * 16 + 8)
+        expected.add(source[offset:offset + length])
+    with pefile.PE(str(EXE)) as image:
+        actual = set()
+        for resource in image.DIRECTORY_ENTRY_RESOURCE.entries:
+            if resource.id == 3:  # RT_ICON
+                for icon in resource.directory.entries:
+                    for language in icon.directory.entries:
+                        data = language.data.struct
+                        actual.add(image.get_data(data.OffsetToData, data.Size))
+        assert expected <= actual, "Executable is missing the application's icon resources"
     with tempfile.TemporaryDirectory() as temporary:
         env = os.environ.copy()
         env["APPDATA"] = temporary

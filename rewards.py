@@ -1,6 +1,7 @@
 """Receive questions from one Twitch Channel Points reward over EventSub."""
 
 import asyncio
+import http.client
 import json
 import urllib.error
 import urllib.request
@@ -12,11 +13,16 @@ from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
 from twitch_auth import REDEMPTION_SCOPES, get_access_token, validate
+from ai_client import clean_question, http_error_detail
 
 
 API_URL = "https://api.twitch.tv/helix"
 WEBSOCKET_URL = "wss://eventsub.wss.twitch.tv/ws"
 REWARD_TITLE = "Вопрос ИИ"
+
+
+class TemporaryTwitchError(OSError):
+    """Reconnect EventSub after temporary Helix failures, keeping auth fatal."""
 
 
 def api_json(path: str, client_id: str, token: str, payload: dict | None = None) -> dict:
@@ -34,11 +40,11 @@ def api_json(path: str, client_id: str, token: str, payload: dict | None = None)
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.load(response)
     except urllib.error.HTTPError as exc:
-        try:
-            detail = json.load(exc).get("message", "")
-        except (ValueError, AttributeError):
-            detail = ""
-        raise RuntimeError(f"Twitch API вернул HTTP {exc.code}: {str(detail)[:200]}") from None
+        message = f"Twitch API вернул HTTP {exc.code}{http_error_detail(exc, token)}"
+        error = TemporaryTwitchError if exc.code in (408, 429, 500, 502, 503, 504) else RuntimeError
+        raise error(message) from None
+    except (ValueError, http.client.HTTPException):
+        raise TemporaryTwitchError("Twitch API вернул повреждённый ответ.") from None
 
 
 def subscribe(client_id: str, token: str, broadcaster_id: str,
@@ -102,7 +108,7 @@ class RewardListener:
             return
         login = event.get("user_login", "").lower()
         user_id = str(event.get("user_id", ""))
-        question = " ".join(str(event.get("user_input", "")).split())[:400].rstrip()
+        question = clean_question(str(event.get("user_input", "")))
         if not login or not question:
             print(f"Погашение {redemption_id}: нет логина или текста вопроса; проверьте награду в Twitch.", flush=True)
             return
@@ -144,5 +150,6 @@ class RewardListener:
                 await self._listen(await self._token())
                 print("EventSub отключился; повтор через 5 секунд.", flush=True)
             except (OSError, TimeoutError, ConnectionClosed, InvalidHandshake) as exc:
-                print(f"Соединение EventSub прервано: {type(exc).__name__}; повтор через 5 секунд.", flush=True)
+                reason = str(exc) if isinstance(exc, TemporaryTwitchError) else type(exc).__name__
+                print(f"Соединение EventSub прервано: {reason}; повтор через 5 секунд.", flush=True)
             await asyncio.sleep(5)
