@@ -3,14 +3,14 @@
 from queue import Empty, Queue
 from threading import Event, Thread
 
-from PySide6.QtCore import QTimer, Qt, Signal
-from PySide6.QtWidgets import QCheckBox, QGridLayout, QHBoxLayout, QLineEdit, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QPoint, QTimer, Qt, Signal
+from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QLineEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget
 
 from ai_client import clean_text, redact_secret
 from model_catalog_gui import ModelCatalogControl
-from prompt_builder import (DEFAULT_TOPICS, GENERATOR_MODEL, PRESETS, check_prompt, compose_prompt,
-                            generate_prompt, prepare_generation, style_for)
-from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, card, field, label
+from prompt_builder import (DEFAULT_TOPICS, GENERATOR_MODEL, PRESETS, TEMPERAMENTS, check_prompt, compose_prompt,
+                            generate_prompt, prepare_generation, style_for, topics_from_prompt)
+from ui_widgets import NoWheelComboBox, PageScrollPlainTextEdit, card, field, label
 
 
 def generation_worker(snapshot, output, cancel):
@@ -31,11 +31,23 @@ class PromptBuilder(QWidget):
         self.get_credentials, self.get_prompt, self.set_prompt = get_credentials, get_prompt, set_prompt
         self._events, self._cancel = Queue(), Event()
         self._closed, self._busy, self._editable = False, False, True
+        self._operation = None
         self._previous = None
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(20)
-        controls, layout = card("Пресеты и генератор", "Подготовьте новый вариант, проверьте его и примените вручную")
+        api_card, api_layout = card("Модель генератора", "Общая для создания нового промпта и улучшения текущего")
+        self.model_catalog = ModelCatalogControl(GENERATOR_MODEL, get_credentials)
+        api_layout.addWidget(field("Модель для генерации · отдельная от модели ответов", self.model_catalog))
+        api_layout.addWidget(label(
+            "Каталог загружается по кнопке. Укажите точный ID доступной модели; автоматической замены нет. "
+            "Генерация и проверка ответов расходуют баланс AI API. Пресеты бесплатны и работают без ключа.", "muted", True))
+        self.connection_button = QPushButton("К подключению")
+        self.connection_button.clicked.connect(lambda: self.connection_requested.emit())
+        api_layout.addWidget(self.connection_button, 0, Qt.AlignLeft)
+        outer.addWidget(api_card)
+
+        self.create_card, layout = card("Создать новый промпт", "Выберите готовый пресет или опишите новый характер для AI-генератора")
         grid = QGridLayout()
         self.preset = NoWheelComboBox()
         self.preset.addItems([name for name, _ in PRESETS])
@@ -44,52 +56,56 @@ class PromptBuilder(QWidget):
         self.humor.setCurrentIndex(1)
         self.profanity = NoWheelComboBox()
         self.profanity.addItems(("Без мата", "Изредка", "Свободно"))
+        self.temperament = NoWheelComboBox()
+        self.temperament.addItems([name for name, _ in TEMPERAMENTS])
+        self.temperament.setCurrentIndex(1)
         grid.addWidget(field("Основа", self.preset), 0, 0)
-        grid.addWidget(field("Юмор", self.humor), 0, 1)
-        grid.addWidget(field("Ненормативная лексика", self.profanity), 0, 2)
-        for column in range(3):
+        grid.addWidget(field("Темперамент", self.temperament), 0, 1)
+        grid.addWidget(field("Юмор", self.humor), 1, 0)
+        grid.addWidget(field("Ненормативная лексика", self.profanity), 1, 1)
+        for column in range(2):
             grid.setColumnStretch(column, 1)
         layout.addLayout(grid)
+        layout.addWidget(label("Темперамент задаёт эмоциональность и подачу. Частота шуток и мат настраиваются отдельно.", "muted", True))
         self.topics = QLineEdit(DEFAULT_TOPICS)
         self.topics.setMaxLength(400)
         layout.addWidget(field("Темы канала", self.topics))
         self.preset_button = QPushButton("Показать пресет · без AI API")
         self.preset_button.clicked.connect(self.show_preset)
         layout.addWidget(self.preset_button, 0, Qt.AlignLeft)
-        self.wishes = ScrollPlainTextEdit()
+        self.wishes = PageScrollPlainTextEdit()
         self.wishes.setPlaceholderText("Например: часто шути, используй мат и подкалывай зрителей, но отвечай на вопросы по делу")
         self.wishes.setMinimumHeight(85)
         self.wishes.setMaximumHeight(130)
         layout.addWidget(field("Пожелания для генерации", self.wishes))
         layout.addWidget(label("Явные пожелания могут переопределять тон, юмор и лексику выбранной основы.", "muted", True))
-        self.improve = QCheckBox("Улучшить текущий общий промпт с учётом пожеланий")
-        layout.addWidget(self.improve)
-        self.model_catalog = ModelCatalogControl(GENERATOR_MODEL, get_credentials)
-        self.model_catalog.combo.setAccessibleName("Модель для генерации промпта")
-        layout.addWidget(field("Модель для генерации · отдельная от модели ответов", self.model_catalog))
-        layout.addWidget(label(
-            "Каталог загружается по кнопке. Укажите точный ID доступной модели; автоматической замены нет. "
-            "Генерация и проверка ответов расходуют баланс AI API. Пресеты бесплатны и работают без ключа.", "muted", True))
-        buttons = QHBoxLayout()
         self.generate_button = QPushButton("Сгенерировать промпт")
         self.generate_button.setObjectName("primary")
-        self.generate_button.clicked.connect(self.start_generation)
-        buttons.addWidget(self.generate_button)
-        self.connection_button = QPushButton("К подключению")
-        self.connection_button.clicked.connect(lambda: self.connection_requested.emit())
-        buttons.addWidget(self.connection_button)
-        buttons.addStretch()
-        layout.addLayout(buttons)
+        self.generate_button.clicked.connect(lambda: self.start_generation("create"))
+        layout.addWidget(self.generate_button, 0, Qt.AlignLeft)
+        outer.addWidget(self.create_card)
+
+        self.improve_card, improve_layout = card("Улучшить текущий промпт", "Берём текст из поля «Общий промпт», включая несохранённые изменения")
+        self.improve_wishes = PageScrollPlainTextEdit()
+        self.improve_wishes.setPlaceholderText("Например: сохрани характер, но убери повторяющиеся фразы и сделай подколы более конкретными")
+        self.improve_wishes.setMinimumHeight(100)
+        self.improve_wishes.setMaximumHeight(150)
+        improve_layout.addWidget(field("Что доработать", self.improve_wishes))
+        improve_layout.addWidget(label("Можно оставить пожелания пустыми: AI уточнит формулировки, сохраняя характер текущего промпта. Настройки нового пресета здесь не применяются.", "muted", True))
+        self.improve_button = QPushButton("Улучшить текущий промпт")
+        self.improve_button.clicked.connect(lambda: self.start_generation("improve"))
+        improve_layout.addWidget(self.improve_button, 0, Qt.AlignLeft)
+        outer.addWidget(self.improve_card)
         self.status = label("Защита темы и служебных инструкций добавляется в каждый пресет и результат генерации.", "muted", True)
         self.status.setTextFormat(Qt.PlainText)
-        layout.addWidget(self.status)
-        outer.addWidget(controls)
+        outer.addWidget(self.status)
 
         self.draft_card, draft_layout = card("Новый вариант промпта", "Текущий общий промпт не меняется до нажатия «Применить»")
-        self.preview = ScrollPlainTextEdit()
-        self.preview.setMinimumHeight(220)
-        self.preview.setMaximumHeight(360)
+        self.preview = PageScrollPlainTextEdit()
+        self.preview.setAccessibleName("Новый вариант промпта")
+        self.preview.setMinimumHeight(520)
         draft_layout.addWidget(self.preview)
+        draft_layout.addWidget(label("Колесо мыши прокручивает страницу. Для прокрутки длинного текста используйте его полосу прокрутки или клавиши.", "muted", True))
         self.validation = label("", "muted", True)
         self.validation.setTextFormat(Qt.PlainText)
         draft_layout.addWidget(self.validation)
@@ -114,15 +130,17 @@ class PromptBuilder(QWidget):
         self._update_state()
 
     def _style(self):
-        return style_for(self.preset.currentIndex(), self.humor.currentIndex(), self.profanity.currentIndex())
+        return style_for(self.preset.currentIndex(), self.humor.currentIndex(), self.profanity.currentIndex(),
+                         self.temperament.currentIndex())
 
     def _update_state(self):
         editable = self._editable and not self._closed and not self._busy
-        for widget in (self.preset, self.humor, self.profanity, self.topics, self.preset_button,
-                       self.wishes, self.improve, self.generate_button, self.preview):
+        for widget in (self.preset, self.temperament, self.humor, self.profanity, self.topics, self.preset_button,
+                       self.wishes, self.improve_wishes, self.generate_button, self.improve_button, self.preview):
             widget.setEnabled(editable)
         self.model_catalog.set_editable(editable)
-        self.generate_button.setText("Генерируем…" if self._busy else "Сгенерировать промпт")
+        self.generate_button.setText("Генерируем…" if self._busy and self._operation == "create" else "Сгенерировать промпт")
+        self.improve_button.setText("Улучшаем…" if self._busy and self._operation == "improve" else "Улучшить текущий промпт")
         problems = check_prompt(self.preview.toPlainText())
         self.validation.setText(" ".join(problems) if problems else
             "Формат и обязательный блок защиты проверены. Это не оценка качества ответов: "
@@ -145,20 +163,38 @@ class PromptBuilder(QWidget):
         self.preview.setPlainText(text)
         self.draft_card.show()
         self._update_state()
+        QTimer.singleShot(0, self._reveal_draft)
 
-    def start_generation(self):
+    def _reveal_draft(self):
+        if self._closed:
+            return
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                top = self.preview.mapTo(parent.widget(), QPoint(0, 0)).y()
+                parent.verticalScrollBar().setValue(top - 24)
+                return
+            parent = parent.parentWidget()
+
+    def start_generation(self, operation="create"):
         if not self._editable or self._busy or self._closed or self.model_catalog._busy:
             return
         try:
+            current_prompt = self.get_prompt() if operation == "improve" else ""
+            if operation == "improve" and not current_prompt.strip():
+                raise ValueError("Текущий общий промпт пуст. Сначала создайте новый вариант.")
             auth = self.get_credentials()
             snapshot = prepare_generation(auth, self.model_catalog.combo.currentText(),
-                self.wishes.toPlainText(), self._style(), self.topics.text(),
-                self.get_prompt() if self.improve.isChecked() else "")
+                self.improve_wishes.toPlainText() if operation == "improve" else self.wishes.toPlainText(),
+                "" if operation == "improve" else self._style(),
+                topics_from_prompt(current_prompt) if operation == "improve" else self.topics.text(),
+                current_prompt, operation=operation)
         except (OSError, ValueError) as exc:
             self.status.setText("Вставьте ваш AI API-ключ во вкладке «Подключение» или используйте сохранённый ключ."
                                 if str(exc) == "Заполните AI_API_KEY." else str(exc))
             return
         self._busy = True
+        self._operation = operation
         self._update_state()
         self.status.setText("Готовим новый вариант. Пожелания, темы и параметры зафиксированы на момент нажатия.")
         Thread(target=generation_worker, args=(snapshot, self._events, self._cancel), daemon=True).start()

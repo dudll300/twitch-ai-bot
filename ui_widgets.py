@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QLabel, QListView, QListWidget,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QLabel, QListView, QListWidget,
                               QMessageBox, QPlainTextEdit, QScrollArea, QScrollBar,
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget)
 
@@ -36,6 +36,20 @@ class ScrollListWidget(ContainedWheel, QListWidget):
 
 class ScrollPlainTextEdit(ContainedWheel, QPlainTextEdit):
     pass
+
+
+class PageScrollPlainTextEdit(ScrollPlainTextEdit):
+    """Scroll the enclosing form with the wheel; keep text keyboard/bar scrolling."""
+
+    def wheelEvent(self, event):
+        parent = self.parentWidget()
+        while parent is not None:
+            if isinstance(parent, QScrollArea):
+                QApplication.sendEvent(parent.viewport(), event)
+                event.accept()
+                return
+            parent = parent.parentWidget()
+        super().wheelEvent(event)
 
 
 class NoWheelComboBox(QComboBox):

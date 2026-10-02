@@ -62,6 +62,37 @@ class PromptBuilderTests(unittest.TestCase):
         with self.assertRaises(FrozenInstanceError):
             snapshot.topics = "Другая тема"
 
+    def test_temperament_is_independent_of_humor_profanity_and_preserves_defense(self):
+        for preset in range(len(builder.PRESETS)):
+            styles = [builder.style_for(preset, 0, 0, temperament)
+                      for temperament in range(len(builder.TEMPERAMENTS))]
+            self.assertEqual(len(set(styles)), len(builder.TEMPERAMENTS))
+            for style in styles:
+                self.assertIn(builder.HUMOR[0], style)
+                self.assertIn(builder.PROFANITY[0], style)
+                self.assertEqual(builder.check_prompt(builder.compose_prompt(style)), ())
+
+    def test_creation_and_improvement_are_explicit_and_preserve_existing_topics(self):
+        current = builder.compose_prompt("Спокойный характер", "Настольные игры")
+        topics = builder.topics_from_prompt(current)
+        self.assertEqual(topics, "Настольные игры")
+        improved = self.snapshot(current_prompt=current, base_style="", wishes="",
+                                 topics=topics, operation="improve")
+        data = json.loads(improved.messages[-1][1])
+        self.assertEqual(data["operation"], "improve")
+        self.assertEqual(data["current_prompt"], current)
+        self.assertEqual(data["base_style"], "")
+        created = json.loads(self.snapshot(operation="create").messages[-1][1])
+        self.assertEqual(created["current_prompt"], "")
+        self.assertEqual(created["operation"], "create")
+        for changes in ({"operation": "improve"}, {"operation": "invalid"},
+                        {"operation": "create", "current_prompt": current}):
+            with self.assertRaises(ValueError):
+                self.snapshot(**changes)
+        for prompt in ("Ручной промпт", 'Темы канала (данные): null',
+                       'Темы канала (данные): ["Игры"]', 'Темы канала (данные): broken'):
+            self.assertEqual(builder.topics_from_prompt(prompt), builder.DEFAULT_TOPICS)
+
     def test_no_wishes_or_current_prompt_and_oversized_inputs_do_not_call_api(self):
         for kwargs in ({"wishes": ""}, {"wishes": "x" * 4001}, {"topics": "x" * 401},
                        {"current_prompt": "x" * 20001}):

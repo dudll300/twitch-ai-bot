@@ -25,7 +25,7 @@ from prompt_builder_gui import PromptBuilder
 from settings import load_settings, save_settings
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
-from ui_widgets import ScrollPlainTextEdit, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
+from ui_widgets import PageScrollPlainTextEdit, ScrollPlainTextEdit, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
 
 PAGES = (
     ("Подключение", "Подключите Twitch и выберите сервис для ответов."),
@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(20)
         main, main_layout = card("Общий промпт", "Эти инструкции действуют для всех зрителей. Можно оставить пустым.")
-        self.prompt = ScrollPlainTextEdit(prompt)
+        self.prompt = PageScrollPlainTextEdit(prompt)
         self.prompt.setAccessibleName("Общий системный промпт")
         self.prompt.setPlaceholderText("Опишите характер бота, язык и стиль ответов.\n\nНапример: отвечай по-русски, дружелюбно и кратко. Укладывайся в 300 символов. Не используй Markdown.")
         self.prompt.setMinimumHeight(240)

@@ -14,13 +14,14 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from PySide6.QtCore import QPoint
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import ai_client
 import gui
 from configuration import env_content
-from prompt_builder import CORE_RULES, TEST_CASES
+from prompt_builder import CORE_RULES, DEFAULT_TOPICS, TEMPERAMENTS, TEST_CASES
 from testing import Model
 
 
@@ -49,6 +50,14 @@ def main():
             assert not builder._busy
             builder.preset_button.click()
             assert CORE_RULES in builder.preview.toPlainText()
+            assert builder.preview.minimumHeight() >= 520
+            calm = builder.preview.toPlainText()
+            builder.temperament.setCurrentIndex(3)
+            builder.preset_button.click()
+            assert builder.preview.toPlainText() != calm
+            assert TEMPERAMENTS[3][1] in builder.preview.toPlainText()
+            builder.improve_button.click()
+            assert "Текущий общий промпт пуст" in builder.status.text()
             assert not window._dirty
             assert not window.prompt.toPlainText()
             http.assert_not_called()  # Neither startup nor offline presets load the catalog.
@@ -67,6 +76,10 @@ def main():
         app.processEvents()
         window._navigate(1)
         builder, page = window.prompt_builder, window.testing_page
+        builder.preset_button.click()
+        QTest.qWait(80)
+        scroll = window.pages.widget(1)
+        assert 0 <= builder.preview.mapTo(scroll.viewport(), QPoint(0, 0)).y() <= 24
         window.profiles_editor.prompt.setPlainText("Несохранённая инструкция Лопотика")
         window.prompt.setPlainText("Несохранённый общий промпт")
         builder.preset_button.click()
@@ -80,9 +93,10 @@ def main():
         assert not builder.apply_button.isEnabled() and not builder.test_button.isEnabled()
         builder.preset_button.click()
 
-        builder.wishes.setPlainText("Шути часто, мат изредка")
+        builder.wishes.setPlainText("Эти пожелания относятся только к новому промпту")
+        builder.improve_wishes.setPlainText("Шути часто, мат изредка")
         builder.topics.setText("Игры и чат")
-        builder.improve.setChecked(True)
+        builder.temperament.setCurrentIndex(3)
         builder.model_catalog.combo.setCurrentText("exact/prompt-generator")
         assert window._test_credentials().api_key == "saved-builder-key"
         window.api_key.setText("entered-builder-key")
@@ -101,16 +115,18 @@ def main():
             return response({"choices": [{"message": {"content": json.dumps({"style": "Отвечай по существу, используй язвительный юмор и мат изредка."})}, "finish_reason": "stop"}]})
         with patch.object(ai_client.urllib.request, "urlopen", side_effect=generate), patch.object(
                 window.process, "start") as start, patch.object(gui, "save_settings") as save:
-            builder.generate_button.click()
+            builder.improve_button.click()
             wait_for(entered.is_set)
-            assert builder._busy and not builder.generate_button.isEnabled()
+            assert builder._busy and not builder.generate_button.isEnabled() and not builder.improve_button.isEnabled()
             builder.start_generation()
-            builder.wishes.setPlainText("Изменение пожеланий после клика")
+            builder.improve_wishes.setPlainText("Изменение пожеланий после клика")
             window.prompt.setPlainText("Правка общего во время запроса")
             assert len(captured) == 1
             data = json.loads(captured[0]["messages"][-1]["content"])
             assert data["wishes"] == "Шути часто, мат изредка"
             assert data["current_prompt"] == "Несохранённый общий промпт"
+            assert data["operation"] == "improve" and data["base_style"] == ""
+            assert data["topics"] == DEFAULT_TOPICS  # New-prompt settings do not leak into improvement.
             release.set()
             wait_for(lambda: not builder._busy)
             assert window.prompt.toPlainText() == "Правка общего во время запроса"
@@ -118,6 +134,17 @@ def main():
             assert "entered-builder-key" not in builder.preview.toPlainText()
             start.assert_not_called()
             save.assert_not_called()
+
+        # Creation uses its own wishes/temperament and never the current general prompt.
+        with patch.object(ai_client.urllib.request, "urlopen", side_effect=generate):
+            builder.generate_button.click()
+            wait_for(lambda: not builder._busy)
+        created = json.loads(captured[-1]["messages"][-1]["content"])
+        assert created["operation"] == "create" and created["current_prompt"] == ""
+        assert created["wishes"] == "Эти пожелания относятся только к новому промпту"
+        assert TEMPERAMENTS[3][1] in created["base_style"]
+        assert created["topics"] == "Игры и чат"
+        assert window.prompt.toPlainText() == "Правка общего во время запроса"
 
         builder.test_button.click()
         assert window.pages.currentIndex() == 5
@@ -156,7 +183,7 @@ def main():
         snapshot = window._test_snapshot(["exact/a"], "Вопрос?", "viewer", "", None)
         assert snapshot.messages[0][1] == "Правка общего во время запроса"
         window._set_running(True)
-        assert not builder.generate_button.isEnabled() and not builder.apply_button.isEnabled()
+        assert not builder.generate_button.isEnabled() and not builder.improve_button.isEnabled() and not builder.apply_button.isEnabled()
         window._set_running(False)
 
         # Provider errors cannot expose the key or overwrite the previous valid candidate.

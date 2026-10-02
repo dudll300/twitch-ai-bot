@@ -25,7 +25,7 @@ import model_catalog_gui
 import testing
 from autonomous import AutoSettings, load_settings
 from configuration import env_content
-from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, scroll_page
+from ui_widgets import NoWheelComboBox, PageScrollPlainTextEdit, ScrollListWidget, ScrollPlainTextEdit, scroll_page
 
 
 def wait_for(predicate):
@@ -60,6 +60,9 @@ def check_scrolling(app):
     layout.addWidget(items)
     layout.addWidget(text)
     layout.addWidget(combo)
+    form_text = PageScrollPlainTextEdit("\n".join(f"Draft {i}" for i in range(100)))
+    form_text.setFixedHeight(130)
+    layout.addWidget(form_text)
     layout.addSpacing(1500)
     outer = scroll_page(content)
     outer.resize(450, 450)
@@ -88,6 +91,20 @@ def check_scrolling(app):
         assert wheel(view.viewport(), delta)
         assert outer.verticalScrollBar().value() == initial
     combo.hidePopup()
+    # Form editors scroll the page even when focused or when their text can scroll.
+    for contents in ("", "\n".join(f"Draft {i}" for i in range(100))):
+        form_text.setPlainText(contents)
+        form_text.setFocus()
+        app.processEvents()
+        for position in (0, form_text.verticalScrollBar().maximum()):
+            form_text.verticalScrollBar().setValue(position)
+            outer.verticalScrollBar().setValue(30)
+            assert wheel(form_text.viewport(), -120)
+            assert outer.verticalScrollBar().value() > 30
+            assert form_text.verticalScrollBar().value() == position
+            assert wheel(form_text.viewport(), 120)
+            assert outer.verticalScrollBar().value() == 30
+    outer.verticalScrollBar().setValue(initial)
     # Scrolling outside nested controls must still scroll the page.
     wheel(outer.viewport(), -120)
     assert outer.verticalScrollBar().value() > initial
