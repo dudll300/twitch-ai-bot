@@ -7,7 +7,7 @@ import json
 import unittest
 import urllib.error
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import ai_client
 import autonomous
@@ -97,6 +97,7 @@ class BackendResilienceTests(unittest.TestCase):
     def test_histories_keep_recent_viewers_and_only_successful_pairs(self):
         async def scenario():
             instance = bot.Bot.__new__(bot.Bot)
+            instance.autonomous = Mock()
             instance.cfg, instance.memory, instance.histories = CFG, {}, {}
             class Router:
                 def ask(self, *args):
@@ -119,6 +120,7 @@ class BackendResilienceTests(unittest.TestCase):
                 queue.put_nowait(("viewer4", "4", "Unsent", "4"))
                 await asyncio.wait_for(queue.join(), 2)
                 self.assertEqual(set(instance.histories), {"1", "3"})
+                self.assertEqual(instance.autonomous.remember_reply.call_count, 4)
             finally:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
@@ -128,12 +130,14 @@ class BackendResilienceTests(unittest.TestCase):
     def test_autonomous_reply_never_returns_echoed_api_key(self):
         # Quotes also check redaction after decoding the JSON string.
         cfg = {**CFG, "AI_API_KEY": 'sk-"private"'}
-        content = json.dumps({"action": "joke", "text": "Hello " + cfg["AI_API_KEY"]})
+        content = json.dumps({"action": "reply", "text": "Hello " + cfg["AI_API_KEY"],
+                              "target": "viewer", "basis": [1], "reason": "reaction"})
         with patch.object(ai_client.urllib.request, "urlopen", return_value=response(content)):
-            action, text = autonomous.request_decision(cfg, [], autonomous.AutoSettings())
-        self.assertEqual(action, "joke")
-        self.assertNotIn(cfg["AI_API_KEY"], text)
-        self.assertIn("[ключ скрыт]", text)
+            decision = autonomous.request_decision(cfg, [{"author": "viewer", "text": "Привет",
+                "sequence": 1, "time": 1}], autonomous.AutoSettings())
+        self.assertEqual(decision.action, "reply")
+        self.assertNotIn(cfg["AI_API_KEY"], decision.text)
+        self.assertIn("[ключ скрыт]", decision.text)
 
     def test_autonomous_request_remains_on_primary_without_fallback(self):
         calls = []

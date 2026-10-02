@@ -146,6 +146,7 @@ class Bot:
                     self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history,
                 )
                 await self.say(writer, f"@{user} {answer}")
+                self.autonomous.remember_reply(answer, target=user, source="reward", question=question)
                 # Refresh insertion order only after a successful publication.
                 pairs = self.histories.pop(key, deque(maxlen=10))
                 pairs.append((question, answer))

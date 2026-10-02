@@ -200,8 +200,8 @@ class RecognitionTests(unittest.TestCase):
         self.assertIn("[ключ скрыт]", snapshot.context)
 
     def test_autonomous_authors_and_mentions_match_profiles_by_id_and_alias(self):
-        participants = [{"author": "renamed", "user_id": "123", "text": "Хочу шутку", "time": 1},
-                        {"author": "someone", "user_id": "999", "text": "Что думаешь про лоптика?", "time": 2}]
+        participants = [{"author": "renamed", "user_id": "123", "text": "Хочу шутку", "time": 1, "sequence": 1},
+                        {"author": "someone", "user_id": "999", "text": "Что думаешь про лоптика?", "time": 2, "sequence": 2}]
         context = related_context(self.rows, "\n".join(row["text"] for row in participants), self.memory,
                                   participants=participants)
         self.assertIn("Шути про пельмени", context.prompt)
@@ -211,7 +211,8 @@ class RecognitionTests(unittest.TestCase):
         captured = []
         def request(req, timeout):
             captured.append(json.loads(req.data))
-            return io.BytesIO(b'{"choices":[{"message":{"content":"{\\"action\\":\\"silent\\",\\"text\\":\\"\\"}"}}]}')
+            return io.BytesIO(json.dumps({"choices": [{"message": {"content": json.dumps({"action": "silent",
+                "text": "", "target": "", "basis": [], "reason": "no_reason"})}}]}).encode())
         with patch.object(ai_client.urllib.request, "urlopen", side_effect=request):
             autonomous.request_decision(cfg, participants, autonomous.AutoSettings(), viewer_context=context.prompt)
         self.assertEqual(captured[0]["model"], "primary")

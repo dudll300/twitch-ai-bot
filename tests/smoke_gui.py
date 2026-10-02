@@ -101,7 +101,7 @@ def main() -> None:
         auto_page.inputs["context_count"].setValue(20)
         auto_page.advanced_button.click()
         # Wheel events must not edit values, even when controls have focus.
-        for widget in (auto_page.mode, window.model, *auto_page.inputs.values()):
+        for widget in (auto_page.mode, auto_page.participation, window.model, *auto_page.inputs.values()):
             before_value = widget.value() if hasattr(widget, "value") else widget.currentText()
             widget.setFocus()
             for delta in (-120, 120):

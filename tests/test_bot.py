@@ -6,7 +6,7 @@ import unittest
 import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import bot
 import memory
@@ -19,6 +19,7 @@ class BotTests(unittest.TestCase):
     def test_reward_events_only_and_history_per_viewer(self):
         async def scenario():
             instance = bot.Bot.__new__(bot.Bot)
+            instance.autonomous = Mock()
             instance.cfg = {"AI_MODEL": bot.AI_MODEL, "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS)}
             instance.memory = {"streamer": {"facts": [], "jokes": []}, "viewers": []}
             instance.histories = {}
@@ -45,6 +46,8 @@ class BotTests(unittest.TestCase):
             self.assertEqual(calls[11][1][0], ("Вопрос 1", "OK"))
             self.assertEqual(calls[12], ("2", ()))
             self.assertEqual(len(replies), 13)
+            self.assertEqual(instance.autonomous.remember_reply.call_count, 13)
+            instance.autonomous.remember_reply.assert_called_with("OK", target="two", source="reward", question="Другой вопрос")
 
         asyncio.run(scenario())
 

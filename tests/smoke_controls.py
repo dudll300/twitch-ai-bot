@@ -257,6 +257,9 @@ def main():
         assert window.model.findData("old-key-only") == -1
         assert window.model.currentText() == "manual/model"
         page = window.autonomous_page
+        assert page.participation.currentData() == "balanced"
+        page.participation.setCurrentIndex(page.participation.findData("active"))
+        assert load_settings(root / "autonomous.json")[0].participation == "active"
         page.enabled.setChecked(True)
         page.mode.setCurrentIndex(page.mode.findData("publish"))
         changes = {"pause_seconds": 0, "hourly_limit": 50, "context_count": 500,
@@ -276,6 +279,7 @@ def main():
         page.reset_button.click()
         assert load_settings(root / "autonomous.json")[0] == AutoSettings()
         assert not page.enabled.isChecked() and page.mode.currentData() == "preview"
+        assert page.participation.currentData() == "balanced"
         assert all(widget.value() == asdict(AutoSettings())[key] for key, widget in page.inputs.items())
         assert quota.read_bytes() == quota_before
         page.inputs["hourly_limit"].setValue(20)

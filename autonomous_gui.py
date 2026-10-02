@@ -6,6 +6,7 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QAbstractSpinBox, QGridLayout, QHBoxLayout, QPushButton, QSpinBox, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget
 
 from autonomous import AutoSettings, MINIMUM_VALUES, load_settings, save_settings, validate_settings
+from participation import PARTICIPATION
 from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page
 
 
@@ -14,12 +15,16 @@ PARAMETERS = (
     ("hourly_limit", "Максимум за час", ""),
     ("context_count", "Сообщений в контексте", ""),
     ("freshness_seconds", "Срок свежести контекста", " с"),
-    ("check_min_seconds", "Интервал проверки · от", " с"),
-    ("check_max_seconds", "Интервал проверки · до", " с"),
+    ("check_min_seconds", "Пауза между AI-проверками · от", " с"),
+    ("check_max_seconds", "Пауза между AI-проверками · до", " с"),
     ("active_seconds", "Последнее сообщение не старше", " с"),
     ("min_messages", "Минимум сообщений для проверки", ""),
     ("min_authors", "Минимум разных авторов", ""),
     ("max_chars", "Максимальная длина реплики", " симв."),
+    ("settle_seconds", "Ожидание паузы в разговоре", " с"),
+    ("max_wait_seconds", "Максимальное ожидание фрагмента", " с"),
+    ("reply_ttl_seconds", "Срок актуальности ответа", " с"),
+    ("request_hourly_limit", "Максимум AI-проверок за час", ""),
 )
 
 
@@ -74,6 +79,12 @@ class AutonomousPage(QWidget):
         self.mode.setAccessibleName("Режим отправки самостоятельных реплик")
         controls.addWidget(self.mode)
         main_layout.addLayout(controls)
+        self.participation = NoWheelComboBox()
+        for value, (caption, _) in PARTICIPATION.items():
+            self.participation.addItem(caption, value)
+        self.participation.setCurrentIndex(self.participation.findData(self.saved.participation))
+        main_layout.addWidget(field("Характер участия", self.participation,
+            "Осторожный — явные поводы; собеседник — поддержка разговора; активный — больше инициативы по свежей теме. Стиль ответов задаёт общий промпт."))
         main_layout.addWidget(label(
             "Предпросмотр показывает решения только здесь. Публикация отправляет реплики в Twitch. "
             "При выключении чат не собирается, контекст очищается, подготовленные реплики отменяются.", "muted", True))
@@ -83,7 +94,7 @@ class AutonomousPage(QWidget):
         self.error = label(error, "error", True)
         self.error.setVisible(bool(error))
         layout.addWidget(self.error)
-        options, options_layout = card("Частота и контекст", "Проверки выполняются в случайные моменты заданного интервала, только при свежей активности.")
+        options, options_layout = card("Частота и контекст", "Новые сообщения собираются в короткий фрагмент. AI выбирает конкретный повод и адресата; проверки не выполняются на каждую строку.")
         grid = QGridLayout()
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(16)
@@ -137,13 +148,14 @@ class AutonomousPage(QWidget):
         self.log.setReadOnly(True)
         self.log.setMinimumHeight(240)
         self.log.document().setMaximumBlockCount(1000)
-        self.log.setPlaceholderText("После запуска бота здесь появятся решения: промолчать, пошутить или задать вопрос.")
+        self.log.setPlaceholderText("После запуска бота здесь появятся решения: промолчать, ответить, отреагировать, пошутить или задать вопрос.")
         self.log.setAccessibleName("Журнал самостоятельных реплик")
         journal_layout.addWidget(self.log)
         layout.addWidget(journal)
         outer.addWidget(scroll_page(content))
         self.enabled.toggled.connect(self._live_change)
         self.mode.currentIndexChanged.connect(self._live_change)
+        self.participation.currentIndexChanged.connect(self._live_change)
         self._loading = False
         self.set_running(False)
 
@@ -162,7 +174,7 @@ class AutonomousPage(QWidget):
             return
         # Disabling must work even while numeric edits are inconsistent.
         values = asdict(self.saved)
-        values.update(enabled=self.enabled.isChecked(), mode=self.mode.currentData())
+        values.update(enabled=self.enabled.isChecked(), mode=self.mode.currentData(), participation=self.participation.currentData())
         self._save(validate_settings(values))
 
     def _save(self, settings):
@@ -174,6 +186,7 @@ class AutonomousPage(QWidget):
             self._loading = True
             self.enabled.setChecked(self.saved.enabled)
             self.mode.setCurrentIndex(0 if self.saved.mode == "preview" else 1)
+            self.participation.setCurrentIndex(self.participation.findData(self.saved.participation))
             self._loading = False
             return False
         self.saved = settings
@@ -185,7 +198,7 @@ class AutonomousPage(QWidget):
 
     def apply(self):
         values = {key: widget.value() for key, widget in self.inputs.items()}
-        values.update(enabled=self.enabled.isChecked(), mode=self.mode.currentData())
+        values.update(enabled=self.enabled.isChecked(), mode=self.mode.currentData(), participation=self.participation.currentData())
         try:
             settings = validate_settings(values)
         except ValueError as exc:
@@ -203,6 +216,7 @@ class AutonomousPage(QWidget):
         try:
             self.enabled.setChecked(defaults.enabled)
             self.mode.setCurrentIndex(self.mode.findData(defaults.mode))
+            self.participation.setCurrentIndex(self.participation.findData(defaults.participation))
             for key, widget in self.inputs.items():
                 widget.setValue(getattr(defaults, key))
         finally:
@@ -212,16 +226,23 @@ class AutonomousPage(QWidget):
 
     def set_running(self, running):
         self._running = running
-        self.state.setText("Тумблер и режим сохраняются сразу. Бот применяет изменения без перезапуска." if running else
-                           "Настройки сохранены для следующего запуска бота. Тумблер и режим сохраняются сразу.")
+        self.state.setText("Тумблер, режим и характер участия сохраняются сразу. Бот применяет изменения без перезапуска." if running else
+                           "Настройки сохранены для следующего запуска бота. Тумблер, режим и характер участия сохраняются сразу.")
 
     def push_event(self, event):
         statuses = {"settings": "Настройки", "pending": "Проверка AI", "silent": "Промолчать",
                     "preview": "Предпросмотр", "published": "Отправлено в чат",
                     "skipped": "Пропущено", "error": "Ошибка"}
-        actions = {"joke": "шутка", "question": "вопрос", "silent": "молчание"}
+        actions = {"answer": "ответ", "reaction": "реакция", "joke": "шутка", "question": "вопрос", "silent": "молчание"}
         status = statuses.get(event.get("status"), "Событие")
         action = actions.get(event.get("action"), "")
-        body = event.get("text") or event.get("reason") or "Без реплики."
+        reasons = {"no_reason": "Нет уместного повода.", "offtopic": "Постороннее задание или тема.",
+                   "already_answered": "Вопрос уже закрыт.", "insufficient_context": "Недостаточно контекста."}
+        reason = event.get("reason", "")
+        body = event.get("text") or reasons.get(reason, reason) or "Без реплики."
         heading = f"[{event.get('time', '')}] {status}" + (f" · {action}" if action else "")
+        if event.get("target"):
+            heading += " · @" + event["target"]
+        if event.get("basis"):
+            heading += " · сообщения " + ", ".join(str(value) for value in event["basis"])
         self.log.appendPlainText(heading + "\n" + str(body) + "\n")
