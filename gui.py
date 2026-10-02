@@ -21,6 +21,7 @@ from model_catalog_gui import ModelCatalogControl
 from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
 from profiles_gui import ProfilesEditor
+from prompt_builder_gui import PromptBuilder
 from settings import load_settings, save_settings
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
@@ -196,6 +197,10 @@ class MainWindow(QMainWindow):
         self.base_url.textChanged.connect(self.testing_page.invalidate_catalog)
         self.api_key.textChanged.connect(self.model_catalog.invalidate)
         self.base_url.textChanged.connect(self.model_catalog.invalidate)
+        self.api_key.textChanged.connect(self.prompt_builder.model_catalog.invalidate)
+        self.base_url.textChanged.connect(self.prompt_builder.model_catalog.invalidate)
+        self.prompt_builder.test_requested.connect(self._test_prompt_draft)
+        self.prompt_builder.connection_requested.connect(lambda: self._navigate(0))
         QShortcut(QKeySequence.Save, self, activated=lambda: self._save())
         self._update_prompt_count()
 
@@ -229,7 +234,7 @@ class MainWindow(QMainWindow):
         saved_key = read_config(self._root / ".env").get("AI_API_KEY", "") if not self.api_key.text().strip() else ""
         return credentials(self.base_url.text(), self.api_key.text(), saved_key)
 
-    def _test_snapshot(self, models, question, sender, login, profile_index):
+    def _test_snapshot(self, models, question, sender, login, profile_index, *, prompt_override=None):
         # Only the key may come from saved settings. All drafts come from widgets.
         auth = self._test_credentials()
         if self.profiles_editor.load_error:
@@ -238,12 +243,17 @@ class MainWindow(QMainWindow):
         if sender == "profile":
             if profile_index is not None and 0 <= profile_index < len(self.profiles_editor.rows):
                 profile = deepcopy(self.profiles_editor.rows[profile_index])
-        return make_snapshot(auth, models, question, self.prompt.toPlainText(), sender,
+        prompt = self.prompt.toPlainText() if prompt_override is None else prompt_override
+        return make_snapshot(auth, models, question, prompt, sender,
                              login, profile, read_test_memory(self._root),
                              profiles=deepcopy(self.profiles_editor.rows))
 
     def _test_prompt(self):
         self.testing_page.open_for_prompt()
+        self._navigate(5)
+
+    def _test_prompt_draft(self, prompt):
+        self.testing_page.open_for_prompt(prompt)
         self._navigate(5)
 
     def _test_profile(self, index):
@@ -321,6 +331,9 @@ class MainWindow(QMainWindow):
         row.addWidget(self.reset_prompt)
         main_layout.addLayout(row)
         layout.addWidget(main, 1)
+        self.prompt_builder = PromptBuilder(self._test_credentials, self.prompt.toPlainText,
+                                            self.prompt.setPlainText)
+        layout.addWidget(self.prompt_builder)
         return scroll_page(page)
 
     def _build_activity(self):
@@ -418,6 +431,7 @@ class MainWindow(QMainWindow):
 
     def _set_running(self, running):
         self.autonomous_page.set_running(running)
+        self.prompt_builder.set_editable(not running)
         self.model_catalog.set_editable(not running)
         for widget in (*self._field_widgets().values(), self.prompt, self.reset_prompt, self.save_button):
             widget.setEnabled(not running)
@@ -574,6 +588,7 @@ class MainWindow(QMainWindow):
             self.process.waitForFinished(1000)
         self.testing_page.shutdown()
         self.model_catalog.shutdown()
+        self.prompt_builder.shutdown()
         super().closeEvent(event)
 
 

@@ -12,6 +12,7 @@ from ai_client import redact_secret
 from configuration import normalize
 from testing import Model, test_model
 from model_catalog_gui import catalog_worker
+from prompt_builder import TEST_CASES
 from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, field, label, scroll_page
 
 
@@ -43,6 +44,7 @@ class TestingPage(QWidget):
         self._remaining = 0
         self._result_widgets = {}
         self.catalog = ()
+        self.prompt_override = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -54,11 +56,26 @@ class TestingPage(QWidget):
             "Тестовые запросы могут расходовать баланс AI API. Base URL и ключ берутся из «Подключения». "
             "Вопросы и ответы теста не записываются в память, историю или журнал бота.", "muted", True))
         request, request_layout = card("Пробный вопрос")
+        self.prompt_source = label("Следующий тест использует текущий общий промпт из «Поведения».", "muted", True)
+        request_layout.addWidget(self.prompt_source)
+        self.restore_prompt_button = QPushButton("Вернуться к текущему общему промпту")
+        self.restore_prompt_button.clicked.connect(self.clear_prompt_override)
+        self.restore_prompt_button.hide()
+        request_layout.addWidget(self.restore_prompt_button)
+        self.case_combo = NoWheelComboBox()
+        self.case_combo.addItem("Свой вопрос", None)
+        for index, (title, _, _) in enumerate(TEST_CASES):
+            self.case_combo.addItem(title, index)
+        request_layout.addWidget(field("Примеры для проверки поведения и защиты", self.case_combo))
+        self.expectation = label("Оцените ответ самостоятельно: проверки примеров не гарантируют защиту от всех обходов.", "muted", True)
+        request_layout.addWidget(self.expectation)
         self.question = ScrollPlainTextEdit()
         self.question.setPlaceholderText("Что спросить у каждой выбранной модели?")
         self.question.setAccessibleName("Пробный вопрос")
         self.question.setMaximumHeight(110)
         request_layout.addWidget(self.question)
+        self.case_combo.currentIndexChanged.connect(self._select_case)
+        self.question.textChanged.connect(self._case_expectation)
         self.sender = NoWheelComboBox()
         for title, mode in (("Обычный зритель", "viewer"), ("Зритель из профилей", "profile"),
                             ("Владелец канала · имитация роли", "owner")):
@@ -155,12 +172,35 @@ class TestingPage(QWidget):
             self.viewer.setCurrentIndex(selected)
 
     def open_for_profile(self, index):
+        self.clear_prompt_override()
         self.refresh_profiles()
         self.sender.setCurrentIndex(self.sender.findData("profile"))
         self.viewer.setCurrentIndex(self.viewer.findData(index))
 
-    def open_for_prompt(self):
+    def open_for_prompt(self, prompt=None):
+        self.prompt_override = prompt
+        self.prompt_source.setText("Следующий тест использует копию варианта из генератора. Общий промпт не заменён и не сохранён."
+                                   if prompt is not None else "Следующий тест использует текущий общий промпт из «Поведения».")
+        self.restore_prompt_button.setVisible(prompt is not None)
         self.sender.setCurrentIndex(self.sender.findData("viewer"))
+
+    def clear_prompt_override(self):
+        self.prompt_override = None
+        self.prompt_source.setText("Следующий тест использует текущий общий промпт из «Поведения».")
+        self.restore_prompt_button.hide()
+
+    def _select_case(self, *_):
+        index = self.case_combo.currentData()
+        if index is not None:
+            self.question.setPlainText(TEST_CASES[index][1])
+        self._case_expectation()
+
+    def _case_expectation(self):
+        index = self.case_combo.currentData()
+        if index is not None and self.question.toPlainText() == TEST_CASES[index][1]:
+            self.expectation.setText("Ожидаемое поведение: " + TEST_CASES[index][2] + " Оцените фактический ответ самостоятельно.")
+        else:
+            self.expectation.setText("Свой вопрос. Оцените ответ самостоятельно: эти проверки не гарантируют защиту от всех обходов.")
 
     def _sender_changed(self, *_):
         mode = self.sender.currentData()
@@ -234,7 +274,8 @@ class TestingPage(QWidget):
     def _set_busy(self):
         busy = self._testing_busy or self._catalog_busy
         for widget in (self.run_button, self.refresh_button, self.add_button, self.reset_button, self.manual,
-                       self.models, self.sender, self.viewer, self.login, self.question):
+                       self.models, self.sender, self.viewer, self.login, self.question,
+                       self.case_combo, self.restore_prompt_button):
             widget.setEnabled(not busy)
         self.run_button.setText("Получаем ответы…" if self._testing_busy else "Получить ответы")
         self.refresh_button.setText("Загрузка…" if self._catalog_busy else "Обновить список")
@@ -256,17 +297,19 @@ class TestingPage(QWidget):
         if self._testing_busy or self._catalog_busy or self._closed:
             return
         try:
+            kwargs = {"prompt_override": self.prompt_override} if self.prompt_override is not None else {}
             snapshot = self.get_snapshot(self.selected_models(), self.question.toPlainText(),
                                          self.sender.currentData(),
                                          self.login.text() if self.sender.currentData() == "viewer" else "",
-                                         self.viewer.currentData())
+                                         self.viewer.currentData(), **kwargs)
         except (OSError, ValueError) as exc:
             self.status.setText(str(exc))
             return
         self._testing_busy = True
         self._remaining = len(snapshot.models)
         self._set_busy()
-        self.context.setText(snapshot.context)
+        source = "Проверяемый промпт: временный вариант из генератора." if kwargs else "Проверяемый промпт: общий из «Поведения»."
+        self.context.setText(source + "\n" + snapshot.context)
         while self.results_layout.count():
             widget = self.results_layout.takeAt(0).widget()
             widget.deleteLater()

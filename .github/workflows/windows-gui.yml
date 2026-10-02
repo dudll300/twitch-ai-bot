@@ -23,6 +23,7 @@ jobs:
       - run: python tests/smoke_gui.py
       - run: python tests/smoke_testing.py
       - run: python tests/smoke_controls.py
+      - run: python tests/smoke_prompt_builder.py
       - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "memory.example.json;." app.py
       - run: python tests/smoke_package.py
       - uses: actions/upload-artifact@v4

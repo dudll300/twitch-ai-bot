@@ -108,12 +108,13 @@ def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
     return answer
 
 
-def request_completion(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
+def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
+                       max_tokens: int = 512, reject_truncated: bool = False) -> str:
     """One exact-model request; callers apply their own text/JSON constraints."""
     payload = {
         "model": model,
         "messages": messages,
-        "max_tokens": 512,
+        "max_tokens": max_tokens,
         "stream": False,
     }
     request = urllib.request.Request(
@@ -145,11 +146,14 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict]) ->
     except ValueError:
         raise TemporaryAIError("AI API вернул некорректный JSON") from None
     try:
-        answer = data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        answer = choice["message"]["content"]
     except (KeyError, IndexError, TypeError):
         raise TemporaryAIError("AI API вернул некорректный ответ") from None
     if not isinstance(answer, str) or not answer.strip():
         raise TemporaryAIError("AI API вернул пустой ответ")
+    if reject_truncated and choice.get("finish_reason") == "length":
+        raise TemporaryAIError("AI API обрезал результат. Повторите генерацию с более короткими пожеланиями.")
     return answer
 
 
