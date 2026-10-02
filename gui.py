@@ -25,7 +25,7 @@ from prompt_builder_gui import PromptBuilder
 from settings import load_settings, save_settings
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
-from ui_widgets import PageScrollPlainTextEdit, ScrollPlainTextEdit, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
+from ui_widgets import ScrollPlainTextEdit, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
 
 PAGES = (
     ("Подключение", "Подключите Twitch и выберите сервис для ответов."),
@@ -313,7 +313,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(20)
         main, main_layout = card("Общий промпт", "Эти инструкции действуют для всех зрителей. Можно оставить пустым.")
-        self.prompt = PageScrollPlainTextEdit(prompt)
+        self.prompt = ScrollPlainTextEdit(prompt)
         self.prompt.setAccessibleName("Общий системный промпт")
         self.prompt.setPlaceholderText("Опишите характер бота, язык и стиль ответов.\n\nНапример: отвечай по-русски, дружелюбно и кратко. Укладывайся в 300 символов. Не используй Markdown.")
         self.prompt.setMinimumHeight(240)
@@ -362,13 +362,14 @@ class MainWindow(QMainWindow):
         journal, journal_layout = card("Журнал работы")
         self.log = ScrollPlainTextEdit()
         self.log.setReadOnly(True)
+        self.log.setMinimumHeight(240)
         self.log.setAccessibleName("Журнал работы бота")
         self.log.setPlaceholderText("Здесь появятся события подключения и ответы.\nЗапустите бота, когда настройки будут готовы.")
         self.log.setFont(QFont("Consolas", 10))
         self.log.document().setMaximumBlockCount(2000)
         journal_layout.addWidget(self.log, 1)
         layout.addWidget(journal, 1)
-        return page
+        return scroll_page(page)
 
     def _update_prompt_count(self):
         self.prompt_count.setText(f"{len(self.prompt.toPlainText()):,} / 20 000 символов".replace(",", " "))

@@ -18,14 +18,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget
 
 import gui
 import model_catalog_gui
 import testing
 from autonomous import AutoSettings, load_settings
 from configuration import env_content
-from ui_widgets import NoWheelComboBox, PageScrollPlainTextEdit, ScrollListWidget, ScrollPlainTextEdit, scroll_page
+from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, scroll_page
 
 
 def wait_for(predicate):
@@ -60,7 +60,7 @@ def check_scrolling(app):
     layout.addWidget(items)
     layout.addWidget(text)
     layout.addWidget(combo)
-    form_text = PageScrollPlainTextEdit("\n".join(f"Draft {i}" for i in range(100)))
+    form_text = ScrollPlainTextEdit()
     form_text.setFixedHeight(130)
     layout.addWidget(form_text)
     layout.addSpacing(1500)
@@ -91,24 +91,102 @@ def check_scrolling(app):
         assert wheel(view.viewport(), delta)
         assert outer.verticalScrollBar().value() == initial
     combo.hidePopup()
-    # Form editors scroll the page even when focused or when their text can scroll.
-    for contents in ("", "\n".join(f"Draft {i}" for i in range(100))):
+    # Empty/short text forwards to the page, including when focused or read-only.
+    for contents, readonly in (("", False), ("Short draft", False), ("Short result", True)):
+        form_text.setReadOnly(readonly)
         form_text.setPlainText(contents)
         form_text.setFocus()
         app.processEvents()
-        for position in (0, form_text.verticalScrollBar().maximum()):
-            form_text.verticalScrollBar().setValue(position)
-            outer.verticalScrollBar().setValue(30)
-            assert wheel(form_text.viewport(), -120)
-            assert outer.verticalScrollBar().value() > 30
-            assert form_text.verticalScrollBar().value() == position
-            assert wheel(form_text.viewport(), 120)
-            assert outer.verticalScrollBar().value() == 30
+        assert form_text.verticalScrollBar().maximum() == 0
+        outer.verticalScrollBar().setValue(30)
+        assert wheel(form_text.viewport(), -120)
+        assert outer.verticalScrollBar().value() > 30
+        assert wheel(form_text.viewport(), 120)
+        assert outer.verticalScrollBar().value() == 30
+    # A short field becomes a contained scroller as text grows, then forwards again.
+    form_text.setPlainText("\n".join(f"Draft {i}" for i in range(100)))
+    app.processEvents()
+    bar = form_text.verticalScrollBar()
+    assert bar.maximum() > 0
+    outer.verticalScrollBar().setValue(30)
+    for position, delta in ((0, -120), (bar.maximum(), -120), (0, 120)):
+        bar.setValue(position)
+        assert wheel(form_text.viewport(), delta)
+        assert outer.verticalScrollBar().value() == 30
+    bar.setValue(0)
+    wheel(form_text.viewport(), -120)
+    assert bar.value() > 0
+    form_text.clear()
+    app.processEvents()
+    assert form_text.verticalScrollBar().maximum() == 0
+    wheel(form_text.viewport(), -120)
+    assert outer.verticalScrollBar().value() > 30
     outer.verticalScrollBar().setValue(initial)
     # Scrolling outside nested controls must still scroll the page.
     wheel(outer.viewport(), -120)
     assert outer.verticalScrollBar().value() > initial
     outer.close()
+
+
+def check_all_page_text_fields(app):
+    """Exercise actual editors, read-only journals and a generated test result."""
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / ".env").write_text(env_content({"AI_API_KEY": "scroll-test-key"}), encoding="utf-8")
+        with patch.object(gui, "data_dir", return_value=root):
+            window = gui.MainWindow()
+        window.show()
+        window.profiles_editor.add_button.click()
+        window.profiles_editor.login.setText("viewer")
+        window.prompt_builder.show_preset()
+        page = window.testing_page
+        page.question.setPlainText("Вопрос для проверки прокрутки")
+        page._add_model(testing.Model("scroll/model"), checked=True)
+        with patch.object(testing.urllib.request, "urlopen", return_value=response(
+                {"choices": [{"message": {"content": "Короткий ответ"}}]})):
+            page.run_button.click()
+            wait_for(lambda: not page._testing_busy)
+        checked, expanded = 0, set()
+        for index in range(window.pages.count()):
+            window._navigate(index)
+            app.processEvents()
+            for editor in window.pages.widget(index).findChildren(QPlainTextEdit):
+                assert isinstance(editor, ScrollPlainTextEdit), "A page uses an inconsistent text control"
+                outer = editor.parentWidget()
+                while outer is not None and not isinstance(outer, QScrollArea):
+                    outer = outer.parentWidget()
+                assert outer is not None, "Text fields must have a scrollable enclosing page"
+                if id(outer) not in expanded:
+                    outer.widget().layout().addSpacing(1200)
+                    expanded.add(id(outer))
+                editor.setFixedHeight(130)
+                editor.setPlainText("Short text")
+                editor.setFocus()
+                wait_for(lambda: outer.verticalScrollBar().maximum() > 100)
+                assert editor.verticalScrollBar().maximum() == 0
+                outer.verticalScrollBar().setValue(30)
+                wheel(editor.viewport(), -120)
+                assert outer.verticalScrollBar().value() > 30, (index, editor.accessibleName(),
+                                                               outer.verticalScrollBar().maximum())
+                editor.setPlainText("\n".join(f"Long line {i}" for i in range(100)))
+                app.processEvents()
+                inner = editor.verticalScrollBar()
+                assert inner.maximum() > 0
+                outer.verticalScrollBar().setValue(30)
+                inner.setValue(0)
+                wheel(editor.viewport(), -120)
+                assert inner.value() > 0 and outer.verticalScrollBar().value() == 30
+                inner.setValue(inner.maximum())
+                wheel(editor.viewport(), -120)
+                assert outer.verticalScrollBar().value() == 30
+                editor.clear()
+                app.processEvents()
+                wheel(editor.viewport(), -120)
+                assert outer.verticalScrollBar().value() > 30
+                checked += 1
+        assert checked >= 9, "Some prompt, profile, question, result or journal fields were missed"
+        with patch.object(gui, "russian_question", return_value=QMessageBox.Discard):
+            window.close()
 
 
 def main():
@@ -220,6 +298,7 @@ def main():
         app.processEvents()
         assert control._events.empty()
     check_scrolling(app)
+    check_all_page_text_fields(app)
     app.quit()
     print("Controls work: on-demand catalog, draft preservation, reset and contained scrolling.")
 

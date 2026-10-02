@@ -6,9 +6,43 @@ from unittest.mock import patch
 
 import bot
 import settings
+import start
+from configuration import env_content
 
 
 class SettingsTests(unittest.TestCase):
+    def test_first_run_fallbacks_can_be_saved_and_cleared(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            values, prompt = settings.load_settings(root)
+            self.assertEqual(values["AI_FALLBACK_MODELS"], "deepseek-v4-pro,deepseek-v4-flash")
+            self.assertFalse((root / ".env").exists())
+            settings.save_settings(values, prompt, root, allow_incomplete=True)
+            self.assertEqual(settings.load_settings(root)[0]["AI_FALLBACK_MODELS"], values["AI_FALLBACK_MODELS"])
+            values["AI_FALLBACK_MODELS"] = ""
+            settings.save_settings(values, prompt, root, allow_incomplete=True)
+            self.assertEqual(settings.load_settings(root)[0]["AI_FALLBACK_MODELS"], "")
+
+    def test_existing_missing_empty_and_custom_fallback_lists_are_preserved(self):
+        for saved, expected in (({}, ""), ({"AI_FALLBACK_MODELS": ""}, ""),
+                                ({"AI_FALLBACK_MODELS": "custom/a,custom/b"}, "custom/a,custom/b")):
+            with self.subTest(saved=saved), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                (root / ".env").write_text(env_content(saved), encoding="utf-8")
+                before = (root / ".env").read_bytes()
+                self.assertEqual(settings.load_settings(root)[0]["AI_FALLBACK_MODELS"], expected)
+                self.assertEqual((root / ".env").read_bytes(), before)
+
+    def test_console_first_run_offers_same_backups_and_can_clear_them(self):
+        for entered, expected in (("", "deepseek-v4-pro,deepseek-v4-flash"), ("-", "")):
+            with self.subTest(entered=entered), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / ".env"
+                inputs = ["streamer", "helper", "client", "", "", "", entered]
+                with patch("builtins.input", side_effect=inputs), patch.object(
+                        start.getpass, "getpass", return_value="test-key"):
+                    start.setup(path)
+                self.assertEqual(settings.read_config(path)["AI_FALLBACK_MODELS"], expected)
+
     def test_selected_model_prompt_and_existing_key_reach_bot(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

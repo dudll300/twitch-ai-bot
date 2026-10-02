@@ -50,6 +50,7 @@ def main() -> None:
         assert window.model.isEditable()
         assert not window.windowIcon().isNull()
         assert window.prompt.toPlainText() == ""
+        assert window.fallback_models.text() == "deepseek-v4-pro,deepseek-v4-flash"
         window.channel.setText("https://www.twitch.tv/Streamer")
         window.bot_name.setText("HelperBot")
         window.client_id.setText("client123")

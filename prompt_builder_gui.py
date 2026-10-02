@@ -10,7 +10,7 @@ from ai_client import clean_text, redact_secret
 from model_catalog_gui import ModelCatalogControl
 from prompt_builder import (DEFAULT_TOPICS, GENERATOR_MODEL, PRESETS, TEMPERAMENTS, check_prompt, compose_prompt,
                             generate_prompt, prepare_generation, style_for, topics_from_prompt)
-from ui_widgets import NoWheelComboBox, PageScrollPlainTextEdit, card, field, label
+from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, card, field, label
 
 
 def generation_worker(snapshot, output, cancel):
@@ -73,7 +73,7 @@ class PromptBuilder(QWidget):
         self.preset_button = QPushButton("Показать пресет · без AI API")
         self.preset_button.clicked.connect(self.show_preset)
         layout.addWidget(self.preset_button, 0, Qt.AlignLeft)
-        self.wishes = PageScrollPlainTextEdit()
+        self.wishes = ScrollPlainTextEdit()
         self.wishes.setPlaceholderText("Например: часто шути, используй мат и подкалывай зрителей, но отвечай на вопросы по делу")
         self.wishes.setMinimumHeight(85)
         self.wishes.setMaximumHeight(130)
@@ -86,7 +86,7 @@ class PromptBuilder(QWidget):
         outer.addWidget(self.create_card)
 
         self.improve_card, improve_layout = card("Улучшить текущий промпт", "Берём текст из поля «Общий промпт», включая несохранённые изменения")
-        self.improve_wishes = PageScrollPlainTextEdit()
+        self.improve_wishes = ScrollPlainTextEdit()
         self.improve_wishes.setPlaceholderText("Например: сохрани характер, но убери повторяющиеся фразы и сделай подколы более конкретными")
         self.improve_wishes.setMinimumHeight(100)
         self.improve_wishes.setMaximumHeight(150)
@@ -101,11 +101,11 @@ class PromptBuilder(QWidget):
         outer.addWidget(self.status)
 
         self.draft_card, draft_layout = card("Новый вариант промпта", "Текущий общий промпт не меняется до нажатия «Применить»")
-        self.preview = PageScrollPlainTextEdit()
+        self.preview = ScrollPlainTextEdit()
         self.preview.setAccessibleName("Новый вариант промпта")
         self.preview.setMinimumHeight(520)
         draft_layout.addWidget(self.preview)
-        draft_layout.addWidget(label("Колесо мыши прокручивает страницу. Для прокрутки длинного текста используйте его полосу прокрутки или клавиши.", "muted", True))
+        draft_layout.addWidget(label("Колесо прокручивает длинный текст внутри поля. Если весь текст помещается, прокручивается вкладка.", "muted", True))
         self.validation = label("", "muted", True)
         self.validation.setTextFormat(Qt.PlainText)
         draft_layout.addWidget(self.validation)

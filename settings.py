@@ -4,14 +4,18 @@ import os
 import sys
 from pathlib import Path
 
-from configuration import DEFAULTS, SYSTEM_PROMPT, FIELDS, normalize, read_config, invalidate_tokens, env_content
+from configuration import DEFAULTS, FIRST_RUN_FALLBACK_MODELS, SYSTEM_PROMPT, FIELDS, normalize, read_config, invalidate_tokens, env_content
 from paths import data_dir
 
 
 def load_settings(root: Path | None = None) -> tuple[dict[str, str], str]:
     root = root or data_dir()
-    values = read_config(root / ".env")
+    env_path = root / ".env"
+    first_run = not env_path.exists()
+    values = read_config(env_path)
     values = {**DEFAULTS, **values}
+    if first_run:
+        values["AI_FALLBACK_MODELS"] = FIRST_RUN_FALLBACK_MODELS
     prompt_path = root / "prompt.txt"
     prompt = prompt_path.read_text(encoding="utf-8-sig") if prompt_path.exists() else SYSTEM_PROMPT
     return values, prompt

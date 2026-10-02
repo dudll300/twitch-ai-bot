@@ -5,7 +5,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from configuration import (AI_MODEL, DEFAULTS, FIELDS, read_config, normalize,
+from configuration import (AI_MODEL, DEFAULTS, FIRST_RUN_FALLBACK_MODELS, FIELDS, read_config, normalize,
                            invalidate_tokens, env_content)
 from paths import data_dir
 
@@ -22,6 +22,7 @@ def complete(values: dict[str, str]) -> bool:
 
 
 def setup(path: Path, force: bool = False) -> None:
+    first_run = not path.exists()
     previous = read_config(path)
     if complete(previous) and not force:
         return
@@ -31,6 +32,8 @@ def setup(path: Path, force: bool = False) -> None:
     values = dict(previous)
     for name, label in FIELDS:
         old = previous.get(name, DEFAULTS.get(name, ""))
+        if name == "AI_FALLBACK_MODELS" and first_run:
+            old = FIRST_RUN_FALLBACK_MODELS
         while True:
             suffix = (f" [Enter — {old}]" if name in DEFAULTS else
                       " [Enter — оставить прежнее]" if old else "")

@@ -35,13 +35,13 @@ class ScrollListWidget(ContainedWheel, QListWidget):
 
 
 class ScrollPlainTextEdit(ContainedWheel, QPlainTextEdit):
-    pass
-
-
-class PageScrollPlainTextEdit(ScrollPlainTextEdit):
-    """Scroll the enclosing form with the wheel; keep text keyboard/bar scrolling."""
+    """Scroll long text locally; forward the wheel to the page when all text fits."""
 
     def wheelEvent(self, event):
+        bar = self.verticalScrollBar()
+        if bar.maximum() > bar.minimum():
+            super().wheelEvent(event)
+            return
         parent = self.parentWidget()
         while parent is not None:
             if isinstance(parent, QScrollArea):
