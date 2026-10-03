@@ -15,6 +15,7 @@ from memory import context_for, load_memory
 from paths import resource_path
 from profiles import prompt_for, validate_profiles
 from viewer_recognition import related_context
+from reply_rules import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
 
 
 @dataclass(frozen=True)
@@ -106,7 +107,7 @@ def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: s
     question = clean_question(question)
     if not question:
         raise ValueError("Введите пробный вопрос.")
-    prompt = prompt.strip()
+    prompt = upgrade_generated_prompt(prompt.strip())
     if len(prompt) > 20000:
         raise ValueError("Общий промпт должен содержать не более 20 000 символов.")
     personal, user_id, sender_profile = "", "", None
@@ -161,7 +162,7 @@ def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: s
             clean_text(redact_secret(line, auth.api_key), 600) for line in related.diagnostics)
             if related.diagnostics else "Упоминаний зрителей с профилями не найдено."),
         "История реальных разговоров недоступна и не учитывалась.",
-        "Вопрос ограничен 400 символами, ответ — 300, как у бота.",
+        f"Вопрос ограничен {QUESTION_MAX_CHARS} символами, ответ — {ANSWER_MAX_CHARS}, как у бота.",
     ))
     return TestSnapshot(auth, model_ids, tuple((m["role"], m["content"]) for m in messages),
                         redact_secret(context, auth.api_key))

@@ -106,13 +106,15 @@ class TestingTests(unittest.TestCase):
 
     def test_no_real_history_and_bot_limits(self):
         snapshot = self.snapshot(prompt="", memory_data=None, question="x" * 450)
-        self.assertEqual(len(snapshot.messages), 1)
+        self.assertEqual(len(snapshot.messages), 2)
         self.assertIn("не учитывалась", snapshot.context)
+        self.assertIn("ответ — 400", snapshot.context)
         self.assertTrue(snapshot.messages[-1][1].endswith("x" * 400))
         with patch.object(ai_client.urllib.request, "urlopen", return_value=response(
                 {"choices": [{"message": {"content": " x\n" * 400}}]})):
             result = testing.test_model(snapshot, "exact/model")
-        self.assertLessEqual(len(result.answer), 300)
+        self.assertGreater(len(result.answer), 300)
+        self.assertLessEqual(len(result.answer), 400)
         self.assertNotIn("\n", result.answer)
 
     def test_multiple_models_exact_ids_same_snapshot_one_error_does_not_hide_other(self):
@@ -174,7 +176,7 @@ class TestingTests(unittest.TestCase):
 
     def test_echoed_key_redacted_before_response_truncation_and_context_preview(self):
         with patch.object(ai_client.urllib.request, "urlopen", return_value=response(
-                {"choices": [{"message": {"content": "x" * 292 + self.auth.api_key}}]})):
+                {"choices": [{"message": {"content": "x" * 392 + self.auth.api_key}}]})):
             result = testing.test_model(self.snapshot(), "exact/model")
         self.assertNotIn(self.auth.api_key[:8], result.answer)
         snapshot = self.snapshot(prompt=self.auth.api_key)

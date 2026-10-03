@@ -6,6 +6,7 @@ from pathlib import Path
 
 from configuration import DEFAULTS, FIRST_RUN_FALLBACK_MODELS, SYSTEM_PROMPT, FIELDS, normalize, read_config, invalidate_tokens, env_content
 from paths import data_dir
+from reply_rules import upgrade_generated_prompt
 
 
 def load_settings(root: Path | None = None) -> tuple[dict[str, str], str]:
@@ -31,7 +32,7 @@ def save_settings(values: dict[str, str], prompt: str, root: Path | None = None,
         if name == "AI_API_KEY" and not value.strip():
             value = previous.get(name, "")
         clean[name] = "" if allow_incomplete and not value.strip() else normalize(name, value)
-    prompt = prompt.strip()
+    prompt = upgrade_generated_prompt(prompt.strip())
     if len(prompt) > 20000:
         raise ValueError("Промпт должен содержать не более 20000 символов.")
 

@@ -7,6 +7,7 @@ import urllib.request
 
 from configuration import SYSTEM_PROMPT
 from memory import context_for
+from reply_rules import ANSWER_LENGTH_RULE, ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
 
 AI_REQUEST_TIMEOUT_SECONDS = 20
 
@@ -28,7 +29,7 @@ def clean_text(value: str, limit: int) -> str:
 
 
 def clean_question(value: str) -> str:
-    return clean_text(value, 400)
+    return clean_text(value, QUESTION_MAX_CHARS)
 
 
 class TemporaryAIError(RuntimeError):
@@ -66,7 +67,7 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
             personal_prompt: str = "", sender_role: str | None = None,
             viewer_context: str = "") -> list[dict]:
     messages = []
-    prompt = cfg.get("AI_PROMPT", SYSTEM_PROMPT).strip()
+    prompt = upgrade_generated_prompt(cfg.get("AI_PROMPT", SYSTEM_PROMPT).strip())
     if prompt:
         messages.append({"role": "system", "content": prompt})
     if personal_prompt:
@@ -82,6 +83,7 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
     author = "Владелец канала" if is_streamer else "Зритель"
     if viewer_context:
         messages.append({"role": "system", "content": viewer_context})
+    messages.append({"role": "system", "content": ANSWER_LENGTH_RULE})
     for previous_question, previous_answer in history[-10:]:
         messages.append({"role": "user", "content": f"{author} {user} спрашивает: {previous_question}"})
         messages.append({"role": "assistant", "content": previous_answer})
@@ -102,7 +104,7 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
 
 
 def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
-    answer = clean_text(redact_secret(request_completion(cfg, model, messages), cfg["AI_API_KEY"]), 300)
+    answer = clean_text(redact_secret(request_completion(cfg, model, messages), cfg["AI_API_KEY"]), ANSWER_MAX_CHARS)
     if not answer:
         raise TemporaryAIError("AI API вернул пустой ответ")
     return answer

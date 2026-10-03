@@ -21,6 +21,7 @@ from start import read_config
 from profiles import load_profiles
 from autonomous import load_settings as load_auto_settings
 from ui_widgets import russian_question
+from prompt_builder import compose_prompt
 
 
 def wait_for(predicate, message, seconds=3):
@@ -260,6 +261,38 @@ def main() -> None:
         assert not broken.profiles_editor.load_error
         assert broken._save()
         broken.close()
+    # A recognized old generated policy becomes a visible, unsaved draft.
+    # Opening the form or testing it must not rewrite the saved prompt.
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        original = compose_prompt("Мой стиль, 300 попыток", "Настольные игры").replace(
+            "максимум 400 символов,", "максимум 300 символов,")
+        path = root / "prompt.txt"
+        path.write_text(original, encoding="utf-8")
+        previous = path.read_bytes()
+        with patch.object(gui, "data_dir", return_value=root):
+            migrated = gui.MainWindow()
+        assert migrated._dirty
+        assert "Служебный лимит обновлён до 400" in migrated.save_hint.text()
+        assert "максимум 400 символов" in migrated.prompt.toPlainText()
+        assert "Мой стиль, 300 попыток" in migrated.prompt.toPlainText()
+        assert path.read_bytes() == previous
+        migrated.api_key.setText("test-key")
+        snapshot = migrated._test_snapshot(["exact/model"], "Вопрос?", "viewer", "", None)
+        assert snapshot.messages[0][1] == migrated.prompt.toPlainText()
+        assert "ответ — 400" in snapshot.context
+        assert path.read_bytes() == previous
+        assert migrated.autonomous_page.saved.max_chars == 220
+        assert migrated._save()
+        assert path.read_text(encoding="utf-8").strip() == migrated.prompt.toPlainText().strip()
+        assert not migrated._dirty
+        # Pasting an old recognized draft and explicitly saving also aligns
+        # the text shown in the editor with the newly written file.
+        migrated.prompt.setPlainText(original)
+        assert migrated._save()
+        assert "максимум 400 символов" in migrated.prompt.toPlainText()
+        assert path.read_text(encoding="utf-8").strip() == migrated.prompt.toPlainText().strip()
+        migrated.close()
     for buttons, default, expected in (
         (QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save,
          {QMessageBox.Save: "Сохранить", QMessageBox.Discard: "Не сохранять", QMessageBox.Cancel: "Отмена"}),

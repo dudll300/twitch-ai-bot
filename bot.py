@@ -14,6 +14,7 @@ from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS,
 from ai_client import AI_REQUEST_TIMEOUT_SECONDS, TemporaryAIError, call_ai, clean_question, clean_text
 
 from autonomous import Autonomous
+from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from profiles import load_profiles, profile_for, prompt_for
 from viewer_recognition import related_context
@@ -121,7 +122,7 @@ class Bot:
             wait = 1.6 - (time.monotonic() - self.last_sent)
             if wait > 0:
                 await asyncio.sleep(wait)
-            await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{clean_text(message, 450)}")
+            await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{clean_text(message, CHAT_MAX_CHARS)}")
             self.last_sent = time.monotonic()
 
     async def say_autonomous(self, writer, message, valid, reserve):

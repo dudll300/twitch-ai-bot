@@ -139,8 +139,8 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertTrue(builder.check_prompt("x" * 20001))
         self.assertTrue(builder.check_prompt(""))
 
-    def test_normal_reply_transport_keeps_original_token_and_character_limits(self):
-        with patch.object(ai_client.urllib.request, "urlopen", return_value=response("x" * 400)) as http:
+    def test_normal_reply_transport_uses_400_characters_with_same_token_limit(self):
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response("я" * 500)) as http:
             answer = ai_client.send_messages(self.auth.config(), "answer/model", [])
-        self.assertEqual(len(answer), 300)
+        self.assertEqual(answer, "я" * 400)
         self.assertEqual(json.loads(http.call_args.args[0].data)["max_tokens"], 512)

@@ -22,6 +22,7 @@ from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
 from profiles_gui import ProfilesEditor
 from prompt_builder_gui import PromptBuilder
+from reply_rules import ANSWER_MAX_CHARS, upgrade_generated_prompt
 from settings import load_settings, save_settings
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
@@ -203,6 +204,9 @@ class MainWindow(QMainWindow):
         self.prompt_builder.connection_requested.connect(lambda: self._navigate(0))
         QShortcut(QKeySequence.Save, self, activated=lambda: self._save())
         self._update_prompt_count()
+        if upgrade_generated_prompt(prompt) != prompt:
+            self._mark_dirty()
+            self.save_hint.setText(f"Служебный лимит обновлён до {ANSWER_MAX_CHARS} символов — нажмите «Сохранить»")
 
     def _toggle_sidebar(self, expanded):
         self._set_sidebar(expanded)
@@ -312,10 +316,10 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(page)
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(20)
-        main, main_layout = card("Общий промпт", "Эти инструкции действуют для всех зрителей. Можно оставить пустым.")
-        self.prompt = ScrollPlainTextEdit(prompt)
+        main, main_layout = card("Общий промпт", f"Эти инструкции действуют для всех зрителей. Обычные ответы — до {ANSWER_MAX_CHARS} символов. Можно оставить пустым.")
+        self.prompt = ScrollPlainTextEdit(upgrade_generated_prompt(prompt))
         self.prompt.setAccessibleName("Общий системный промпт")
-        self.prompt.setPlaceholderText("Опишите характер бота, язык и стиль ответов.\n\nНапример: отвечай по-русски, дружелюбно и кратко. Укладывайся в 300 символов. Не используй Markdown.")
+        self.prompt.setPlaceholderText(f"Опишите характер бота, язык и стиль ответов.\n\nНапример: отвечай по-русски, дружелюбно и кратко. Укладывайся в {ANSWER_MAX_CHARS} символов. Не используй Markdown.")
         self.prompt.setMinimumHeight(240)
         main_layout.addWidget(self.prompt, 1)
         row = QHBoxLayout()
@@ -408,8 +412,11 @@ class MainWindow(QMainWindow):
             if len(self.prompt.toPlainText().strip()) > 20000:
                 self._navigate(1)
                 raise ValueError("Общий промпт должен содержать не более 20 000 символов.")
-            save_settings(fields, self.prompt.toPlainText(), self._root, allow_incomplete=not for_start)
+            prompt = upgrade_generated_prompt(self.prompt.toPlainText())
+            save_settings(fields, prompt, self._root, allow_incomplete=not for_start)
             save_profiles(self._root / "profiles.json", rows)
+            if prompt != self.prompt.toPlainText():
+                self.prompt.setPlainText(prompt)
             self.profiles_editor.saved(rows)
             self._has_saved_key = bool(read_config(self._root / ".env").get("AI_API_KEY"))
             self.api_key.clear()

@@ -89,8 +89,8 @@ class BotTests(unittest.TestCase):
         history = tuple((f"Вопрос {i}", f"Ответ {i}") for i in range(12))
         with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
             bot.call_ai(cfg, "viewer", "Новый вопрос", history=history)
-        self.assertEqual(len(captured), 21)
-        self.assertEqual(captured[0]["content"], "Зритель viewer спрашивает: Вопрос 2")
+        self.assertEqual(len(captured), 22)
+        self.assertEqual(captured[1]["content"], "Зритель viewer спрашивает: Вопрос 2")
         self.assertEqual(captured[-2]["content"], "Ответ 11")
         self.assertEqual(captured[-1]["content"], "Зритель viewer спрашивает: Новый вопрос")
 
@@ -108,8 +108,10 @@ class BotTests(unittest.TestCase):
             self.assertEqual(request.get_header("Authorization"), "Bearer test-key")
             payload = json.loads(request.data)
             self.assertEqual(payload["model"], bot.AI_MODEL)
-            self.assertEqual(payload["messages"][0]["role"], "user")
-            self.assertEqual(len(payload["messages"]), 1)
+            self.assertEqual(payload["messages"][0]["role"], "system")
+            self.assertIn("400 символов", payload["messages"][0]["content"])
+            self.assertEqual(payload["messages"][-1]["role"], "user")
+            self.assertEqual(len(payload["messages"]), 2)
             return Response(json.dumps({"choices": [{"message": {"content": "Привет!\nКак дела?"}}]}).encode())
 
         with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
@@ -144,9 +146,9 @@ class BotTests(unittest.TestCase):
 
         owner, viewer = requests
         self.assertEqual(owner[0]["content"], "Пользовательский промпт")
-        self.assertEqual(len(owner), 2)
+        self.assertEqual(len(owner), 3)
         self.assertIn("Владелец канала Streamer", owner[-1]["content"])
-        self.assertEqual(len(viewer), 2)
+        self.assertEqual(len(viewer), 3)
         self.assertIn("Зритель viewer", viewer[-1]["content"])
 
     def test_temporary_failure_uses_backup_and_cooldown_then_probes_primary(self):
@@ -290,7 +292,7 @@ class BotTests(unittest.TestCase):
 
         def fake_urlopen(request, timeout):
             messages = json.loads(request.data)["messages"]
-            self.assertEqual(len(messages), 2)
+            self.assertEqual(len(messages), 3)
             self.assertIn("Любит хорроры", messages[0]["content"])
             return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
 
