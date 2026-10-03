@@ -90,6 +90,13 @@ def main() -> None:
         app.processEvents()
         assert window.pages.count() == 6
         auto_page = window.autonomous_page
+        standard_instructions = auto_page.saved.autonomous_prompt
+        assert auto_page.autonomous_prompt.toPlainText() == standard_instructions
+        auto_page.autonomous_prompt.setPlainText("Сначала пойми повод. Не смешивай темы. Шутка необязательна.")
+        instruction_draft = auto_page.autonomous_prompt.toPlainText()
+        window._navigate(1)
+        window._navigate(3)
+        assert auto_page.autonomous_prompt.toPlainText() == instruction_draft
         assert auto_page.advanced_panel.isHidden()
         assert not auto_page.advanced_button.isChecked()
         auto_page.advanced_button.click()
@@ -99,6 +106,7 @@ def main() -> None:
         assert auto_page.advanced_panel.isHidden()
         auto_page.advanced_button.click()
         assert auto_page.inputs["context_count"].value() == 31
+        assert auto_page.autonomous_prompt.toPlainText() == instruction_draft
         auto_page.inputs["context_count"].setValue(20)
         auto_page.advanced_button.click()
         # Wheel events must not edit values, even when controls have focus.
@@ -126,6 +134,8 @@ def main() -> None:
         assert auto_page.enabled.isEnabled()
         auto_page.enabled.setChecked(True)
         assert load_auto_settings(root / "autonomous.json")[0].enabled
+        assert load_auto_settings(root / "autonomous.json")[0].autonomous_prompt == standard_instructions
+        assert auto_page.autonomous_prompt.toPlainText() == instruction_draft
         auto_page.mode.setCurrentIndex(1)
         assert load_auto_settings(root / "autonomous.json")[0].mode == "publish"
         auto_page.inputs["context_count"].setValue(30)
@@ -133,6 +143,7 @@ def main() -> None:
         assert auto_page.apply()
         assert load_auto_settings(root / "autonomous.json")[0].context_count == 30
         assert load_auto_settings(root / "autonomous.json")[0].hourly_limit == 6
+        assert load_auto_settings(root / "autonomous.json")[0].autonomous_prompt == instruction_draft
         auto_page.inputs["check_min_seconds"].setValue(500)
         auto_page.inputs["check_max_seconds"].setValue(20)
         assert not auto_page.apply()
@@ -238,6 +249,7 @@ def main() -> None:
         assert reopened.autonomous_page.inputs["context_count"].value() == 30
         assert reopened.autonomous_page.inputs["hourly_limit"].value() == 6
         assert reopened.autonomous_page.mode.currentData() == "publish"
+        assert reopened.autonomous_page.autonomous_prompt.toPlainText() == instruction_draft
         assert not reopened.autonomous_page.enabled.isChecked()
         assert not reopened.profiles_editor.rows[1]["enabled"]
         assert reopened.profiles_editor.rows[0]["aliases"] == ["Ваня", "вьювер"]

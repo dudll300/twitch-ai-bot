@@ -2,6 +2,7 @@
 
 import http.client
 import json
+import math
 import urllib.error
 import urllib.request
 
@@ -111,8 +112,13 @@ def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
 
 
 def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
-                       max_tokens: int = 512, reject_truncated: bool = False) -> str:
+                       max_tokens: int = 512, reject_truncated: bool = False,
+                       timeout_seconds: float = AI_REQUEST_TIMEOUT_SECONDS) -> str:
     """One exact-model request; callers apply their own text/JSON constraints."""
+    if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
+            or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
+        raise ValueError("Некорректное время ожидания AI API.")
+    timeout_seconds = min(timeout_seconds, AI_REQUEST_TIMEOUT_SECONDS)
     payload = {
         "model": model,
         "messages": messages,
@@ -129,7 +135,7 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         method="POST",
     )
     try:
-        with urllib.request.urlopen(request, timeout=AI_REQUEST_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             data = json.load(response)
     except urllib.error.HTTPError as exc:
         message = f"AI API вернул HTTP {exc.code}{http_error_detail(exc, cfg['AI_API_KEY'])}"
@@ -137,10 +143,10 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
             raise TemporaryAIError(message) from None
         raise RuntimeError(message) from None
     except TimeoutError:
-        raise TemporaryAIError("Превышено время ожидания AI API (20 с).") from None
+        raise TemporaryAIError(f"Превышено время ожидания AI API ({timeout_seconds:g} с).") from None
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
-            raise TemporaryAIError("Превышено время ожидания AI API (20 с).") from None
+            raise TemporaryAIError(f"Превышено время ожидания AI API ({timeout_seconds:g} с).") from None
         raise TemporaryAIError(f"AI API недоступен: {type(exc).__name__}") from None
     except (OSError, http.client.HTTPException) as exc:
         # Never include the exception body: it may contain response bytes or a key.

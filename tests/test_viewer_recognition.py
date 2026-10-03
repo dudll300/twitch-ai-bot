@@ -211,13 +211,16 @@ class RecognitionTests(unittest.TestCase):
         captured = []
         def request(req, timeout):
             captured.append(json.loads(req.data))
-            return io.BytesIO(json.dumps({"choices": [{"message": {"content": json.dumps({"action": "silent",
-                "text": "", "target": "", "basis": [], "reason": "no_reason"})}}]}).encode())
+            value = ({"action": "reply", "conversation": [1, 2], "basis": [2], "target": "someone",
+                      "reason": "answer", "intent": "Ответить про знакомого зрителя"}
+                     if len(captured) == 1 else {"text": "Знакомый любитель пельменей!"})
+            return io.BytesIO(json.dumps({"choices": [{"message": {"content": json.dumps(value)}}]}).encode())
         with patch.object(ai_client.urllib.request, "urlopen", side_effect=request):
-            autonomous.request_decision(cfg, participants, autonomous.AutoSettings(), viewer_context=context.prompt)
+            autonomous.request_decision(cfg, participants, autonomous.AutoSettings(), profiles=self.rows, memory_data=self.memory)
         self.assertEqual(captured[0]["model"], "primary")
-        self.assertIn("Шути про пельмени", str(captured[0]["messages"]))
-        self.assertIn("Общий стиль", captured[0]["messages"][0]["content"])
+        self.assertEqual(len(captured), 2)
+        self.assertIn("Шути про пельмени", str(captured[1]["messages"]))
+        self.assertIn("Общий стиль", captured[1]["messages"][0]["content"])
 
     def test_autonomous_author_id_does_not_fall_back_to_recycled_login(self):
         self.assertEqual(related_context(self.rows, "Привет", participants=[{
