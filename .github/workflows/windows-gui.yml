@@ -18,16 +18,31 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - run: python -m pip install -r requirements.txt pyinstaller==6.22.3
+      - name: Install verified Windows build dependencies
+        run: python -m pip install --require-hashes --only-binary=:all: -r requirements-windows-build.txt
+      - run: python -m pip check
       - run: python -m unittest discover -s tests -v
       - run: python tests/smoke_gui.py
       - run: python tests/smoke_testing.py
       - run: python tests/smoke_controls.py
       - run: python tests/smoke_prompt_builder.py
       - run: python tests/smoke_local_context.py
-      - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "memory.example.json;." app.py
-      - run: python tests/smoke_package.py
+      - name: Build portable application folder
+        run: python -m PyInstaller --noconfirm --clean --onedir --noupx --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "memory.example.json;." app.py
+      - name: Scan package before running or publishing it
+        shell: pwsh
+        run: ./.github/scripts/scan-windows-package.ps1 -PackagePath dist/TwitchAIBot -ReportPath build/defender-scan.json
+      - name: Test packaged GUI and worker
+        run: python tests/smoke_package.py
       - uses: actions/upload-artifact@v4
         with:
           name: TwitchAIBot-Windows
-          path: dist/TwitchAIBot.exe
+          path: dist/TwitchAIBot/
+          if-no-files-found: error
+      - name: Save scan diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-Defender-report
+          path: build/defender-scan.json
+          if-no-files-found: ignore

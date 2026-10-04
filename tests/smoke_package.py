@@ -1,4 +1,4 @@
-"""Check the single-file Windows application without network access."""
+"""Check the portable Windows application folder without network access."""
 
 import os
 import json
@@ -9,10 +9,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-EXE = Path(os.environ.get("TWITCH_AI_TEST_EXE", str(ROOT / "dist" / "TwitchAIBot.exe")))
+EXE = Path(os.environ.get("TWITCH_AI_TEST_EXE", str(ROOT / "dist" / "TwitchAIBot" / "TwitchAIBot.exe")))
 
 
 def main() -> None:
+    resources = EXE.parent / "_internal"
+    assert resources.is_dir(), "Distribute the complete application folder, including _internal"
+    assert (resources / "assets" / "app.ico").read_bytes() == (ROOT / "assets" / "app.ico").read_bytes()
+    assert (resources / "memory.example.json").read_bytes() == (ROOT / "memory.example.json").read_bytes()
     # PyInstaller's Windows dependencies include pefile. Verify the actual PE
     # resources, not just a nonempty window icon (which could be Python's icon).
     import pefile
@@ -72,7 +76,7 @@ def main() -> None:
 
         gui = subprocess.run([str(EXE), "--self-test-gui"], env=env, timeout=30)
         assert gui.returncode == 0, f"GUI check failed with code {gui.returncode}"
-    print("Single-file GUI and worker started successfully.")
+    print("Portable GUI and worker started successfully.")
 
 
 if __name__ == "__main__":

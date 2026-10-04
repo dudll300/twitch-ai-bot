@@ -10,6 +10,7 @@ memory.json
 .twitch_broadcaster_token.tmp
 __pycache__/
 .venv/
+.venv-build/
 .test-deps/
 build/
 dist/

@@ -21,7 +21,7 @@
 
 1. Откройте [сборки Windows для ветки dev](https://github.com/dudll300/twitch-ai-bot/actions/workflows/windows-gui.yml).
 2. Выберите успешный запуск после обновления приложения, скачайте артефакт **TwitchAIBot-Windows** и распакуйте его. Для скачивания артефактов может потребоваться вход в GitHub.
-3. Запустите `TwitchAIBot.exe`. Python устанавливать не нужно.
+3. Запустите `TwitchAIBot.exe` из распакованной папки. Оставьте рядом папку `_internal`: в ней находятся библиотеки приложения. Python устанавливать не нужно. Для ярлыка укажите этот EXE; переносить его отдельно от остальных файлов нельзя.
 
 ### Из исходников
 
@@ -279,20 +279,27 @@ python start.py --setup
 
 ## Проверка и сборка
 
-В окружении с зависимостями из `requirements.txt`:
+Для Windows x64 / Python 3.12 создайте отдельное окружение сборки:
 
 ```powershell
+python -m venv .venv-build
+.\.venv-build\Scripts\Activate.ps1
+python -m pip install --require-hashes --only-binary=:all: -r requirements-windows-build.txt
+python -m pip check
 python -m unittest discover -s tests -v
 python tests/smoke_gui.py
 python tests/smoke_testing.py
 python tests/smoke_controls.py
 python tests/smoke_prompt_builder.py
 python tests/smoke_local_context.py
-python -m pip install pyinstaller==6.22.3
-python -m PyInstaller --noconfirm --clean --onefile --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "memory.example.json;." app.py
+python -m PyInstaller --noconfirm --clean --onedir --noupx --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "memory.example.json;." app.py
+# Проверку Defender выполняйте в PowerShell с правами администратора:
+.\.github\scripts\scan-windows-package.ps1 -PackagePath dist\TwitchAIBot -ReportPath build\defender-scan.json
 python tests/smoke_package.py
 ```
 
-Готовый файл — `dist\TwitchAIBot.exe`. GitHub Actions запускает тесты и собирает приложение при отправке изменений в `dev` и ветки `feature/*`. Автоматические проверки не требуют Twitch-токенов и не вызывают платный AI API; реальное подключение проверяется отдельно со своими аккаунтами.
+Готовое приложение — вся папка `dist\TwitchAIBot`, включая `TwitchAIBot.exe` и `_internal`. Сборка использует обычную папку с библиотеками без самораспаковки во временный каталог при запуске. `requirements-windows-build.txt` фиксирует версии и SHA-256 официальных wheels для Windows x64 / Python 3.12; при изменении зависимостей его нужно обновить.
+
+GitHub Actions запускает тесты и собирает приложение при отправке изменений в `dev` и ветки `feature/*`. До запуска готового EXE и публикации артефакта проверяется весь пакет Microsoft Defender с обновлёнными базами. Обнаружение угроз, ошибка сканирования или изменение файлов блокируют публикацию; версии движка, баз и SHA-256 файлов сохраняются в артефакте `Windows-Defender-report`. Такая проверка относится к указанному движку и базам и не гарантирует одинакового результата на всех компьютерах. Автоматические проверки не требуют Twitch-токенов и не вызывают платный AI API; реальное подключение проверяется отдельно со своими аккаунтами.
 
 Документация Twitch: [IRC и служебные сообщения](https://dev.twitch.tv/docs/chat/irc/), [EventSub WebSocket](https://dev.twitch.tv/docs/eventsub/handling-websocket-events), [Device Code Flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow).

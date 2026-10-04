@@ -1,0 +1,29 @@
+# Windows x64 / Python 3.12 build dependencies, from official PyPI wheels.
+# Install with: python -m pip install --require-hashes --only-binary=:all: -r requirements-windows-build.txt
+# Update this file when requirements.txt / requirements-bot.txt or the packager changes.
+--index-url https://pypi.org/simple
+
+# altgraph-0.17.5-py2.py3-none-any.whl
+altgraph==0.17.5 --hash=sha256:f3a22400bce1b0c701683820ac4f3b159cd301acab067c51c653e06961600597
+# packaging-26.3-py3-none-any.whl
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+# pefile-2024.8.26-py3-none-any.whl
+pefile==2024.8.26 --hash=sha256:76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f
+# pyinstaller-6.22.3-py3-none-win_amd64.whl
+pyinstaller==6.22.3 --hash=sha256:500bd58c7bf7e584a8435adccbd763a0b918d5c12b08d74ff50fd79b2915458b
+# pyinstaller_hooks_contrib-2026.7-py3-none-any.whl
+pyinstaller-hooks-contrib==2026.7 --hash=sha256:24257a04c7a5a7a034cf28e39dcee20fbeeb9f043076729480f2e1b69904408a
+# PySide6-6.8.3-cp39-abi3-win_amd64.whl
+PySide6==6.8.3 --hash=sha256:722dc0061d8ef6dbb8c0b99864f21e83a5b49ece1ecb2d0b890840d969e1e461
+# PySide6_Addons-6.8.3-cp39-abi3-win_amd64.whl
+PySide6_Addons==6.8.3 --hash=sha256:67548f6db11f4e1b7e4b6efd9c3fc2e8d275188a7b2feac388961128572a6955
+# PySide6_Essentials-6.8.3-cp39-abi3-win_amd64.whl
+PySide6_Essentials==6.8.3 --hash=sha256:3c0fae5550aff69f2166f46476c36e0ef56ce73d84829eac4559770b0c034b07
+# pywin32_ctypes-0.2.3-py3-none-any.whl
+pywin32-ctypes==0.2.3 --hash=sha256:8a1513379d709975552d202d942d9837758905c8d01eb82b8bcc30918929e7b8
+# setuptools-84.0.0-py3-none-any.whl
+setuptools==84.0.0 --hash=sha256:51a52592b3b99e102b609654876bd65f19f999935166d1352678931132b0c670
+# shiboken6-6.8.3-cp39-abi3-win_amd64.whl
+shiboken6==6.8.3 --hash=sha256:bca3a94513ce9242f7d4bbdca902072a1631888e0aa3a8711a52cc5dbe93588f
+# websockets-15.0.1-cp312-cp312-win_amd64.whl
+websockets==15.0.1 --hash=sha256:fcd5cf9e305d7b8338754470cf69cf81f420459dbae8a3b40cee57417f4614a7
