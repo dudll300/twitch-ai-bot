@@ -8,7 +8,7 @@ Push-Location $repositoryRoot
 try {
     $cache = New-Item -ItemType Directory -Path 'build/nuitka-cache' -Force
     $env:NUITKA_CACHE_DIR = $cache.FullName
-    & $Python -m nuitka --mode=onefile --enable-plugin=pyside6 --msvc=latest --jobs=2 `
+    & $Python -m nuitka --mode=onefile --onefile-no-dll --enable-plugin=pyside6 --msvc=latest --jobs=2 `
         --windows-console-mode=disable --windows-icon-from-ico=assets/app.ico `
         --include-data-files=assets/app.ico=assets/app.ico `
         --include-data-files=memory.example.json=memory.example.json `
