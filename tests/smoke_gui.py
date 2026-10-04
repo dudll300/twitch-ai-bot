@@ -58,6 +58,10 @@ def main() -> None:
         window.api_key.setText("sk-test")
         window.model.setCurrentText("custom/model")
         window.reward_title.setText("Ask AI")
+        assert window.workspace_channel.text() == "@streamer"
+        assert window.sidebar_channel.text() == "@streamer"
+        assert window.inspector_values["model"].text() == "custom/model"
+        assert window.inspector_values["reward"].text() == "Ask AI"
         window.fallback_models.setText("backup/model")
         window.prompt.setPlainText("Новый промпт")
         assert window._save()
@@ -72,12 +76,17 @@ def main() -> None:
         window._log_path.write_text("GUI_LOG_TEST\n", encoding="utf-8")
         window._poll_log()
         assert "GUI_LOG_TEST" in window.log.toPlainText()
+        window._append_log("Жду вопросов по награде Ask AI")
+        assert window.status.property("state") == "running"
+        assert window.connection_pill.text() == window.status.text()
         window.reset_prompt.click()
         assert window._save()
         assert not (root / "prompt.txt").read_text(encoding="utf-8").strip()
         window._kill_timer.start(3000)
         window._on_finished(0, window.process.ExitStatus.NormalExit)
         assert not window._kill_timer.isActive()
+        assert window.status.property("state") == "idle"
+        assert window.connection_pill.text() == "Остановлен"
         window._set_running(True)
         assert not window.reset_prompt.isEnabled()
         window.close()

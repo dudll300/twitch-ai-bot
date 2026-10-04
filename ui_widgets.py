@@ -174,15 +174,15 @@ class ToggleSwitch(QCheckBox):
         painter.setOpacity(1 if self.isEnabled() else 0.45)
         y = (self.height() - 20) // 2
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#d0d5de" if self.isChecked() else "#4b515d"))
+        painter.setBrush(QColor("#168BFF" if self.isChecked() else "#353B48"))
         painter.drawRoundedRect(0, y, 34, 20, 10, 10)
-        painter.setBrush(QColor("#242830" if self.isChecked() else "#b8bfcb"))
+        painter.setBrush(QColor("#FFFFFF" if self.isChecked() else "#A9B1C1"))
         painter.drawEllipse(round(3 + 13 * self._position), y + 3, 14, 14)
-        painter.setPen(QColor("#c5c9d1"))
+        painter.setPen(QColor("#F3F5FA"))
         painter.drawText(self.rect().adjusted(44, 0, 0, 0), Qt.AlignVCenter, self.text())
         if self.hasFocus():
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(QColor("#c5c9d1"), 1, Qt.DotLine))
+            painter.setPen(QPen(QColor("#65B3FF"), 1, Qt.DotLine))
             painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 6, 6)
 
 
@@ -198,8 +198,8 @@ def card(title: str = "", description: str = "") -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("card")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(24, 24, 24, 24)
-    layout.setSpacing(16)
+    layout.setContentsMargins(22, 22, 22, 22)
+    layout.setSpacing(14)
     if title:
         layout.addWidget(label(title, "section"))
     if description:
