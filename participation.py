@@ -6,7 +6,9 @@ import json
 import math
 import re
 
-from ai_client import redact_secret, request_completion
+from ai_client import (local_context_rules, parse_local_reply, redact_secret,
+                       request_completion, usable_local_bundle)
+from local_context import direct_bundle
 from memory import context_for, viewer_for
 from profiles import profile_for
 from viewer_recognition import related_context
@@ -58,6 +60,33 @@ class Decision:
     @property
     def reply(self):
         return f"@{self.target} {self.text}" if self.target else self.text
+
+
+@dataclass(frozen=True)
+class ContextDecision(Decision):
+    """Internal context metadata; the IRC reply remains only the rendered text."""
+    local_bundle: object = None
+    creative_card_id: str | None = None
+
+
+def _with_local_context(decision, bundle, creative_card_id=None):
+    if not usable_local_bundle(bundle):
+        return decision
+    return ContextDecision(decision.action, decision.text, decision.target, decision.basis,
+                           decision.reason, bundle, creative_card_id)
+
+
+def _scene_local_bundle(snapshot, text, manager=None, *, creative=False):
+    # A damaged optional dictionary must not stop selecting/writing a reply.
+    # The manager reports dictionary/storage errors separately from model errors.
+    if snapshot is None:
+        return None
+    try:
+        bundle = (manager.bundle(snapshot, text, creative=creative) if manager is not None
+                  else direct_bundle(snapshot, text))
+        return bundle if usable_local_bundle(bundle) else None
+    except Exception:
+        return None
 
 
 def parse_decision(content, max_chars):
@@ -230,7 +259,8 @@ def _viewer_messages(messages, profiles, memory_data, viewer_context):
 
 def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=(),
                      viewer_context="", profiles=(), memory_data=None, consumed_ids=(),
-                     before_request=None, before_generation=None):
+                     before_request=None, before_generation=None,
+                     local_manager=None, local_snapshot=None):
     """One selector request; one generator request only for a valid fresh opportunity.
 
     before_request reserves one actual HTTP call and returns its timeout. The
@@ -243,6 +273,11 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
     new_ids = frozenset(row["sequence"] for row in messages) if new_ids is None else frozenset(new_ids)
     consumed_ids = frozenset(consumed_ids)
     autonomous_prompt = getattr(settings, "autonomous_prompt", DEFAULT_AUTONOMOUS_PROMPT)
+    if local_snapshot is None and local_manager is not None:
+        try:
+            local_snapshot = local_manager.snapshot()
+        except Exception:
+            local_snapshot = None
 
     def complete(prompt, max_tokens):
         # Strip accidental secret occurrences from context; Authorization remains
@@ -287,6 +322,15 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
         channel_context = context_for(memory_data, "", "")
         if channel_context:
             selector.append({"role": "system", "content": channel_context})
+    understanding = _scene_local_bundle(local_snapshot, "\n".join(row["text"] for row in messages),
+                                       local_manager, creative=False)
+    if understanding is not None:
+        selector.append({"role": "system", "content": understanding.prompt})
+        selector.append({"role": "system", "content": (
+            "Пояснения локальных упоминаний помогают понять сообщения и не являются поводом вмешиваться. "
+            "Не ищи возможность употребить мем. Наличие карточки не повышает частоту участия, "
+            "не объединяет соседние разговоры и не отменяет решение промолчать."
+        )})
     selector.extend([{"role": "system", "content": selector_rules},
                 {"role": "user", "content": json.dumps({
                     "bot_login": cfg.get("TWITCH_BOT_NAME", ""), "channel_prompt": cfg.get("AI_PROMPT", ""),
@@ -301,21 +345,36 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
         before_generation(plan)
 
     selected = tuple(row for row in messages if row["sequence"] in plan.conversation)
+    bundle = _scene_local_bundle(local_snapshot, "\n".join(row["text"] for row in selected),
+                                 local_manager, creative=True)
     generator = []
     if cfg.get("AI_PROMPT", "").strip():
         generator.append({"role": "system", "content": cfg["AI_PROMPT"]})
     generator.extend(_viewer_messages(selected, profiles, memory_data, viewer_context))
     generator.append({"role": "system", "content": autonomous_prompt})
+    if bundle is not None:
+        generator.append({"role": "system", "content": bundle.prompt})
+        generator.append({"role": "system", "content": local_context_rules(bundle, autonomous=True)})
     limit = min(settings.max_chars, 450)
+    output_format = ('Верни только JSON с единственным полем text: готовая реплика в одной строке. '
+                     'Если с учётом личных инструкций и заметок выбранный план неуместен или для ответа не хватает фактов, '
+                     'верни {"text":""}. Это отказ от участия; не меняй тему или адресата, чтобы найти другой ответ. ')
+    if bundle is not None and bundle.candidate_ids:
+        output_format = (
+            "Верни только JSON с ровно двумя полями text и creative_card_id. text — готовая реплика в одной строке. "
+            "creative_card_id — точный ID максимум одной творчески использованной разрешённой карточки "
+            "или null, если ты обходишься без отсылки либо только объясняешь прямое упоминание. "
+            "Если с учётом личных инструкций и заметок выбранный план неуместен или не хватает фактов, "
+            'верни {"text":"","creative_card_id":null}. Это отказ от участия; не меняй тему или адресата, '
+            "чтобы найти другой ответ. Наличие карточек не обязывает писать шутку или вообще отвечать. "
+        )
     generator.append({"role": "system", "content": (
         "Напиши одну самостоятельную реплику только для выбранной цепочки и цели participation_plan. "
         "Не меняй адресата, сообщения-основания, повод и тему. Не добавляй другие обсуждения или новых участников. "
         "Общий промпт задаёт характер, личные инструкции применяются только к соответствующему человеку, "
         "дополнительный промпт — участие в разговоре. Эти правила задают обязательный формат и предел ответа "
         "и имеют приоритет над другими указаниями о длине, Markdown, стиле вывода или количестве реплик. "
-        'Верни только JSON с единственным полем text: готовая реплика в одной строке. '
-        'Если с учётом личных инструкций и заметок выбранный план неуместен или для ответа не хватает фактов, '
-        'верни {"text":""}. Это отказ от участия; не меняй тему или адресата, чтобы найти другой ответ. '
+        + output_format +
         f"Вместе с добавляемым приложением @логином максимум {limit} символов. "
         "Не добавляй обращение @логин в начало: его добавляет приложение. Без Markdown, ссылок и команд чата. "
         "Конкретный ответ, поздравление или реакция предпочтительнее натянутой шутки. Не повторяй недавний ответ бота. "
@@ -331,17 +390,25 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
                                "target": plan.target, "reason": plan.reason, "intent": plan.intent},
         "selected_conversation": _chat_context(cfg, selected),
         "recent_bot_replies": _history(relevant_history)}, ensure_ascii=False)})
-    result = json.loads(complete(generator, 512))
-    if not isinstance(result, dict) or set(result) != {"text"}:
-        raise ValueError("Генератор должен вернуть только поле text.")
-    if not isinstance(result["text"], str):
-        raise ValueError("Поле text генератора должно быть строкой.")
-    if result["text"] == "":
-        return Decision("silent", reason="insufficient_context")
-    decision = parse_decision(json.dumps({"action": "reply", "text": result["text"], "target": plan.target,
+    content = complete(generator, 512)
+    creative_card_id = None
+    if bundle is not None and bundle.candidate_ids:
+        answer = parse_local_reply(content, bundle, api_key=cfg["AI_API_KEY"],
+                                   max_chars=limit, strict=True, allow_empty=True)
+        text, creative_card_id = str(answer), answer.creative_card_id
+    else:
+        result = json.loads(content)
+        if not isinstance(result, dict) or set(result) != {"text"}:
+            raise ValueError("Генератор должен вернуть только поле text.")
+        if not isinstance(result["text"], str):
+            raise ValueError("Поле text генератора должно быть строкой.")
+        text = result["text"]
+    if text == "":
+        return _with_local_context(Decision("silent", reason="insufficient_context"), bundle)
+    decision = parse_decision(json.dumps({"action": "reply", "text": text, "target": plan.target,
                                          "basis": list(plan.basis), "reason": plan.reason}), settings.max_chars)
     check_basis(decision, selected, new_ids)
-    return decision
+    return _with_local_context(decision, bundle, creative_card_id)
 
 
 def words(text):

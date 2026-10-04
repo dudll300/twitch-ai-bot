@@ -11,9 +11,11 @@ from collections import deque
 
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
-from ai_client import AI_REQUEST_TIMEOUT_SECONDS, TemporaryAIError, call_ai, clean_question, clean_text
+from ai_client import (AI_REQUEST_TIMEOUT_SECONDS, TemporaryAIError, call_ai, clean_question,
+                       clean_text, is_local_service_output, redact_secret)
 
 from autonomous import Autonomous
+from local_context import LocalContextManager, LocalReply, LocalResultError
 from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from profiles import load_profiles, profile_for, prompt_for
@@ -52,14 +54,33 @@ def irc_command(line: str) -> str:
 
 
 class AIModelRouter:
-    def __init__(self, profiles: list[dict] | None = None):
+    def __init__(self, profiles: list[dict] | None = None, local_context=None):
         self.profiles = profiles or []
+        self.local_context = local_context
         self.primary_failures = 0
         self.primary_disabled_until = 0.0
 
     def ask(self, cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
-            history: tuple[tuple[str, str], ...] = ()) -> str:
+            history: tuple[tuple[str, str], ...] = (), *, allow_creative=True) -> str:
+        bundle = None
+        if self.local_context is not None:
+            text = "\n".join(part for pair in history[-10:] for part in pair) + "\n" + clean_question(question)
+            bundle = self.local_context.bundle(self.local_context.snapshot(), text, creative=allow_creative)
+        try:
+            answer = self._ask_models(cfg, user, question, memory_data, user_id, history, bundle,
+                                      reject_local_service=not allow_creative)
+            if not allow_creative and is_local_service_output(answer):
+                raise LocalResultError("Некорректный обычный ответ после отмены локальной отсылки.")
+            return answer
+        except LocalResultError:
+            if not allow_creative or bundle is None or not bundle.has_context:
+                raise
+            print("Локальный контекст: некорректный результат; повторяю ответ без творческой отсылки.", flush=True)
+            return self.ask(cfg, user, question, memory_data, user_id, history, allow_creative=False)
+
+    def _ask_models(self, cfg, user, question, memory_data, user_id, history, local_bundle,
+                    *, reject_local_service=False):
         primary = cfg["AI_MODEL"]
         backups = tuple(dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",")
                                       if name.strip() and name.strip() != primary))
@@ -77,6 +98,10 @@ class AIModelRouter:
                     kwargs["personal_prompt"] = personal_prompt
                 if context.prompt:
                     kwargs["viewer_context"] = context.prompt
+                if local_bundle is not None and local_bundle.has_context:
+                    kwargs["local_bundle"] = local_bundle
+                if reject_local_service:
+                    kwargs["reject_local_service"] = True
                 answer = call_ai(cfg, user, question, memory_data, user_id, **kwargs)
             except TemporaryAIError as exc:
                 last_error = exc
@@ -106,10 +131,12 @@ class Bot:
         self.memory = load_memory(ensure_local_memory(ROOT / "memory.json"))
         self.last_sent = 0.0
         self._say_lock = asyncio.Lock()
-        self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"))
+        self.local_context = LocalContextManager(ROOT, emit=self.local_event)
+        self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"), self.local_context)
         self.histories: dict[str, deque[tuple[str, str]]] = {}
         self._paid_busy = False
-        self.autonomous = Autonomous(cfg, ROOT, profiles=self.ai_router.profiles, memory_data=self.memory)
+        self.autonomous = Autonomous(cfg, ROOT, profiles=self.ai_router.profiles, memory_data=self.memory,
+                                     local_manager=self.local_context)
         self.seen_redemptions: set[str] = set()
         self.recent_redemptions: deque[str] = deque()
 
@@ -117,23 +144,55 @@ class Bot:
         writer.write((line + "\r\n").encode("utf-8"))
         await writer.drain()
 
-    async def say(self, writer: asyncio.StreamWriter, message: str) -> None:
+    def local_event(self, event):
+        text = event.get("message", "")
+        if event.get("card_ids"):
+            text += " Карточки: " + ", ".join(event["card_ids"])
+        print("Локальный контекст: " + clean_text(redact_secret(text, self.cfg.get("AI_API_KEY", "")), 300), flush=True)
+
+    async def say(self, writer: asyncio.StreamWriter, message: str, *,
+                  local_bundle=None, creative_card_id=None) -> None:
         async with self._say_lock:
             wait = 1.6 - (time.monotonic() - self.last_sent)
             if wait > 0:
                 await asyncio.sleep(wait)
-            await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{clean_text(message, CHAT_MAX_CHARS)}")
+            lease = None
+            if creative_card_id is not None:
+                lease = self.local_context.reserve_publish(local_bundle, creative_card_id)
+                if lease is None:
+                    raise LocalResultError("Локальная отсылка отменена: карточки или лимиты изменились.")
+            try:
+                await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{clean_text(message, CHAT_MAX_CHARS)}")
+            except BaseException:
+                if lease is not None:
+                    self.local_context.complete_publish(lease, success=False)
+                raise
+            if lease is not None:
+                self.local_context.complete_publish(lease, success=True)
             self.last_sent = time.monotonic()
 
-    async def say_autonomous(self, writer, message, valid, reserve):
+    async def say_autonomous(self, writer, message, valid, reserve, *,
+                             local_bundle=None, creative_card_id=None):
         # Never hold the paid-send lock or wait for a paid request / rate-limit slot.
         # No await between the last guard and write: a redemption cannot interleave.
         if not valid() or self._say_lock.locked() or time.monotonic() - self.last_sent < 1.6:
             return False
-        reserve()
-        writer.write((f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}\r\n").encode("utf-8"))
-        self.last_sent = time.monotonic()
-        await writer.drain()
+        lease = None
+        if creative_card_id is not None:
+            lease = self.local_context.reserve_publish(local_bundle, creative_card_id)
+            if lease is None:
+                return False
+        try:
+            reserve()
+            writer.write((f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}\r\n").encode("utf-8"))
+            self.last_sent = time.monotonic()
+            await writer.drain()
+        except BaseException:
+            if lease is not None:
+                self.local_context.complete_publish(lease, success=False)
+            raise
+        if lease is not None:
+            self.local_context.complete_publish(lease, success=True)
         return True
 
     async def worker(self, writer: asyncio.StreamWriter, queue: asyncio.Queue) -> None:
@@ -146,7 +205,22 @@ class Bot:
                 answer = await asyncio.to_thread(
                     self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history,
                 )
-                await self.say(writer, f"@{user} {answer}")
+                try:
+                    if isinstance(answer, LocalReply) and answer.creative_card_id is not None:
+                        await self.say(writer, f"@{user} {str(answer)}", local_bundle=answer.local_bundle,
+                                       creative_card_id=answer.creative_card_id)
+                    else:
+                        await self.say(writer, f"@{user} {str(answer)}")
+                except LocalResultError:
+                    print("Локальный контекст: отсылка устарела; готовлю обычный ответ на награду.", flush=True)
+                    answer = await asyncio.to_thread(
+                        self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history,
+                        allow_creative=False,
+                    )
+                    if is_local_service_output(answer):
+                        raise LocalResultError("Некорректный обычный ответ после отмены локальной отсылки.")
+                    await self.say(writer, f"@{user} {str(answer)}")
+                answer = str(answer)
                 self.autonomous.remember_reply(answer, target=user, source="reward", question=question)
                 # Refresh insertion order only after a successful publication.
                 pairs = self.histories.pop(key, deque(maxlen=10))
@@ -206,7 +280,7 @@ class Bot:
             await self.send(writer, "JOIN #" + self.cfg["TWITCH_CHANNEL"])
             rewards_task = asyncio.create_task(listener.run())
             self.autonomous.connect(
-                lambda text, valid, reserve: self.say_autonomous(writer, text, valid, reserve),
+                lambda text, valid, reserve, **kwargs: self.say_autonomous(writer, text, valid, reserve, **kwargs),
                 lambda: self._paid_busy or not queue.empty(),
             )
             autonomous_task = asyncio.create_task(self.autonomous.run())

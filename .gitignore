@@ -20,3 +20,8 @@ autonomous.json
 autonomous.tmp
 autonomous-quota.json
 autonomous-quota.tmp
+local-context.json
+local-context.*.tmp
+local-context.corrupt-*.bak
+local-context-usage.json
+local-context-usage.*.tmp

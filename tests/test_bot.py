@@ -202,7 +202,7 @@ class BotTests(unittest.TestCase):
             self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "Ответ от последней модели")
 
         self.assertEqual(attempts, [
-            bot.AI_MODEL, "deepseek-v4.1-pro", "deepseek-v4-flash",
+            bot.AI_MODEL, "deepseek-v4.1-pro", "deepseek-v4-pro", "deepseek-v4-flash",
         ])
         self.assertEqual(router.primary_failures, 1)
 

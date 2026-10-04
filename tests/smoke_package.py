@@ -54,6 +54,14 @@ def main() -> None:
         assert "WORKER_READY" in log_path.read_text(encoding="utf-8")
         assert (data / "memory.json").exists()
 
+        dictionary = data / "local-context.json"
+        dictionary.write_text("{ damaged dictionary", encoding="utf-8")
+        degraded = subprocess.run([str(EXE), "--bot", str(log_path), "--self-test"], env=env, timeout=30)
+        assert degraded.returncode == 0, (degraded.returncode, log_path.read_text(encoding="utf-8"))
+        assert "WORKER_READY" in log_path.read_text(encoding="utf-8")
+        assert "Локальный контекст" in log_path.read_text(encoding="utf-8")
+        assert dictionary.read_text(encoding="utf-8") == "{ damaged dictionary"
+
         invalid_path = data / "profiles.json"
         saved_profiles = invalid_path.read_bytes()
         invalid_path.write_text("broken", encoding="utf-8")

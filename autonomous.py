@@ -20,6 +20,7 @@ import urllib.request
 import uuid
 
 from ai_client import clean_text, redact_secret
+from local_context import LocalBundle, LocalResultError
 from participation import (DEFAULT_AUTONOMOUS_PROMPT, Decision, PARTICIPATION, RequestCancelled, check_basis, parse_decision,
                            repeats, request_decision, still_relevant)
 
@@ -186,6 +187,7 @@ class Pending:
     started_at: float
     cancel: object = None
     window: object = None
+    local_snapshot: object = None
 
 
 @dataclass
@@ -207,12 +209,14 @@ class RequestWindow:
 class Autonomous:
     def __init__(self, cfg, root, *, profiles=None, memory_data=None,
                  clock=time.time, monotonic_clock=time.monotonic,
-                 choose_delay=random.uniform, request=request_decision, emit=None):
+                 choose_delay=random.uniform, request=request_decision, emit=None, local_manager=None):
         self.cfg, self.root = cfg, root
         self.clock, self.choose_delay, self.request = clock, choose_delay, request
         self.monotonic_clock = monotonic_clock
         self.profiles, self.memory_data = profiles or [], memory_data
         self.emit = emit or self._print_event
+        self.local_manager = local_manager
+        self.local_revision = local_manager.snapshot().revision if local_manager is not None else None
         self.settings = AutoSettings()
         # HTTP reservations and publication share one atomic quota file.
         self._state_lock = RLock()
@@ -362,7 +366,7 @@ class Autonomous:
             self.recent_candidates.append((now, text))
             self.consume(basis)
 
-    def before_request(self, generation, cancel, window):
+    def before_request(self, generation, cancel, window, local_snapshot=None):
         """Reserve each attempted HTTP call durably, from the AI worker."""
         with self._state_lock:
             remaining = window.remaining(self.clock(), self.monotonic_clock())
@@ -371,6 +375,7 @@ class Autonomous:
             except (OSError, ValueError, TypeError):
                 revision = "invalid"
             if (cancel.is_set() or generation != self.generation or revision != self.revision
+                    or (local_snapshot is not None and not self.local_manager.is_current(local_snapshot))
                     or remaining <= 0 or not self.eligible(new_context=False)):
                 raise RequestCancelled("Реплика отменена или повод устарел.")
             if len(self.requests) >= self.settings.request_hourly_limit:
@@ -401,12 +406,14 @@ class Autonomous:
 
     async def tick(self):
         self.refresh()
+        self.refresh_local()
         if self.pending is not None and self.pending.future.done():
             pending = self.pending
             self.pending = None
             def current():
                 self.refresh()
                 return (pending.generation == self.generation and self.eligible(new_context=False)
+                        and (pending.local_snapshot is None or self.local_manager.is_current(pending.local_snapshot))
                         and (pending.window is None or pending.window.remaining(self.clock(), self.monotonic_clock()) > 0)
                         and self.clock() - pending.started_at <= self.settings.reply_ttl_seconds)
             if not current():
@@ -416,14 +423,25 @@ class Autonomous:
                     "Подготовленная реплика отменена: изменились настройки, контекст или очередь наград либо истёк срок ответа."))
             else:
                 try:
-                    decision = pending.future.result()
+                    result = pending.future.result()
                     # Injected request implementations are checked by the same protocol.
-                    decision = parse_decision(json.dumps(asdict(decision)), self.settings.max_chars)
+                    decision = parse_decision(json.dumps({key: getattr(result, key)
+                        for key in ("action", "text", "target", "basis", "reason")}), self.settings.max_chars)
+                    local_bundle = getattr(result, "local_bundle", None)
+                    creative_card_id = getattr(result, "creative_card_id", None)
+                    if creative_card_id is not None and (self.local_manager is None
+                            or not isinstance(local_bundle, LocalBundle)
+                            or creative_card_id not in local_bundle.candidate_ids):
+                        raise LocalResultError("Некорректная локальная отсылка.")
                     check_basis(decision, pending.messages, pending.new_ids)
                     if redact_secret(decision.reply, self.cfg.get("AI_API_KEY", "")) != decision.reply:
                         raise ValueError("secret in reply")
                     def valid():
                         return (current() and not set(decision.basis).intersection(self.consumed_ids)
+                                and (not isinstance(local_bundle, LocalBundle)
+                                     or self.local_manager.is_current(local_bundle.snapshot))
+                                and (creative_card_id is None
+                                     or self.local_manager.is_allowed(local_bundle, creative_card_id))
                                 and still_relevant(decision, pending.messages,
                                     self.buffer.fresh(self.clock(), self.settings), pending.new_ids, self.clock(), self.settings))
                     text = decision.reply
@@ -439,9 +457,13 @@ class Autonomous:
                         self.event("skipped", reason="Повтор недавней реплики или вопроса.")
                     elif self.settings.mode == "preview":
                         self.reserve(text, decision.basis)
-                        self.event("preview", text, decision.reason, target=decision.target, basis=decision.basis)
+                        self.event("preview", text, decision.reason,
+                                   reason=("Творческая карточка в предпросмотре: " + redact_secret(
+                                       creative_card_id, self.cfg.get("AI_API_KEY", ""))) if creative_card_id else "",
+                                   target=decision.target, basis=decision.basis)
                     else:
-                        sent = await self.sender(text, valid, lambda: self.reserve(text, decision.basis))
+                        kwargs = {"local_bundle": local_bundle, "creative_card_id": creative_card_id} if creative_card_id is not None else {}
+                        sent = await self.sender(text, valid, lambda: self.reserve(text, decision.basis), **kwargs)
                         if sent:
                             self.remember_reply(text, target=decision.target, basis=decision.basis)
                         self.event("published" if sent else "skipped", text if sent else "", decision.reason,
@@ -476,14 +498,25 @@ class Autonomous:
         deadline = min(now + self.settings.reply_ttl_seconds,
                        max(row["time"] for row in rows if row["sequence"] in new_ids) + self.settings.reply_ttl_seconds)
         window = RequestWindow(deadline, self.monotonic_clock() + max(0, deadline - now))
+        local_snapshot = self.local_manager.snapshot() if self.local_manager is not None else None
         kwargs = {"profiles": deepcopy(self.profiles), "memory_data": deepcopy(self.memory_data), "new_ids": new_ids,
                   "consumed_ids": tuple(self.consumed_ids),
                   "recent_replies": tuple(dict(row) for row in self.recent_replies if now - row["time"] < 3600),
-                  "before_request": lambda: self.before_request(generation, cancel, window),
+                  "before_request": lambda: self.before_request(generation, cancel, window, local_snapshot),
                   "before_generation": lambda plan: self.before_generation(plan, rows, new_ids, generation, cancel, window)}
+        if self.local_manager is not None:
+            kwargs.update(local_manager=self.local_manager, local_snapshot=local_snapshot)
         future = self.executor.submit(self.request, dict(self.cfg), rows, self.settings, **kwargs)
-        self.pending = Pending(future, generation, rows, new_ids, now, cancel, window)
+        self.pending = Pending(future, generation, rows, new_ids, now, cancel, window, local_snapshot)
         self.event("pending", reason="Выбираю один разговор; при уместном поводе подготовлю реплику.")
+
+    @state_locked
+    def refresh_local(self):
+        if self.local_manager is not None:
+            snapshot = self.local_manager.snapshot()
+            if snapshot.revision != self.local_revision:
+                self.local_revision = snapshot.revision
+                self.interrupt()
 
     async def run(self):
         while True:

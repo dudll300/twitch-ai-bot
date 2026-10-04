@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 AI_MODEL = "deepseek-v4.1-flash"
-AI_FALLBACK_MODELS = ("deepseek-v4.1-flash", "deepseek-v4.1-pro", "deepseek-v4-flash")
+AI_FALLBACK_MODELS = ("deepseek-v4.1-flash", "deepseek-v4.1-pro", "deepseek-v4-pro", "deepseek-v4-flash")
 FIRST_RUN_FALLBACK_MODELS = "deepseek-v4-pro,deepseek-v4-flash"
 SYSTEM_PROMPT = ""
 DEFAULTS = {

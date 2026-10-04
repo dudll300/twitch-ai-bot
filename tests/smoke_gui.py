@@ -47,7 +47,7 @@ def main() -> None:
         with patch.object(gui, "data_dir", return_value=root):
             window = gui.MainWindow()
         assert window.api_key.echoMode() == QLineEdit.Password
-        assert window.model.count() == 3
+        assert window.model.count() == 4
         assert window.model.isEditable()
         assert not window.windowIcon().isNull()
         assert window.prompt.toPlainText() == ""
@@ -88,7 +88,7 @@ def main() -> None:
             window = gui.MainWindow()
         window.show()
         app.processEvents()
-        assert window.pages.count() == 6
+        assert window.pages.count() == 7
         auto_page = window.autonomous_page
         standard_instructions = auto_page.saved.autonomous_prompt
         assert auto_page.autonomous_prompt.toPlainText() == standard_instructions

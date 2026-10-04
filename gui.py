@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from autonomous_gui import AutonomousPage
 from configuration import AI_FALLBACK_MODELS, FIELDS, normalize, read_config
 from gui_theme import STYLE
+from local_context_gui import LocalContextPage
 from model_catalog_gui import ModelCatalogControl
 from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
@@ -35,6 +36,7 @@ PAGES = (
     ("Самостоятельные реплики", "Ответы и реакции по свежему разговору — с приоритетом наград."),
     ("Активность", "Подключение, вопросы и ответы текущего запуска."),
     ("Тестирование", "Проверьте промпт и сравните модели без подключения Twitch."),
+    ("Локальный контекст", "Пояснения выражений и уместные отсылки вашего канала."),
 )
 
 
@@ -153,6 +155,8 @@ class MainWindow(QMainWindow):
         self.testing_page = TestingPage(self._test_credentials, self._test_snapshot,
                                         lambda: self.profiles_editor.rows)
         self.pages.addWidget(self.testing_page)
+        self.local_context_page = LocalContextPage(self._root)
+        self.pages.addWidget(self.local_context_page)
         self._page_effect = QGraphicsOpacityEffect(self.pages)
         self.pages.setGraphicsEffect(self._page_effect)
         self._page_effect.setOpacity(1.0)
@@ -202,6 +206,7 @@ class MainWindow(QMainWindow):
         self.base_url.textChanged.connect(self.prompt_builder.model_catalog.invalidate)
         self.prompt_builder.test_requested.connect(self._test_prompt_draft)
         self.prompt_builder.connection_requested.connect(lambda: self._navigate(0))
+        self.local_context_page.changed.connect(self._local_context_changed)
         QShortcut(QKeySequence.Save, self, activated=lambda: self._save())
         self._update_prompt_count()
         if upgrade_generated_prompt(prompt) != prompt:
@@ -385,6 +390,12 @@ class MainWindow(QMainWindow):
         self.save_hint.setText("Есть несохранённые изменения")
         self.notice.hide()
 
+    def _local_context_changed(self):
+        if self.local_context_page.dirty:
+            self.save_hint.setText("Локальный контекст изменён — примените его в своей вкладке")
+        else:
+            self.save_hint.setText("Есть несохранённые изменения" if self._dirty else "Все изменения сохранены")
+
     def _save(self, *, for_start=False):
         if self.process.state() != QProcess.NotRunning:
             return False
@@ -422,7 +433,7 @@ class MainWindow(QMainWindow):
             self.api_key.clear()
             self.api_key.setPlaceholderText("Ключ сохранён" if self._has_saved_key else "Ключ вашего AI-сервиса")
             self._dirty = False
-            self.save_hint.setText("Все изменения сохранены")
+            self._local_context_changed()
             return True
         except (OSError, ValueError) as exc:
             self.notice.setText(str(exc))
@@ -439,6 +450,7 @@ class MainWindow(QMainWindow):
 
     def _set_running(self, running):
         self.autonomous_page.set_running(running)
+        self.local_context_page.set_running(running)
         self.prompt_builder.set_editable(not running)
         self.model_catalog.set_editable(not running)
         for widget in (*self._field_widgets().values(), self.prompt, self.reset_prompt, self.save_button):
@@ -448,8 +460,10 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(not running)
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
-        self.save_hint.setText("Самостоятельные реплики можно менять во время работы" if running else
+        self.save_hint.setText("Самостоятельные реплики и локальный контекст можно менять во время работы" if running else
                                "Есть несохранённые изменения" if self._dirty else "Все изменения сохранены")
+        if self.local_context_page.dirty:
+            self._local_context_changed()
 
     def _fields(self) -> dict[str, str]:
         return {
@@ -577,13 +591,21 @@ class MainWindow(QMainWindow):
             self.auth_hint.setVisible(True)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self._dirty:
+        if self._dirty or self.local_context_page.dirty:
             choice = russian_question(self, "Несохранённые изменения",
-                "Сохранить настройки и профили перед закрытием?",
+                "Сохранить несохранённые настройки, профили и карточки локального контекста перед закрытием?",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
-            if choice == QMessageBox.Cancel or (choice == QMessageBox.Save and not self._save()):
+            if choice == QMessageBox.Cancel:
                 event.ignore()
                 return
+            if choice == QMessageBox.Save:
+                if self.local_context_page.dirty and not self.local_context_page.apply():
+                    self._navigate(6)
+                    event.ignore()
+                    return
+                if self._dirty and not self._save():
+                    event.ignore()
+                    return
         if self.process.state() != QProcess.NotRunning:
             choice = russian_question(self, "Бот работает", "Остановить бота и закрыть приложение?",
                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)

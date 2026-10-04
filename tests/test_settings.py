@@ -93,7 +93,7 @@ class SettingsTests(unittest.TestCase):
             with self.assertRaises(bot.TemporaryAIError):
                 router.ask({"AI_MODEL": "deepseek-v4.1-pro", "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS)}, "viewer", "вопрос")
         self.assertEqual(attempts, [
-            "deepseek-v4.1-pro", "deepseek-v4.1-flash", "deepseek-v4-flash",
+            "deepseek-v4.1-pro", "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
         ])
 
 
