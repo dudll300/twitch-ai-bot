@@ -157,7 +157,9 @@ def check_all_page_text_fields(app):
                     outer = outer.parentWidget()
                 assert outer is not None, "Text fields must have a scrollable enclosing page"
                 if id(outer) not in expanded:
-                    outer.widget().layout().addSpacing(1200)
+                    # Force vertical overflow independently of the page's layout:
+                    # an activity page's QHBoxLayout adds horizontal spacing.
+                    outer.widget().setMinimumHeight(outer.viewport().height() + 1200)
                     expanded.add(id(outer))
                 editor.setFixedHeight(130)
                 editor.setPlainText("Short text")
