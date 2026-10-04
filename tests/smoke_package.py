@@ -43,7 +43,7 @@ def main() -> None:
             # The distribution must work with just this file in a new location.
             launch_dir = Path(temporary) / "Чистая папка запуска"
             launch_dir.mkdir()
-            launch = launch_dir / "TwitchAIBot.exe"
+            launch = launch_dir / "Переименованный ИИ бот.exe"
             shutil.copy2(EXE, launch)
         env = os.environ.copy()
         env["APPDATA"] = temporary

@@ -18,9 +18,10 @@ class PackagedPathsTests(unittest.TestCase):
 
     def test_compiled_worker_uses_application_cli_with_unicode_path(self):
         log = Path("Папка с пробелами") / "bot.log"
-        with patch.dict(paths.__dict__, {"__compiled__": object()}):
+        executable = Path("Папка приложения") / "Переименованный бот.exe"
+        with patch.dict(paths.__dict__, {"__compiled__": object()}), patch.object(sys, "argv", [str(executable)]):
             program, arguments = paths.worker_command(log, self_test=True)
-        self.assertEqual(program, sys.executable)
+        self.assertEqual(program, str(executable.resolve()))
         self.assertEqual(arguments, ["--bot", str(log), "--self-test"])
 
     def test_pyinstaller_worker_remains_supported(self):

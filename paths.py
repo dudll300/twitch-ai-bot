@@ -17,6 +17,9 @@ def worker_command(log_path: Path, *, self_test: bool = False) -> tuple[str, lis
     args = ["--bot", str(log_path)]
     if self_test:
         args.append("--self-test")
+    if "__compiled__" in globals():
+        # Keep the actual launch filename, including when a portable EXE is renamed.
+        return str(Path(sys.argv[0]).resolve()), args
     if not is_packaged():
         args = ["-u", str(resource_path("app.py")), *args]
     return sys.executable, args

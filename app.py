@@ -24,6 +24,8 @@ def main() -> int:
         log_path = data_dir() / "gui-worker-self-test.log"
         program, arguments = worker_command(log_path, self_test=True)
         process.start(program, arguments)
+        if not process.waitForStarted(30000):
+            raise RuntimeError(f"GUI worker could not start {program}: {process.errorString()}")
         if not process.waitForFinished(60000):
             process.kill()
             process.waitForFinished(5000)
