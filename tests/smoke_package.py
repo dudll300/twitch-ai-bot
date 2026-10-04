@@ -83,8 +83,8 @@ def main() -> None:
         assert "profiles.json" in log_path.read_text(encoding="utf-8")
         invalid_path.write_bytes(saved_profiles)
 
-        gui = subprocess.run([str(launch), "--self-test-gui"], cwd=temporary, env=env, timeout=120)
-        assert gui.returncode == 0, f"GUI check failed with code {gui.returncode}"
+        gui = subprocess.run([str(launch), "--self-test-gui"], cwd=temporary, env=env, timeout=120, capture_output=True)
+        assert gui.returncode == 0, f"GUI check failed with code {gui.returncode}: {gui.stderr.decode('utf-8', 'replace')}"
         if LAYOUT == "onefile":
             assert list(launch.parent.iterdir()) == [launch], "Launch created sidecar files beside the EXE"
     print(f"{LAYOUT} GUI and worker started successfully.")
