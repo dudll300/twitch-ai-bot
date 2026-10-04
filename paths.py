@@ -18,8 +18,9 @@ def worker_command(log_path: Path, *, self_test: bool = False) -> tuple[str, lis
     if self_test:
         args.append("--self-test")
     if "__compiled__" in globals():
-        # Keep the actual launch filename, including when a portable EXE is renamed.
-        return str(Path(sys.argv[0]).resolve()), args
+        # Run the extracted payload directly so Stop controls the worker itself,
+        # rather than a onefile launcher that owns another child process.
+        return str(resource_path("TwitchAIBot.exe")), args
     if not is_packaged():
         args = ["-u", str(resource_path("app.py")), *args]
     return sys.executable, args
