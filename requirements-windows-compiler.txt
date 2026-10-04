@@ -1,0 +1,4 @@
+# Install after requirements-windows-build.txt, with --require-hashes --no-build-isolation.
+# Nuitka is published as a source archive; build tools are pinned in the wheel lock.
+--index-url https://pypi.org/simple
+Nuitka==4.2.2 --hash=sha256:29c1bfb6f53154e620b38cf6167cbb03f54043f6e08ef7d3f2d5080a95df7e0d

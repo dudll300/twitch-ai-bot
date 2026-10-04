@@ -21,7 +21,7 @@
 
 1. Откройте [сборки Windows для ветки dev](https://github.com/dudll300/twitch-ai-bot/actions/workflows/windows-gui.yml).
 2. Выберите успешный запуск после обновления приложения, скачайте артефакт **TwitchAIBot-Windows** и распакуйте его. Для скачивания артефактов может потребоваться вход в GitHub.
-3. Запустите `TwitchAIBot.exe` из распакованной папки. Оставьте рядом папку `_internal`: в ней находятся библиотеки приложения. Python устанавливать не нужно. Для ярлыка укажите этот EXE; переносить его отдельно от остальных файлов нельзя.
+3. Запустите `TwitchAIBot.exe`. Это один переносимый файл: установка, Python и папка с библиотеками рядом не требуются. Для ярлыка укажите этот EXE. Настройки сохраняются в `%APPDATA%\TwitchAIBot`, поэтому перенос файла приложения их не стирает.
 
 ### Из исходников
 
@@ -285,6 +285,7 @@ python start.py --setup
 python -m venv .venv-build
 .\.venv-build\Scripts\Activate.ps1
 python -m pip install --require-hashes --only-binary=:all: -r requirements-windows-build.txt
+python -m pip install --require-hashes --no-build-isolation -r requirements-windows-compiler.txt
 python -m pip check
 python -m unittest discover -s tests -v
 python tests/smoke_gui.py
@@ -292,14 +293,15 @@ python tests/smoke_testing.py
 python tests/smoke_controls.py
 python tests/smoke_prompt_builder.py
 python tests/smoke_local_context.py
-python -m PyInstaller --noconfirm --clean --onedir --noupx --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "memory.example.json;." app.py
+.\.github\scripts\build-windows-onefile.ps1
 # Проверку Defender выполняйте в PowerShell с правами администратора:
-.\.github\scripts\scan-windows-package.ps1 -PackagePath dist\TwitchAIBot -ReportPath build\defender-scan.json
+.\.github\scripts\scan-windows-package.ps1 -PackagePath build\nuitka\app.dist -ReportPath build\defender-payload-scan.json
+.\.github\scripts\scan-windows-package.ps1 -PackagePath dist\singlefile -ReportPath build\defender-onefile-scan.json
 python tests/smoke_package.py
 ```
 
-Готовое приложение — вся папка `dist\TwitchAIBot`, включая `TwitchAIBot.exe` и `_internal`. Сборка использует обычную папку с библиотеками без самораспаковки во временный каталог при запуске. `requirements-windows-build.txt` фиксирует версии и SHA-256 официальных wheels для Windows x64 / Python 3.12; при изменении зависимостей его нужно обновить.
+Готовое приложение — один файл `dist\singlefile\TwitchAIBot.exe`. Nuitka компилирует код приложения с MSVC и включает библиотеки в EXE; при запуске библиотеки извлекаются во временную папку. Для сборки нужен Visual Studio Build Tools 2022 или новее с компонентами C++ x64. Версия Windows-файла задаётся параметром `-Version` скрипта сборки, по умолчанию `1.8.2`. `requirements-windows-build.txt` фиксирует SHA-256 официальных wheels для Windows x64 / Python 3.12, а `requirements-windows-compiler.txt` — исходного архива Nuitka. Обновляйте их при изменении зависимостей.
 
-GitHub Actions запускает тесты и собирает приложение при отправке изменений в `dev` и ветки `feature/*`. До запуска готового EXE и публикации артефакта проверяется весь пакет Microsoft Defender с обновлёнными базами. Обнаружение угроз, ошибка сканирования или изменение файлов блокируют публикацию; версии движка, баз и SHA-256 файлов сохраняются в артефакте `Windows-Defender-report`. Такая проверка относится к указанному движку и базам и не гарантирует одинакового результата на всех компьютерах. Автоматические проверки не требуют Twitch-токенов и не вызывают платный AI API; реальное подключение проверяется отдельно со своими аккаунтами.
+GitHub Actions запускает тесты и собирает приложение при отправке изменений в `dev` и ветки `feature/*`. До запуска и публикации Microsoft Defender с обновлёнными базами проверяет и распакованный результат компиляции, и конечный EXE. Обнаружение угроз, ошибка сканирования или изменение файлов блокируют публикацию; версии движка, баз и SHA-256 файлов сохраняются в артефакте `Windows-Defender-report` вместе с отчётом Nuitka о составе сборки. Отдельный тест копирует только EXE в новую папку с пробелами и кириллицей и проверяет GUI, вызов процесса бота через GUI и сохранение данных. Проверка Defender относится к указанному движку и базам и не гарантирует одинакового результата на всех компьютерах. Автоматические проверки не требуют Twitch-токенов и не вызывают платный AI API; реальное подключение проверяется отдельно со своими аккаунтами.
 
 Документация Twitch: [IRC и служебные сообщения](https://dev.twitch.tv/docs/chat/irc/), [EventSub WebSocket](https://dev.twitch.tv/docs/eventsub/handling-websocket-events), [Device Code Flow](https://dev.twitch.tv/docs/authentication/getting-tokens-oauth/#device-code-grant-flow).
