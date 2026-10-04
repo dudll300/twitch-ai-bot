@@ -1,14 +1,20 @@
-# Application icon
+# Studio application icon
 
-`app.png` is the image generated and repaired with the built-in ImageGen tool.
-`app.ico` contains 16, 24, 32, 48, 64, 128 and 256 pixel versions, converted
-from the PNG with Pillow. The icon is embedded in the Windows executable
-and bundled for the application window.
+`app.svg` is the editable source: a blue reply bubble with a white AI sparkle,
+on a graphite tile matching the Studio interface. The subtle blue highlight
+uses the same `#168BFF` accent as the application. Outside the rounded tile,
+the image is transparent.
 
-Generation prompt:
+`app.png` is rendered at 512 × 512 pixels. `app.ico` embeds separate PNG frames
+at 16, 24, 32, 48, 64, 128 and 256 pixels, each rendered directly from the
+vector source for crisp small sizes. The Windows executable and application
+window both use `app.ico`.
 
-> Use case: logo-brand. Asset type: square Windows application icon for Twitch AI Bot. Generate one polished original flat icon mark: a friendly robot face integrated into a speech bubble, bold simple geometric silhouette, charcoal rounded-square tile with subtle violet accent and off-white face, two clear square eyes and tiny smile. Designed to remain legible at 16 and 32 pixels. Centered mark occupies 85% of the square with generous internal padding, crisp edges and high contrast. No text, no lettering, no watermark, no mockup, no official Twitch logo, no busy circuit patterns, no drop shadow outside the tile. Output a single square logo image, genuinely transparent outside the rounded tile.
+To regenerate the exported assets with the application's PySide6 environment:
 
-Repair prompt (two blemishes at the top of the tile):
+```powershell
+python assets/generate_icon.py
+```
 
-> Edit this existing application icon with a tiny targeted repair only. Fill the two irregular dark/transparent blemishes near the top of the charcoal rounded-square tile, one to the left of the robot antenna and one to its right, with solid opaque charcoal matching the surrounding tile. Make that entire upper tile area clean, continuous, fully opaque and unblemished. Preserve the original robot drawing, antenna, purple colors, shape, face, composition, dimensions and rounded-square tile exactly. Preserve transparency outside the rounded-square tile. Do not add anything, do not redesign.
+The generator uses QtSvg and Python's standard library. It needs no extra
+dependencies or external tools.

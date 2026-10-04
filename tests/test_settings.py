@@ -33,6 +33,15 @@ class SettingsTests(unittest.TestCase):
                 self.assertEqual(settings.load_settings(root)[0]["AI_FALLBACK_MODELS"], expected)
                 self.assertEqual((root / ".env").read_bytes(), before)
 
+    def test_legacy_manual_model_is_not_rewritten_when_loading_settings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / ".env"
+            path.write_text(env_content({"AI_MODEL": "deepseek-v4.1-pro"}), encoding="utf-8")
+            before = path.read_bytes()
+            self.assertEqual(settings.load_settings(root)[0]["AI_MODEL"], "deepseek-v4.1-pro")
+            self.assertEqual(path.read_bytes(), before)
+
     def test_console_first_run_offers_same_backups_and_can_clear_them(self):
         for entered, expected in (("", "deepseek-v4-pro,deepseek-v4-flash"), ("-", "")):
             with self.subTest(entered=entered), tempfile.TemporaryDirectory() as directory:
@@ -52,7 +61,7 @@ class SettingsTests(unittest.TestCase):
                 "TWITCH_CLIENT_ID": "client123",
                 "AI_BASE_URL": "https://ai.starimg.ru/v1",
                 "AI_API_KEY": "sk-test",
-                "AI_MODEL": "deepseek-v4.1-pro",
+                "AI_MODEL": "provider/custom-model",
             }
             settings.save_settings(values, "Мой системный промпт", root)
             values["AI_API_KEY"] = ""
@@ -61,11 +70,11 @@ class SettingsTests(unittest.TestCase):
             self.assertEqual(loaded["TWITCH_CHANNEL"], "streamer")
             self.assertEqual(loaded["TWITCH_BOT_NAME"], "helperbot")
             self.assertEqual(loaded["AI_API_KEY"], "sk-test")
-            self.assertEqual(loaded["AI_MODEL"], "deepseek-v4.1-pro")
+            self.assertEqual(loaded["AI_MODEL"], "provider/custom-model")
             self.assertEqual(prompt.strip(), "Мой системный промпт")
             with patch.object(bot, "ROOT", root), patch.dict(os.environ, {}, clear=True):
                 config = bot.config()
-            self.assertEqual(config["AI_MODEL"], "deepseek-v4.1-pro")
+            self.assertEqual(config["AI_MODEL"], "provider/custom-model")
             self.assertEqual(config["AI_PROMPT"], "Мой системный промпт")
 
     def test_custom_model_is_preserved(self):
@@ -91,9 +100,9 @@ class SettingsTests(unittest.TestCase):
 
         with patch.object(bot, "call_ai", side_effect=unavailable):
             with self.assertRaises(bot.TemporaryAIError):
-                router.ask({"AI_MODEL": "deepseek-v4.1-pro", "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS)}, "viewer", "вопрос")
+                router.ask({"AI_MODEL": "deepseek-v4-pro", "AI_FALLBACK_MODELS": ",".join(bot.AI_FALLBACK_MODELS)}, "viewer", "вопрос")
         self.assertEqual(attempts, [
-            "deepseek-v4.1-pro", "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
+            "deepseek-v4-pro", "deepseek-v4.1-flash", "deepseek-v4-flash",
         ])
 
 

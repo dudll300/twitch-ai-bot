@@ -572,7 +572,11 @@ class MainWindow(QMainWindow):
             self._dirty = False
             self._local_context_changed()
             return True
-        except (OSError, ValueError) as exc:
+        except OSError:
+            self.notice.setText("Не удалось сохранить настройки. Проверьте доступ к папке с данными приложения и повторите попытку.")
+            self.notice.show()
+            return False
+        except ValueError as exc:
             self.notice.setText(str(exc))
             self.notice.show()
             return False
@@ -620,8 +624,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self._log_path.write_text("", encoding="utf-8")
-        except OSError as exc:
-            self.notice.setText(f"Не удалось создать журнал: {exc}")
+        except OSError:
+            self.notice.setText("Не удалось создать журнал работы. Проверьте доступ к папке с данными приложения и повторите запуск.")
             self.notice.show()
             return
         self._log_decoder = codecs.getincrementaldecoder("utf-8")()
@@ -731,7 +735,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._dirty or self.local_context_page.dirty:
             choice = russian_question(self, "Несохранённые изменения",
-                "Сохранить несохранённые настройки, профили и карточки локального контекста перед закрытием?",
+                "Сохранить изменения настроек, профилей и карточек локального контекста перед закрытием?",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
             if choice == QMessageBox.Cancel:
                 event.ignore()

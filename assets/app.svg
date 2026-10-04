@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 64 64">
+  <title>Twitch AI Bot — Studio</title>
+  <desc>A blue reply bubble and a white sparkle on a graphite rounded tile.</desc>
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#18283d"/>
+      <stop offset=".52" stop-color="#14161b"/>
+      <stop offset="1" stop-color="#0a0b0e"/>
+    </linearGradient>
+    <linearGradient id="reply" x1="0" y1="0" x2=".75" y2="1">
+      <stop offset="0" stop-color="#55b5ff"/>
+      <stop offset=".45" stop-color="#168bff"/>
+      <stop offset="1" stop-color="#0871df"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#759cca" stop-opacity=".7"/>
+      <stop offset=".5" stop-color="#334c6c" stop-opacity=".65"/>
+      <stop offset="1" stop-color="#272b35" stop-opacity=".8"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="15" fill="url(#tile)"/>
+  <rect x="2.5" y="2.5" width="59" height="59" rx="14.5" fill="none" stroke="url(#rim)"/>
+  <path d="M20 14H44C49.523 14 54 18.477 54 24V35C54 40.523 49.523 45 44 45H26L14 53V43.168C11.554 41.341 10 38.426 10 35V24C10 18.477 14.477 14 20 14Z" fill="url(#reply)"/>
+  <path d="M20 15H44C48.971 15 53 19.029 53 24" fill="none" stroke="#bfe4ff" stroke-width="1.2" stroke-linecap="round" opacity=".55"/>
+  <path d="M32 20L35.15 26.85L42 30L35.15 33.15L32 40L28.85 33.15L22 30L28.85 26.85Z" fill="#f3f5fa"/>
+  <path d="M44 20V24M42 22H46" fill="none" stroke="#f3f5fa" stroke-width="2" stroke-linecap="round"/>
+</svg>

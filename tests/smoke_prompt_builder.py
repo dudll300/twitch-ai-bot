@@ -46,7 +46,7 @@ def main():
             builder = window.prompt_builder
             builder.wishes.setPlainText("Будь язвительным")
             builder.generate_button.click()
-            assert "Вставьте ваш AI API-ключ" in builder.status.text()
+            assert "Укажите API-ключ вашего AI-провайдера" in builder.status.text()
             assert not builder._busy
             builder.preset_button.click()
             assert CORE_RULES in builder.preview.toPlainText()

@@ -70,7 +70,8 @@ def check_scrolling(app):
     app.processEvents()
     outer.verticalScrollBar().setValue(30)
     initial = outer.verticalScrollBar().value()
-    for nested in (items, text):
+    # Lists and popup catalogs keep scrolling inside their own selection surface.
+    for nested in (items,):
         bar = nested.verticalScrollBar()
         assert bar.maximum() > 0
         for value, delta in ((bar.maximum(), -120), (0, 120)):
@@ -82,6 +83,25 @@ def check_scrolling(app):
         wheel(nested.viewport(), -120)
         assert bar.value() > 0, "The nested list must still scroll normally"
         assert outer.verticalScrollBar().value() == initial
+    # A wheel step that reaches an editor edge belongs entirely to the editor.
+    # The next step continues through the page, and reversing returns to the text.
+    text_bar = text.verticalScrollBar()
+    for target in (text.viewport(), text_bar):
+        for edge, inside, delta in ((text_bar.maximum(), text_bar.maximum() - 1, -120),
+                                    (text_bar.minimum(), text_bar.minimum() + 1, 120)):
+            outer.verticalScrollBar().setValue(100)
+            text_bar.setValue(inside)
+            assert wheel(target, delta)
+            assert text_bar.value() == edge
+            assert outer.verticalScrollBar().value() == 100, "One step scrolled both text and page"
+            assert wheel(target, delta)
+            page_value = outer.verticalScrollBar().value()
+            assert (page_value > 100 if delta < 0 else page_value < 100), "Editor edge trapped the wheel"
+            assert text_bar.value() == edge
+            assert wheel(target, -delta)
+            assert text_bar.value() != edge, "Reversing the wheel must return to the editor"
+            assert outer.verticalScrollBar().value() == page_value
+    outer.verticalScrollBar().setValue(initial)
     combo.showPopup()
     app.processEvents()
     view = combo.view()
@@ -103,19 +123,23 @@ def check_scrolling(app):
         assert outer.verticalScrollBar().value() > 30
         assert wheel(form_text.viewport(), 120)
         assert outer.verticalScrollBar().value() == 30
-    # A short field becomes a contained scroller as text grows, then forwards again.
+    # A short field gains local scrolling as text grows, then forwards at either edge.
     form_text.setPlainText("\n".join(f"Draft {i}" for i in range(100)))
     app.processEvents()
     bar = form_text.verticalScrollBar()
     assert bar.maximum() > 0
     outer.verticalScrollBar().setValue(30)
-    for position, delta in ((0, -120), (bar.maximum(), -120), (0, 120)):
-        bar.setValue(position)
-        assert wheel(form_text.viewport(), delta)
-        assert outer.verticalScrollBar().value() == 30
     bar.setValue(0)
     wheel(form_text.viewport(), -120)
-    assert bar.value() > 0
+    assert bar.value() > 0 and outer.verticalScrollBar().value() == 30
+    bar.setValue(bar.maximum())
+    wheel(form_text.viewport(), -120)
+    assert outer.verticalScrollBar().value() > 30
+    outer.verticalScrollBar().setValue(100)
+    bar.setValue(0)
+    wheel(form_text.viewport(), 120)
+    assert outer.verticalScrollBar().value() < 100
+    outer.verticalScrollBar().setValue(30)
     form_text.clear()
     app.processEvents()
     assert form_text.verticalScrollBar().maximum() == 0
@@ -180,7 +204,16 @@ def check_all_page_text_fields(app):
                 assert inner.value() > 0 and outer.verticalScrollBar().value() == 30
                 inner.setValue(inner.maximum())
                 wheel(editor.viewport(), -120)
-                assert outer.verticalScrollBar().value() == 30
+                assert outer.verticalScrollBar().value() > 30
+                page_value = outer.verticalScrollBar().value()
+                wheel(editor.viewport(), 120)
+                assert inner.value() < inner.maximum()
+                assert outer.verticalScrollBar().value() == page_value
+                outer.verticalScrollBar().setValue(100)
+                inner.setValue(0)
+                wheel(editor.viewport(), 120)
+                assert outer.verticalScrollBar().value() < 100
+                outer.verticalScrollBar().setValue(30)
                 editor.clear()
                 app.processEvents()
                 wheel(editor.viewport(), -120)
@@ -355,7 +388,7 @@ def main():
     check_scrolling(app)
     check_all_page_text_fields(app)
     app.quit()
-    print("Controls work: on-demand catalog, draft preservation, reset and contained scrolling.")
+    print("Controls work: on-demand catalog, draft preservation, reset and text-to-page scrolling.")
 
 
 if __name__ == "__main__":

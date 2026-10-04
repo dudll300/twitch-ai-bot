@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 AI_MODEL = "deepseek-v4.1-flash"
-AI_FALLBACK_MODELS = ("deepseek-v4.1-flash", "deepseek-v4.1-pro", "deepseek-v4-pro", "deepseek-v4-flash")
+AI_FALLBACK_MODELS = ("deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash")
 FIRST_RUN_FALLBACK_MODELS = "deepseek-v4-pro,deepseek-v4-flash"
 SYSTEM_PROMPT = ""
 DEFAULTS = {
@@ -25,6 +25,25 @@ FIELDS = (
     ("AI_MODEL", "ID основной модели у вашего провайдера"),
     ("AI_FALLBACK_MODELS", "Запасные модели через запятую (необязательно)"),
 )
+FIELD_NAMES = {
+    "TWITCH_CHANNEL": "Канал Twitch",
+    "TWITCH_BOT_NAME": "Аккаунт бота",
+    "TWITCH_CLIENT_ID": "Client ID приложения Twitch",
+    "TWITCH_REWARD_TITLE": "Название награды",
+    "AI_BASE_URL": "Адрес AI API (Base URL)",
+    "AI_API_KEY": "API-ключ",
+    "AI_MODEL": "Основная модель",
+    "AI_FALLBACK_MODELS": "Запасные модели",
+}
+REQUIRED_FIELD_MESSAGES = {
+    "TWITCH_CHANNEL": "Укажите ваш канал Twitch: логин или ссылку на канал.",
+    "TWITCH_BOT_NAME": "Укажите логин отдельного Twitch-аккаунта бота.",
+    "TWITCH_CLIENT_ID": "Укажите Client ID вашего приложения Twitch.",
+    "TWITCH_REWARD_TITLE": "Укажите название награды за баллы канала.",
+    "AI_BASE_URL": "Укажите адрес AI API (Base URL).",
+    "AI_API_KEY": "Укажите API-ключ вашего AI-провайдера.",
+    "AI_MODEL": "Выберите основную модель или введите её ID.",
+}
 LOGIN = re.compile(r"^[a-zA-Z0-9_]{1,25}$")
 
 
@@ -53,26 +72,27 @@ def read_config(path: Path) -> dict[str, str]:
 def normalize(name: str, value: str) -> str:
     value = value.strip()
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
-        raise ValueError(f"{name}: управляющие символы недопустимы.")
+        caption = FIELD_NAMES.get(name, "Настройка")
+        raise ValueError(f"Поле «{caption}» содержит перенос строки или другой недопустимый управляющий символ. Удалите его.")
     if name == "AI_FALLBACK_MODELS":
         return ",".join(dict.fromkeys(part.strip() for part in value.split(",") if part.strip()))
     if not value:
-        raise ValueError(f"Заполните {name}.")
+        raise ValueError(REQUIRED_FIELD_MESSAGES.get(name, "Заполните обязательное поле."))
     if name in ("TWITCH_CHANNEL", "TWITCH_BOT_NAME"):
         if name == "TWITCH_CHANNEL" and "twitch.tv/" in value.lower():
             parsed = urlparse(value if "://" in value else "https://" + value)
             if parsed.hostname not in ("twitch.tv", "www.twitch.tv", "m.twitch.tv"):
-                raise ValueError("Нужна ссылка на канал Twitch.")
+                raise ValueError("Укажите ссылку на канал на сайте twitch.tv.")
             value = parsed.path.strip("/").split("/")[0]
         value = value.lstrip("#@").lower()
         if not LOGIN.fullmatch(value):
-            raise ValueError("Нужен Twitch-логин из букв, цифр или подчёркивания.")
+            raise ValueError("Twitch-логин должен содержать от 1 до 25 латинских букв, цифр или подчёркиваний.")
     elif name == "AI_BASE_URL":
         value = value.rstrip("/").removesuffix("/chat/completions")
         parsed = urlparse(value)
         if (parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment
                 or parsed.username or parsed.password or any(char.isspace() for char in value)):
-            raise ValueError("Нужен Base URL, начинающийся с https://, без пароля, параметров и пробелов.")
+            raise ValueError("Адрес AI API (Base URL) должен начинаться с https:// и не содержать логин, пароль, параметры или пробелы.")
     elif name == "TWITCH_REWARD_TITLE" and len(value) > 45:
         raise ValueError("Название награды должно содержать не более 45 символов.")
     return value

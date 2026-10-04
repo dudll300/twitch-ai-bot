@@ -89,11 +89,19 @@ QPushButton#menuToggle { background: #151b25; border-color: #2b3545; border-radi
 QPushButton#menuToggle:hover { background: #202e42; border-color: #456992; }
 QPushButton#menuToggle:focus { border-color: #86bdff; }
 QMessageBox { background: #14161b; }
-QPushButton#primary { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2498ff, stop:1 #168bff); color: #ffffff; border-color: #4aa9ff; }
-QPushButton#primary:hover { background: #319eff; border-color: #82c4ff; }
-QPushButton#primary:pressed { background: #0876df; border-color: #168bff; }
-QPushButton#primary:focus { border-color: #c4e3ff; }
-QPushButton#primary:disabled { background: #203a58; border-color: #2e4f72; color: #809dbb; }
+QDialog#studioQuestion { background: transparent; }
+QFrame#questionCard {
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #1b2636, stop:0.4 #161b24, stop:1 #14161b);
+    border: 1px solid #35445b; border-top-color: #48658a; border-radius: 22px;
+}
+QLabel#questionTitle { color: #f3f5fa; font-size: 21px; font-weight: 600; }
+QLabel#questionText { color: #b3bdce; font-size: 14px; }
+QLabel#questionMark { color: #8fc5ff; background: #142943; border: 1px solid #2d4d73; border-radius: 12px; font-size: 22px; font-weight: 600; }
+QPushButton#primary, QPushButton[variant="primary"] { background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #2498ff, stop:1 #168bff); color: #ffffff; border-color: #4aa9ff; }
+QPushButton#primary:hover, QPushButton[variant="primary"]:hover { background: #319eff; border-color: #82c4ff; }
+QPushButton#primary:pressed, QPushButton[variant="primary"]:pressed { background: #0876df; border-color: #168bff; }
+QPushButton#primary:focus, QPushButton[variant="primary"]:focus { border-color: #c4e3ff; }
+QPushButton#primary:disabled, QPushButton[variant="primary"]:disabled { background: #203a58; border-color: #2e4f72; color: #809dbb; }
 QPushButton[variant="quiet"] { background: transparent; border-color: transparent; color: #aebbd0; padding: 8px; }
 QPushButton[variant="quiet"]:hover { background: #202b3c; color: #ddecff; }
 QPushButton[variant="quiet"]:focus { border-color: #86bdff; }

@@ -11,7 +11,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt, QSize, QPoint, QPointF
+from PySide6.QtCore import Qt, QSize, QPoint, QPointF, QTimer, QProcess
 from PySide6.QtGui import QFont, QFontDatabase, QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLineEdit, QMessageBox
@@ -20,7 +20,7 @@ import gui
 from start import read_config
 from profiles import load_profiles
 from autonomous import load_settings as load_auto_settings
-from ui_widgets import russian_question
+from ui_widgets import StudioQuestionDialog, russian_question
 from prompt_builder import compose_prompt
 
 
@@ -47,11 +47,18 @@ def main() -> None:
         with patch.object(gui, "data_dir", return_value=root):
             window = gui.MainWindow()
         assert window.api_key.echoMode() == QLineEdit.Password
-        assert window.model.count() == 4
+        assert [window.model.itemText(index) for index in range(window.model.count())] == [
+            "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
+        ]
+        assert window.model.currentText() == "deepseek-v4.1-flash"
         assert window.model.isEditable()
         assert not window.windowIcon().isNull()
         assert window.prompt.toPlainText() == ""
         assert window.fallback_models.text() == "deepseek-v4-pro,deepseek-v4-flash"
+        window._start()
+        assert window.notice.text() == "Укажите ваш канал Twitch: логин или ссылку на канал."
+        assert window.process.state() == QProcess.NotRunning
+        assert not (root / ".env").exists()
         window.channel.setText("https://www.twitch.tv/Streamer")
         window.bot_name.setText("HelperBot")
         window.client_id.setText("client123")
@@ -324,9 +331,28 @@ def main() -> None:
             for standard, caption in expected.items():
                 assert dialog.button(standard).text() == caption
             assert dialog.defaultButton() == dialog.button(default)
+            assert dialog.windowFlags() & Qt.FramelessWindowHint
+            assert dialog.testAttribute(Qt.WA_TranslucentBackground)
+            assert dialog.text_label.textFormat() == Qt.PlainText
+            assert dialog.title_label.textFormat() == Qt.PlainText
+            assert dialog.accessibleName() == "Проверка"
             return default
-        with patch.object(QMessageBox, "exec", check_dialog):
+        with patch.object(StudioQuestionDialog, "exec", check_dialog):
             assert russian_question(None, "Проверка", "Текст", buttons, default) == default
+        # Verify the actual modal keyboard behavior, including a safe Escape result.
+        dialog = StudioQuestionDialog(None, "Проверка", "<b>Обычный текст</b>", buttons, default)
+        QTimer.singleShot(0, lambda: QTest.keyClick(dialog, Qt.Key_Return))
+        assert dialog.exec() == default
+        escape = QMessageBox.Cancel if buttons & QMessageBox.Cancel else QMessageBox.No
+        for close_with in (lambda widget: QTest.keyClick(widget, Qt.Key_Escape),
+                           lambda widget: widget.close()):
+            dialog = StudioQuestionDialog(None, "Проверка", "Текст", buttons, default)
+            QTimer.singleShot(0, lambda widget=dialog: close_with(widget))
+            assert dialog.exec() == escape
+        for standard in expected:
+            dialog = StudioQuestionDialog(None, "Проверка", "Текст", buttons, default)
+            QTimer.singleShot(0, lambda widget=dialog, result=standard: widget.button(result).click())
+            assert dialog.exec() == standard
     with tempfile.TemporaryDirectory() as directory, patch.object(gui, "data_dir", return_value=Path(directory)), patch.object(
         gui, "available_screen_size", return_value=QSize(1280, 720)
     ):
