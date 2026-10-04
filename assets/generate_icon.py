@@ -1,4 +1,4 @@
-"""Render the Studio vector mark to PNG and a seven-size Windows icon.
+"""Export the approved Studio liquid-glass artwork to PNG and Windows ICO.
 
 Run with the application's PySide6 environment:
     python assets/generate_icon.py
@@ -16,21 +16,15 @@ import struct
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QBuffer, QByteArray, QIODevice
-from PySide6.QtGui import QGuiApplication, QImage, QPainter
-from PySide6.QtSvg import QSvgRenderer
+from PySide6.QtCore import QBuffer, QByteArray, QIODevice, Qt
+from PySide6.QtGui import QGuiApplication, QImage
 
 
 ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
 
 
-def render_png(renderer: QSvgRenderer, size: int) -> bytes:
-    image = QImage(size, size, QImage.Format_ARGB32_Premultiplied)
-    image.fill(0)
-    painter = QPainter(image)
-    painter.setRenderHint(QPainter.Antialiasing)
-    renderer.render(painter)
-    painter.end()
+def render_png(source: QImage, size: int) -> bytes:
+    image = source.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
     data = QByteArray()
     buffer = QBuffer(data)
     if not buffer.open(QIODevice.WriteOnly) or not image.save(buffer, "PNG"):
@@ -53,15 +47,18 @@ def write_ico(frames: list[tuple[int, bytes]], target: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--source", type=Path, default=Path(__file__).with_name("app-source.png"))
     parser.add_argument("--output-dir", type=Path, default=Path(__file__).parent)
     args = parser.parse_args()
     application = QGuiApplication.instance() or QGuiApplication([])
-    renderer = QSvgRenderer(str(Path(__file__).with_name("app.svg")))
-    if not renderer.isValid():
-        raise RuntimeError("assets/app.svg is not a valid SVG")
+    source = QImage(str(args.source))
+    if source.isNull() or source.width() != source.height():
+        raise RuntimeError(f"Icon source must be a valid square image: {args.source}")
+    if not source.hasAlphaChannel():
+        raise RuntimeError(f"Icon source must preserve transparency: {args.source}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    (args.output_dir / "app.png").write_bytes(render_png(renderer, 512))
-    write_ico([(size, render_png(renderer, size)) for size in ICON_SIZES],
+    (args.output_dir / "app.png").write_bytes(render_png(source, 512))
+    write_ico([(size, render_png(source, size)) for size in ICON_SIZES],
               args.output_dir / "app.ico")
     print(f"Generated 512px PNG and ICO frames {ICON_SIZES} in {args.output_dir}")
     # Keep the application alive until all Qt-backed render objects are gone.

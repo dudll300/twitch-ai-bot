@@ -20,7 +20,7 @@ QFrame#topbar {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #121b29, stop:0.55 #101217, stop:1 #101217);
     border-bottom: 1px solid #272b35;
 }
-QFrame#brandMark { background: #142943; border: 1px solid #294767; border-radius: 11px; }
+QFrame#brandMark { background: transparent; border: none; }
 QFrame#card, QFrame#inspectorCard {
     background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #18212e, stop:0.22 #161a22, stop:0.62 #14161b, stop:1 #14161b);
     border: 1px solid #2b303b; border-top-color: #343f50; border-radius: 22px;
