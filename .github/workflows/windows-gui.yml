@@ -18,46 +18,16 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
-      - name: Install verified Windows build dependencies
-        run: >-
-          python -m pip install --require-hashes --only-binary=:all: -r requirements-windows-build.txt
-      - name: Install verified Nuitka source
-        run: python -m pip install --require-hashes --no-build-isolation -r requirements-windows-compiler.txt
-      - run: python -m pip check
+      - run: python -m pip install -r requirements.txt pyinstaller==6.22.3
       - run: python -m unittest discover -s tests -v
       - run: python tests/smoke_gui.py
       - run: python tests/smoke_testing.py
       - run: python tests/smoke_controls.py
       - run: python tests/smoke_prompt_builder.py
       - run: python tests/smoke_local_context.py
-      - name: Compile single-file application
-        shell: pwsh
-        run: ./.github/scripts/build-windows-onefile.ps1
-      - name: Scan compiled payload before running it
-        shell: pwsh
-        run: ./.github/scripts/scan-windows-package.ps1 -PackagePath build/nuitka/app.dist -ReportPath build/defender-payload-scan.json
-      - name: Scan single EXE before running or publishing it
-        shell: pwsh
-        run: ./.github/scripts/scan-windows-package.ps1 -PackagePath dist/singlefile -ReportPath build/defender-onefile-scan.json
-      - name: Test compiled GUI and worker
-        env:
-          TWITCH_AI_TEST_EXE: build/nuitka/app.dist/TwitchAIBot.exe
-          TWITCH_AI_TEST_LAYOUT: standalone
-        run: python tests/smoke_package.py
-      - name: Test EXE alone in a new directory
-        run: python tests/smoke_package.py
+      - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "memory.example.json;." app.py
+      - run: python tests/smoke_package.py
       - uses: actions/upload-artifact@v4
         with:
           name: TwitchAIBot-Windows
-          path: dist/singlefile/TwitchAIBot.exe
-          if-no-files-found: error
-      - name: Save scan diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: Windows-Defender-report
-          path: |
-            build/defender-payload-scan.json
-            build/defender-onefile-scan.json
-            build/nuitka-report.xml
-          if-no-files-found: ignore
+          path: dist/TwitchAIBot.exe

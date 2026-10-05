@@ -19,7 +19,7 @@ from configuration import AI_FALLBACK_MODELS, FIELDS, normalize, read_config
 from gui_theme import STYLE
 from local_context_gui import LocalContextPage
 from model_catalog_gui import ModelCatalogControl
-from paths import data_dir, resource_path, worker_command
+from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
 from profiles_gui import ProfilesEditor
 from prompt_builder_gui import PromptBuilder
@@ -648,8 +648,10 @@ class MainWindow(QMainWindow):
         self._set_running(True)
         self.process.setWorkingDirectory(str(self._root))
         self._log_timer.start()
-        program, arguments = worker_command(self._log_path)
-        self.process.start(program, arguments)
+        if getattr(sys, "frozen", False):
+            self.process.start(sys.executable, ["--bot", str(self._log_path)])
+        else:
+            self.process.start(sys.executable, ["-u", str(resource_path("app.py")), "--bot", str(self._log_path)])
 
     def _stop(self) -> None:
         if self.process.state() == QProcess.NotRunning:
