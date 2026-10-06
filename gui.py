@@ -17,6 +17,8 @@ from PySide6.QtWidgets import (
 from autonomous_gui import AutonomousPage
 from configuration import AI_FALLBACK_MODELS, FIELDS, normalize, read_config
 from gui_theme import STYLE
+from history_gui import HistoryPage
+from local_context_gui import LocalContextPage
 from model_catalog_gui import ModelCatalogControl
 from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
@@ -24,6 +26,7 @@ from profiles_gui import ProfilesEditor
 from prompt_builder_gui import PromptBuilder
 from reply_rules import ANSWER_MAX_CHARS, upgrade_generated_prompt
 from settings import load_settings, save_settings
+from studio_icons import studio_icon
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
 from ui_widgets import ScrollPlainTextEdit, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
@@ -35,6 +38,8 @@ PAGES = (
     ("Самостоятельные реплики", "Ответы и реакции по свежему разговору — с приоритетом наград."),
     ("Активность", "Подключение, вопросы и ответы текущего запуска."),
     ("Тестирование", "Проверьте промпт и сравните модели без подключения Twitch."),
+    ("Локальный контекст", "Пояснения выражений и уместные отсылки вашего канала."),
+    ("История", "Сохранённые ответы, самостоятельные реплики и решения бота за все запуски."),
 )
 
 
@@ -85,16 +90,39 @@ class MainWindow(QMainWindow):
         shell.setSpacing(0)
         self.sidebar = SlidingSidebar(240)
         side = QVBoxLayout(self.sidebar.panel)
-        side.setContentsMargins(20, 32, 20, 24)
+        side.setContentsMargins(16, 24, 16, 20)
         side.setSpacing(6)
-        side.addWidget(label("Twitch AI", "brand"))
-        side.addWidget(label("Панель управления", "muted"))
-        side.addSpacing(36)
+        brand = QHBoxLayout()
+        brand.setSpacing(10)
+        mark = QFrame()
+        mark.setObjectName("brandMark")
+        mark.setFixedSize(38, 38)
+        mark_layout = QVBoxLayout(mark)
+        mark_layout.setContentsMargins(1, 1, 1, 1)
+        glyph = QLabel()
+        glyph.setFixedSize(36, 36)
+        glyph.setAlignment(Qt.AlignCenter)
+        glyph.setPixmap(QIcon(str(resource_path("assets/app.ico"))).pixmap(36, 36))
+        glyph.setAccessibleName("Twitch AI Bot")
+        mark_layout.addWidget(glyph)
+        brand.addWidget(mark)
+        brand_name = QVBoxLayout()
+        brand_name.setSpacing(0)
+        brand_name.addWidget(label("Twitch AI", "brand"))
+        brand_name.addWidget(label("Студия бота", "muted"))
+        brand.addLayout(brand_name, 1)
+        side.addLayout(brand)
+        side.addSpacing(28)
+        side.addWidget(label("РАБОЧЕЕ ПРОСТРАНСТВО", "eyebrow"))
+        side.addSpacing(6)
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
+        nav_icons = ("plug", "sliders", "users", "messages", "activity", "flask", "book", "history")
         for index, (name, _) in enumerate(PAGES):
             button = QPushButton(name.replace("Самостоятельные реплики", "Самостоятельные\nреплики"))
             button.setProperty("variant", "nav")
+            button.setIcon(studio_icon(nav_icons[index]))
+            button.setIconSize(QSize(18, 18))
             button.setCheckable(True)
             self.nav_group.addButton(button, index)
             self.nav_buttons.append(button)
@@ -103,41 +131,78 @@ class MainWindow(QMainWindow):
         side.addStretch()
         self.status = label("Остановлен")
         self.status.setObjectName("status")
+        self.status.setProperty("state", "idle")
         self.status.setWordWrap(True)
+        profile = QFrame()
+        profile.setObjectName("sidebarProfile")
+        profile_layout = QVBoxLayout(profile)
+        profile_layout.setContentsMargins(14, 14, 14, 14)
+        profile_layout.setSpacing(5)
+        profile_layout.addWidget(label("ВАШ КАНАЛ", "eyebrow"))
+        self.sidebar_channel = label("Канал не выбран", wrap=True)
+        self.sidebar_channel.setObjectName("sidebarChannel")
+        profile_layout.addWidget(self.sidebar_channel)
+        self.sidebar_hint = label("Настройте подключение", "muted", True)
+        self.sidebar_hint.setObjectName("sidebarHint")
+        profile_layout.addWidget(self.sidebar_hint)
+        side.addWidget(profile)
         side.addSpacing(12)
         folder = QPushButton("Папка с данными")
         folder.setProperty("variant", "quiet")
+        folder.setIcon(studio_icon("folder", size=16))
         folder.clicked.connect(self._open_folder)
         side.addWidget(folder)
         shell.addWidget(self.sidebar)
 
-        main = QVBoxLayout()
+        main_area = QWidget()
+        main_area.setObjectName("mainArea")
+        main = QVBoxLayout(main_area)
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
+        topbar = QFrame()
+        topbar.setObjectName("topbar")
+        header = QHBoxLayout(topbar)
+        header.setContentsMargins(28, 18, 28, 18)
+        header.setSpacing(14)
+        self.menu_button = QPushButton()
+        self.menu_button.setIcon(menu_icon())
+        self.menu_button.setIconSize(QSize(22, 22))
+        self.menu_button.setObjectName("menuToggle")
+        self.menu_button.setFixedSize(40, 40)
+        self.menu_button.setCheckable(True)
+        self.menu_button.clicked.connect(self._toggle_sidebar)
+        header.addWidget(self.menu_button)
+        workspace_heading = QVBoxLayout()
+        workspace_heading.setSpacing(2)
+        self.workspace_channel = label("Ваш канал", "channel", True)
+        workspace_heading.addWidget(self.workspace_channel)
+        workspace_heading.addWidget(label("TWITCH AI / СТУДИЯ", "eyebrow"))
+        header.addLayout(workspace_heading, 1)
+        self.status.setMaximumWidth(190)
+        header.addWidget(self.status, 0, Qt.AlignVCenter)
+        self.start_button = QPushButton("Запустить бота")
+        self.start_button.setObjectName("primary")
+        self.start_button.setIcon(studio_icon("play", "#FFFFFF", 16))
+        self.start_button.clicked.connect(self._start)
+        header.addWidget(self.start_button)
+        self.stop_button = QPushButton("Остановить бота")
+        self.stop_button.setProperty("variant", "danger")
+        self.stop_button.setIcon(studio_icon("stop", "#FF9B9B", 16))
+        self.stop_button.clicked.connect(self._stop)
+        self.stop_button.hide()
+        header.addWidget(self.stop_button)
+        main.addWidget(topbar)
         content = QWidget()
         content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(32, 28, 32, 24)
-        content_layout.setSpacing(24)
+        content_layout.setContentsMargins(28, 24, 28, 24)
+        content_layout.setSpacing(22)
         self.page_title = label("", "title")
         self.page_description = label("", "muted", True)
         heading = QVBoxLayout()
         heading.setSpacing(6)
         heading.addWidget(self.page_title)
         heading.addWidget(self.page_description)
-        header = QHBoxLayout()
-        header.setSpacing(16)
-        self.menu_button = QPushButton()
-        self.menu_button.setIcon(menu_icon())
-        self.menu_button.setIconSize(QSize(22, 22))
-        self.menu_button.setObjectName("menuToggle")
-        self.menu_button.setFixedSize(44, 44)
-        self.menu_button.setCheckable(True)
-        self.menu_button.clicked.connect(self._toggle_sidebar)
-        header.addWidget(self.menu_button, 0, Qt.AlignVCenter)
-        header.addLayout(heading, 1)
-        self.status.setMaximumWidth(220)
-        header.addWidget(self.status, 0, Qt.AlignVCenter)
-        content_layout.addLayout(header)
+        content_layout.addLayout(heading)
         self.notice = label("", "error", True)
         self.notice.hide()
         content_layout.addWidget(self.notice)
@@ -153,6 +218,10 @@ class MainWindow(QMainWindow):
         self.testing_page = TestingPage(self._test_credentials, self._test_snapshot,
                                         lambda: self.profiles_editor.rows)
         self.pages.addWidget(self.testing_page)
+        self.local_context_page = LocalContextPage(self._root)
+        self.pages.addWidget(self.local_context_page)
+        self.history_page = HistoryPage(self._root)
+        self.pages.addWidget(self.history_page)
         self._page_effect = QGraphicsOpacityEffect(self.pages)
         self.pages.setGraphicsEffect(self._page_effect)
         self._page_effect.setOpacity(1.0)
@@ -165,24 +234,17 @@ class MainWindow(QMainWindow):
         footer = QFrame()
         footer.setObjectName("footer")
         actions = QHBoxLayout(footer)
-        actions.setContentsMargins(32, 18, 32, 18)
+        actions.setContentsMargins(28, 14, 28, 14)
         actions.setSpacing(12)
         self.save_hint = label("Все изменения сохранены", "muted", True)
         actions.addWidget(self.save_hint, 1)
         self.save_button = QPushButton("Сохранить")
+        self.save_button.setIcon(studio_icon("save", "#F3F5FA", 16))
         self.save_button.setToolTip("Сохранить настройки и профили · Ctrl+S")
         self.save_button.clicked.connect(lambda: self._save())
         actions.addWidget(self.save_button)
-        self.start_button = QPushButton("Запустить бота")
-        self.start_button.setObjectName("primary")
-        self.start_button.clicked.connect(self._start)
-        actions.addWidget(self.start_button)
-        self.stop_button = QPushButton("Остановить бота")
-        self.stop_button.clicked.connect(self._stop)
-        self.stop_button.hide()
-        actions.addWidget(self.stop_button)
         main.addWidget(footer)
-        shell.addLayout(main, 1)
+        shell.addWidget(main_area, 1)
         self.setCentralWidget(body)
         self._set_sidebar(self._sidebar_expanded, animate=False)
         self._navigate(0)
@@ -202,8 +264,14 @@ class MainWindow(QMainWindow):
         self.base_url.textChanged.connect(self.prompt_builder.model_catalog.invalidate)
         self.prompt_builder.test_requested.connect(self._test_prompt_draft)
         self.prompt_builder.connection_requested.connect(lambda: self._navigate(0))
+        self.local_context_page.changed.connect(self._local_context_changed)
+        self.autonomous_page.enabled.toggled.connect(self._refresh_workspace)
+        self.autonomous_page.mode.currentIndexChanged.connect(self._refresh_workspace)
+        self.autonomous_page.apply_button.clicked.connect(self._refresh_workspace)
+        self.autonomous_page.reset_button.clicked.connect(self._refresh_workspace)
         QShortcut(QKeySequence.Save, self, activated=lambda: self._save())
         self._update_prompt_count()
+        self._refresh_workspace()
         if upgrade_generated_prompt(prompt) != prompt:
             self._mark_dirty()
             self.save_hint.setText(f"Служебный лимит обновлён до {ANSWER_MAX_CHARS} символов — нажмите «Сохранить»")
@@ -233,6 +301,7 @@ class MainWindow(QMainWindow):
         self.nav_buttons[index].setChecked(True)
         self.page_title.setText(PAGES[index][0])
         self.page_description.setText(PAGES[index][1])
+        self._refresh_workspace()
 
     def _test_credentials(self):
         saved_key = read_config(self._root / ".env").get("AI_API_KEY", "") if not self.api_key.text().strip() else ""
@@ -287,7 +356,7 @@ class MainWindow(QMainWindow):
             twitch_layout.addWidget(field(caption, widget))
         twitch_layout.addWidget(label("В награде Twitch включите обязательный ввод текста.", "muted", True))
         twitch_layout.addStretch()
-        docs = QLabel('<a style="color: #c5c9d2;" href="https://dev.twitch.tv/console/apps">Создать приложение в Twitch ↗</a>')
+        docs = QLabel('<a style="color: #65B3FF;" href="https://dev.twitch.tv/console/apps">Создать приложение в Twitch ↗</a>')
         docs.setOpenExternalLinks(True)
         docs.setWordWrap(True)
         twitch_layout.addWidget(docs)
@@ -342,38 +411,116 @@ class MainWindow(QMainWindow):
 
     def _build_activity(self):
         page = QWidget()
-        layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(20)
-        metrics = QHBoxLayout()
-        metrics.setSpacing(20)
+        columns = QHBoxLayout(page)
+        columns.setContentsMargins(0, 0, 8, 0)
+        columns.setSpacing(20)
+        layout = QVBoxLayout()
+        layout.setSpacing(16)
+        stats = QFrame()
+        stats.setObjectName("activityStats")
+        metrics = QHBoxLayout(stats)
+        metrics.setContentsMargins(20, 16, 20, 16)
+        metrics.setSpacing(24)
         for title, attribute, value in (("Вопросов принято", "questions_label", "0"),
                                         ("Ответов отправлено", "answers_label", "0")):
-            frame, frame_layout = card()
-            frame_layout.setSpacing(8)
-            frame_layout.addWidget(label(title, "muted"))
-            number = label(value, "number")
+            frame = QFrame()
+            frame.setProperty("role", "stat")
+            frame_layout = QVBoxLayout(frame)
+            frame_layout.setContentsMargins(0, 0, 0, 0)
+            frame_layout.setSpacing(4)
+            number = label(value, "statValue")
             setattr(self, attribute, number)
             frame_layout.addWidget(number)
+            frame_layout.addWidget(label(title, "statLabel"))
             metrics.addWidget(frame, 1)
-        layout.addLayout(metrics)
+        layout.addWidget(stats)
         self.auth_hint = QLabel()
+        self.auth_hint.setObjectName("authHint")
         self.auth_hint.setWordWrap(True)
         self.auth_hint.setOpenExternalLinks(True)
-        self.auth_hint.setStyleSheet("background: #2a2d33; border-radius: 8px; padding: 16px;")
         self.auth_hint.hide()
         layout.addWidget(self.auth_hint)
-        journal, journal_layout = card("Журнал работы")
+        journal, journal_layout = card("Журнал работы", "События текущего запуска · Twitch и AI")
         self.log = ScrollPlainTextEdit()
+        self.log.setObjectName("activityLog")
         self.log.setReadOnly(True)
-        self.log.setMinimumHeight(240)
+        self.log.setMinimumHeight(260)
         self.log.setAccessibleName("Журнал работы бота")
-        self.log.setPlaceholderText("Здесь появятся события подключения и ответы.\nЗапустите бота, когда настройки будут готовы.")
+        self.log.setPlaceholderText("Пока здесь тихо.\n\nЗапустите бота — в журнале появятся события подключения,\nпринятые вопросы и отправленные ответы.")
         self.log.setFont(QFont("Consolas", 10))
         self.log.document().setMaximumBlockCount(2000)
         journal_layout.addWidget(self.log, 1)
         layout.addWidget(journal, 1)
+        columns.addLayout(layout, 1)
+
+        inspector = QWidget()
+        inspector.setFixedWidth(260)
+        inspector_layout = QVBoxLayout(inspector)
+        inspector_layout.setContentsMargins(0, 0, 0, 0)
+        inspector_layout.setSpacing(16)
+        session, session_layout = card("Текущие настройки")
+        session.setObjectName("inspectorCard")
+        session_layout.addWidget(label("ПОДКЛЮЧЕНИЕ", "eyebrow"))
+        self.connection_pill = label("Остановлен", wrap=True)
+        self.connection_pill.setObjectName("connectionPill")
+        session_layout.addWidget(self.connection_pill)
+        self.inspector_values = {}
+        for key, caption in (("channel", "Канал Twitch"), ("model", "Основная модель"),
+                             ("reward", "Награда за вопрос"), ("autonomous", "Самостоятельные реплики"),
+                             ("context", "Локальный контекст")):
+            group = QVBoxLayout()
+            group.setSpacing(4)
+            group.addWidget(label(caption, "muted"))
+            value = label("—", "body", True)
+            self.inspector_values[key] = value
+            group.addWidget(value)
+            session_layout.addLayout(group)
+        inspector_layout.addWidget(session)
+        shortcuts, shortcuts_layout = card("Быстрые действия")
+        shortcuts.setObjectName("inspectorCard")
+        shortcuts_layout.setContentsMargins(20, 18, 20, 18)
+        shortcuts_layout.setSpacing(10)
+        for caption, index, icon in (("Поведение бота", 1, "sliders"), ("Проверить ответ", 5, "flask")):
+            button = QPushButton(caption)
+            button.setProperty("variant", "inspector")
+            button.setIcon(studio_icon(icon, size=16))
+            button.clicked.connect(lambda checked=False, target=index: self._navigate(target))
+            shortcuts_layout.addWidget(button)
+        inspector_layout.addWidget(shortcuts)
+        inspector_layout.addStretch()
+        columns.addWidget(inspector)
         return scroll_page(page)
+
+    def _refresh_workspace(self, *_):
+        """Display drafts and saved live settings without changing their persistence."""
+        channel = self.channel.text().strip()
+        try:
+            channel = normalize("TWITCH_CHANNEL", channel) if channel else ""
+        except ValueError:
+            channel = ""
+        channel_caption = f"@{channel}" if channel else "Канал не выбран"
+        self.workspace_channel.setText(channel_caption)
+        self.sidebar_channel.setText(channel_caption)
+        bot = self.bot_name.text().strip()
+        self.sidebar_hint.setText(f"Бот: {bot}" if bot else "Настройте подключение")
+        self.inspector_values["channel"].setText(channel_caption)
+        self.inspector_values["model"].setText(self.model.currentText().strip() or "Не выбрана")
+        self.inspector_values["reward"].setText(self.reward_title.text().strip() or "Не указана")
+        auto = self.autonomous_page.saved
+        self.inspector_values["autonomous"].setText(
+            ("Предпросмотр" if auto.mode == "preview" else "Публикация в чат") if auto.enabled else "Выключены")
+        context = self.local_context_page.saved
+        active_cards = sum(entry.enabled for entry in context.cards)
+        self.inspector_values["context"].setText(
+            f"Включён · активных карточек: {active_cards}" if context.settings.enabled else "Выключен")
+        self.connection_pill.setText(self.status.text())
+
+    def _set_status(self, text, state):
+        self.status.setText(text)
+        self.status.setProperty("state", state)
+        self.status.style().unpolish(self.status)
+        self.status.style().polish(self.status)
+        self.connection_pill.setText(text)
 
     def _update_prompt_count(self):
         self.prompt_count.setText(f"{len(self.prompt.toPlainText()):,} / 20 000 символов".replace(",", " "))
@@ -384,6 +531,14 @@ class MainWindow(QMainWindow):
         self._dirty = True
         self.save_hint.setText("Есть несохранённые изменения")
         self.notice.hide()
+        self._refresh_workspace()
+
+    def _local_context_changed(self):
+        if self.local_context_page.dirty:
+            self.save_hint.setText("Локальный контекст изменён — примените его в своей вкладке")
+        else:
+            self.save_hint.setText("Есть несохранённые изменения" if self._dirty else "Все изменения сохранены")
+        self._refresh_workspace()
 
     def _save(self, *, for_start=False):
         if self.process.state() != QProcess.NotRunning:
@@ -422,9 +577,13 @@ class MainWindow(QMainWindow):
             self.api_key.clear()
             self.api_key.setPlaceholderText("Ключ сохранён" if self._has_saved_key else "Ключ вашего AI-сервиса")
             self._dirty = False
-            self.save_hint.setText("Все изменения сохранены")
+            self._local_context_changed()
             return True
-        except (OSError, ValueError) as exc:
+        except OSError:
+            self.notice.setText("Не удалось сохранить настройки. Проверьте доступ к папке с данными приложения и повторите попытку.")
+            self.notice.show()
+            return False
+        except ValueError as exc:
             self.notice.setText(str(exc))
             self.notice.show()
             return False
@@ -439,6 +598,7 @@ class MainWindow(QMainWindow):
 
     def _set_running(self, running):
         self.autonomous_page.set_running(running)
+        self.local_context_page.set_running(running)
         self.prompt_builder.set_editable(not running)
         self.model_catalog.set_editable(not running)
         for widget in (*self._field_widgets().values(), self.prompt, self.reset_prompt, self.save_button):
@@ -448,8 +608,11 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(not running)
         self.stop_button.setVisible(running)
         self.stop_button.setEnabled(running)
-        self.save_hint.setText("Самостоятельные реплики можно менять во время работы" if running else
+        self.save_hint.setText("Самостоятельные реплики и локальный контекст можно менять во время работы" if running else
                                "Есть несохранённые изменения" if self._dirty else "Все изменения сохранены")
+        if self.local_context_page.dirty:
+            self._local_context_changed()
+        self._refresh_workspace()
 
     def _fields(self) -> dict[str, str]:
         return {
@@ -468,8 +631,8 @@ class MainWindow(QMainWindow):
             return
         try:
             self._log_path.write_text("", encoding="utf-8")
-        except OSError as exc:
-            self.notice.setText(f"Не удалось создать журнал: {exc}")
+        except OSError:
+            self.notice.setText("Не удалось создать журнал работы. Проверьте доступ к папке с данными приложения и повторите запуск.")
             self.notice.show()
             return
         self._log_decoder = codecs.getincrementaldecoder("utf-8")()
@@ -485,7 +648,7 @@ class MainWindow(QMainWindow):
         self.answers_label.setText("0")
         self.log.clear()
         self.log.appendPlainText("Запускаю бота…")
-        self.status.setText("Запускается…")
+        self._set_status("Запускается…", "starting")
         self._set_running(True)
         self.process.setWorkingDirectory(str(self._root))
         self._log_timer.start()
@@ -497,7 +660,7 @@ class MainWindow(QMainWindow):
     def _stop(self) -> None:
         if self.process.state() == QProcess.NotRunning:
             return
-        self.status.setText("Останавливается…")
+        self._set_status("Останавливается…", "stopping")
         self.stop_button.setEnabled(False)
         self.process.terminate()
         self._kill_timer.start(3000)
@@ -507,7 +670,7 @@ class MainWindow(QMainWindow):
             self.process.kill()
 
     def _on_started(self) -> None:
-        self.status.setText("Подключается…")
+        self._set_status("Подключается…", "starting")
 
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
         self._kill_timer.stop()
@@ -517,7 +680,7 @@ class MainWindow(QMainWindow):
             self._append_log(self._output_tail)
             self._output_tail = ""
         self.log.appendPlainText(f"Бот остановлен (код {exit_code}).")
-        self.status.setText("Остановлен")
+        self._set_status("Остановлен", "idle")
         self._set_running(False)
 
     def _on_process_error(self, error: QProcess.ProcessError) -> None:
@@ -525,7 +688,7 @@ class MainWindow(QMainWindow):
         self.log.appendPlainText(f"Ошибка запуска бота: {self.process.errorString()}")
         if error == QProcess.FailedToStart:
             self._log_timer.stop()
-            self.status.setText("Не удалось запустить")
+            self._set_status("Не удалось запустить", "error")
             self._set_running(False)
 
     def _poll_log(self) -> None:
@@ -562,10 +725,10 @@ class MainWindow(QMainWindow):
             self._answer_count += 1
             self.answers_label.setText(str(self._answer_count))
         elif line.startswith("Жду вопросов по награде "):
-            self.status.setText("Подключён к Twitch")
+            self._set_status("Подключён к Twitch", "running")
             self.auth_hint.hide()
         if line.startswith("Откройте ссылку и войдите в Twitch под аккаунтом "):
-            self.status.setText("Ожидает входа в Twitch")
+            self._set_status("Ожидает входа в Twitch", "starting")
             self._auth_account = line.removeprefix("Откройте ссылку и войдите в Twitch под аккаунтом ").rstrip(":")
         elif line.startswith("https://") and "twitch.tv/activate" in line:
             self._auth_url = line
@@ -573,17 +736,25 @@ class MainWindow(QMainWindow):
             url = html.escape(self._auth_url, quote=True)
             code = html.escape(line[5:].strip())
             account = html.escape(self._auth_account or "нужным аккаунтом")
-            self.auth_hint.setText(f'Подтвердите вход под аккаунтом {account}: <a style="color: #d0d0d0;" href="{url}">открыть Twitch</a>. Код: <b>{code}</b>')
+            self.auth_hint.setText(f'Подтвердите вход под аккаунтом {account}: <a style="color: #65B3FF;" href="{url}">открыть Twitch</a>. Код: <b>{code}</b>')
             self.auth_hint.setVisible(True)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self._dirty:
+        if self._dirty or self.local_context_page.dirty:
             choice = russian_question(self, "Несохранённые изменения",
-                "Сохранить настройки и профили перед закрытием?",
+                "Сохранить изменения настроек, профилей и карточек локального контекста перед закрытием?",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
-            if choice == QMessageBox.Cancel or (choice == QMessageBox.Save and not self._save()):
+            if choice == QMessageBox.Cancel:
                 event.ignore()
                 return
+            if choice == QMessageBox.Save:
+                if self.local_context_page.dirty and not self.local_context_page.apply():
+                    self._navigate(6)
+                    event.ignore()
+                    return
+                if self._dirty and not self._save():
+                    event.ignore()
+                    return
         if self.process.state() != QProcess.NotRunning:
             choice = russian_question(self, "Бот работает", "Остановить бота и закрыть приложение?",
                                           QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
@@ -597,6 +768,7 @@ class MainWindow(QMainWindow):
         self.testing_page.shutdown()
         self.model_catalog.shutdown()
         self.prompt_builder.shutdown()
+        self.history_page.shutdown()
         super().closeEvent(event)
 
 

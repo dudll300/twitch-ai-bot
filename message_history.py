@@ -1,0 +1,212 @@
+"""Durable local message journal, independent of AI memory and session logs."""
+
+from contextlib import closing
+import json
+from pathlib import Path
+import re
+import sqlite3
+from threading import RLock
+import time
+import uuid
+
+from ai_client import redact_secret
+
+STATUSES = {"generating", "generated", "sent", "preview", "silent", "skipped",
+            "cancelled", "error", "send_error"}
+FIELDS = ("channel", "viewer", "viewer_id", "model", "action", "reason", "question",
+          "answer", "sent_text", "mode")
+SUMMARY = "seq, id, created, updated, kind, status, " + ", ".join(FIELDS)
+SECRET_FIELDS = {"api_key", "ai_api_key", "access_token", "refresh_token", "authorization",
+                 "client_secret", "password"}
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS records (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+    session TEXT NOT NULL, created REAL NOT NULL, updated REAL NOT NULL,
+    kind TEXT NOT NULL, status TEXT NOT NULL,
+    channel TEXT NOT NULL DEFAULT '', viewer TEXT NOT NULL DEFAULT '',
+    viewer_id TEXT NOT NULL DEFAULT '', model TEXT NOT NULL DEFAULT '',
+    action TEXT NOT NULL DEFAULT '', reason TEXT NOT NULL DEFAULT '',
+    question TEXT NOT NULL DEFAULT '', answer TEXT NOT NULL DEFAULT '',
+    sent_text TEXT NOT NULL DEFAULT '', mode TEXT NOT NULL DEFAULT '',
+    context TEXT, search TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS records_kind_seq ON records(kind, seq);
+CREATE INDEX IF NOT EXISTS records_status_seq ON records(status, seq);
+CREATE TABLE IF NOT EXISTS events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, record_id TEXT NOT NULL,
+    time REAL NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS events_record ON events(record_id, seq);
+"""
+
+
+class HistoryReadError(RuntimeError):
+    pass
+
+
+class MessageHistory:
+    def __init__(self, root, *, secrets=(), clock=time.time, warn=None):
+        self.path = Path(root) / "message-history.sqlite3"
+        self.secrets = tuple(value for value in secrets if value)
+        self.clock = clock
+        self.session = uuid.uuid4().hex
+        self._lock = RLock()
+        self._ready = False
+        self._warned = False
+        self.warn = warn or (lambda message: print(message, flush=True))
+
+    def redact(self, value):
+        if isinstance(value, str):
+            for secret in self.secrets:
+                value = redact_secret(value, secret)
+            # Never retain obvious credentials echoed in chat or an error.
+            return re.sub(r"(?i)\b(?:bearer\s+|oauth:)[a-z0-9._~+/=-]+",
+                          "[токен скрыт]", value)
+        if isinstance(value, dict):
+            return {key: "[секрет скрыт]" if str(key).casefold() in SECRET_FIELDS
+                    else self.redact(item) for key, item in value.items()}
+        if isinstance(value, (tuple, list)):
+            return [self.redact(item) for item in value]
+        return value
+
+    def _write(self, operation):
+        # All callers execute this in a worker. A storage failure must not
+        # change the bot's generation, delivery, reward or quota behavior.
+        with self._lock:
+            try:
+                self.path.parent.mkdir(parents=True, exist_ok=True)
+                with closing(sqlite3.connect(self.path, timeout=2)) as connection:
+                    connection.row_factory = sqlite3.Row
+                    if not self._ready:
+                        connection.execute("PRAGMA journal_mode=WAL")
+                        connection.executescript(SCHEMA)
+                        self._ready = True
+                    connection.execute("PRAGMA synchronous=FULL")
+                    with connection:
+                        result = operation(connection)
+                self._warned = False
+                return result
+            except (OSError, sqlite3.Error, ValueError, TypeError):
+                self._ready = False
+                if not self._warned:
+                    self._warned = True
+                    try:
+                        self.warn("История: не удалось сохранить запись. Проверьте папку с данными и свободное место.")
+                    except (OSError, RuntimeError, ValueError):
+                        pass
+                return None
+
+    @staticmethod
+    def _search(values):
+        return "\n".join(str(values.get(field, "")) for field in FIELDS).casefold()
+
+    def add(self, kind, status, *, context=None, **values):
+        if kind not in {"reward", "autonomous"} or status not in STATUSES:
+            raise ValueError("Unknown history entry")
+        record_id, now = uuid.uuid4().hex, self.clock()
+        values = self.redact({field: str(values.get(field, "")) for field in FIELDS})
+        if status == "silent" or values["action"] == "silent":
+            context = None
+        def insert(connection):
+            stored_context = json.dumps(self.redact(context), ensure_ascii=False, allow_nan=False) if context is not None else None
+            connection.execute(
+                "INSERT INTO records (id, session, created, updated, kind, status, "
+                + ", ".join(FIELDS) + ", context, search) VALUES ("
+                + ",".join("?" for _ in range(8 + len(FIELDS))) + ")",
+                (record_id, self.session, now, now, kind, status,
+                 *(values[field] for field in FIELDS), stored_context, self._search(values)))
+            connection.execute("INSERT INTO events(record_id, time, status, note) VALUES (?, ?, ?, ?)",
+                               (record_id, now, status, values["reason"]))
+            return record_id
+        return self._write(insert)
+
+    def update(self, record_id, status, *, context=None, **values):
+        if not record_id:
+            return None
+        if status not in STATUSES:
+            raise ValueError("Unknown history status")
+        values = self.redact({key: str(value) for key, value in values.items() if key in FIELDS})
+        now = self.clock()
+
+        def update(connection):
+            row = connection.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
+            if row is None:
+                return None
+            merged = {**dict(row), **values}
+            # A late AI result can be retained after cancellation, but cannot
+            # turn a cancelled request back into a candidate for delivery.
+            new_status = row["status"] if status == "generated" and row["status"] in {
+                "cancelled", "skipped", "error", "send_error"} else status
+            if merged["action"] == "silent":
+                new_status = "silent"
+            stored_context = row["context"]
+            if context is not None:
+                stored_context = json.dumps(self.redact(context), ensure_ascii=False, allow_nan=False)
+            if new_status == "silent" or merged["action"] == "silent":
+                stored_context = None
+            connection.execute(
+                "UPDATE records SET status=?, updated=?, "
+                + ", ".join(field + "=?" for field in FIELDS) + ", context=?, search=? WHERE id=?",
+                (new_status, now, *(merged[field] for field in FIELDS), stored_context,
+                 self._search(merged), record_id))
+            connection.execute("INSERT INTO events(record_id, time, status, note) VALUES (?, ?, ?, ?)",
+                               (record_id, now, status, values.get("reason", "")))
+            return record_id
+        return self._write(update)
+
+    def _read(self, operation, cancel=None):
+        if not self.path.exists():
+            return operation(None)
+        try:
+            with closing(sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro",
+                                         uri=True, timeout=2)) as connection:
+                connection.row_factory = sqlite3.Row
+                if cancel is not None:
+                    connection.set_progress_handler(lambda: int(cancel.is_set()), 1000)
+                return operation(connection)
+        except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
+            raise HistoryReadError("Не удалось прочитать историю. Проверьте папку с данными; исходный файл сохранён.") from exc
+
+    def page(self, *, kind="", status="", search="", before=None, limit=50, cancel=None):
+        limit = max(1, min(int(limit), 100))
+        clauses, args = [], []
+        if kind:
+            clauses.append("kind=?")
+            args.append(kind)
+        if status == "not_sent":
+            clauses.append("status IN ('generated', 'generating', 'skipped', 'cancelled')")
+        elif status == "errors":
+            clauses.append("status IN ('error', 'send_error')")
+        elif status:
+            clauses.append("status=?")
+            args.append(status)
+        if search.strip():
+            clauses.append("instr(search, ?) > 0")
+            args.append(search.strip().casefold())
+        if before is not None:
+            clauses.append("seq < ?")
+            args.append(int(before))
+        where = " WHERE " + " AND ".join(clauses) if clauses else ""
+
+        def select(connection):
+            if connection is None:
+                return {"rows": [], "more": False}
+            rows = [dict(row) for row in connection.execute(
+                "SELECT " + SUMMARY + " FROM records" + where + " ORDER BY seq DESC LIMIT ?",
+                (*args, limit + 1))]
+            return {"rows": rows[:limit], "more": len(rows) > limit}
+        return self._read(select, cancel)
+
+    def detail(self, record_id, *, cancel=None):
+        def select(connection):
+            if connection is None:
+                return None
+            row = connection.execute("SELECT * FROM records WHERE id=?", (record_id,)).fetchone()
+            if row is None:
+                return None
+            result = dict(row)
+            result["context"] = json.loads(result["context"]) if result["context"] else None
+            result["events"] = [dict(event) for event in connection.execute(
+                "SELECT time, status, note FROM events WHERE record_id=? ORDER BY seq", (record_id,))]
+            return result
+        return self._read(select, cancel)

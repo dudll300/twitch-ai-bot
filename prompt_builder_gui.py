@@ -190,8 +190,7 @@ class PromptBuilder(QWidget):
                 topics_from_prompt(current_prompt) if operation == "improve" else self.topics.text(),
                 current_prompt, operation=operation)
         except (OSError, ValueError) as exc:
-            self.status.setText("Вставьте ваш AI API-ключ во вкладке «Подключение» или используйте сохранённый ключ."
-                                if str(exc) == "Заполните AI_API_KEY." else str(exc))
+            self.status.setText(str(exc))
             return
         self._busy = True
         self._operation = operation

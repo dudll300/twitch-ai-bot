@@ -38,13 +38,13 @@ def main() -> None:
         log_path = Path(temporary) / "worker.log"
         missing = subprocess.run([str(EXE), "--bot", str(log_path)], env=env, timeout=30)
         assert missing.returncode == 1, missing.returncode
-        assert "TWITCH_CHANNEL" in log_path.read_text(encoding="utf-8")
+        assert "Укажите ваш канал Twitch" in log_path.read_text(encoding="utf-8")
 
         data = Path(temporary) / "TwitchAIBot"
         (data / ".env").write_text(
             "TWITCH_CHANNEL=streamer\nTWITCH_BOT_NAME=helper_bot\n"
             "TWITCH_CLIENT_ID=client123\nAI_BASE_URL=https://ai.starimg.ru/v1\n"
-            "AI_API_KEY=sk-test\nAI_MODEL=deepseek-v4.1-pro\n", encoding="utf-8",
+            "AI_API_KEY=sk-test\nAI_MODEL=deepseek-v4-pro\n", encoding="utf-8",
         )
         (data / "profiles.json").write_text(json.dumps({"version": 1, "profiles": [
             {"login": "viewer", "user_id": "123", "prompt": "Personal instruction", "enabled": True}
@@ -53,6 +53,14 @@ def main() -> None:
         assert ready.returncode == 0, (ready.returncode, log_path.read_text(encoding="utf-8"))
         assert "WORKER_READY" in log_path.read_text(encoding="utf-8")
         assert (data / "memory.json").exists()
+
+        dictionary = data / "local-context.json"
+        dictionary.write_text("{ damaged dictionary", encoding="utf-8")
+        degraded = subprocess.run([str(EXE), "--bot", str(log_path), "--self-test"], env=env, timeout=30)
+        assert degraded.returncode == 0, (degraded.returncode, log_path.read_text(encoding="utf-8"))
+        assert "WORKER_READY" in log_path.read_text(encoding="utf-8")
+        assert "Локальный контекст" in log_path.read_text(encoding="utf-8")
+        assert dictionary.read_text(encoding="utf-8") == "{ damaged dictionary"
 
         invalid_path = data / "profiles.json"
         saved_profiles = invalid_path.read_bytes()

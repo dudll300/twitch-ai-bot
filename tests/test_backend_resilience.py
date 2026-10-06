@@ -130,14 +130,14 @@ class BackendResilienceTests(unittest.TestCase):
     def test_autonomous_reply_never_returns_echoed_api_key(self):
         # Quotes also check redaction after decoding the JSON string.
         cfg = {**CFG, "AI_API_KEY": 'sk-"private"'}
-        content = json.dumps({"action": "reply", "text": "Hello " + cfg["AI_API_KEY"],
-                              "target": "viewer", "basis": [1], "reason": "reaction"})
-        with patch.object(ai_client.urllib.request, "urlopen", return_value=response(content)):
-            decision = autonomous.request_decision(cfg, [{"author": "viewer", "text": "Привет",
-                "sequence": 1, "time": 1}], autonomous.AutoSettings())
-        self.assertEqual(decision.action, "reply")
-        self.assertNotIn(cfg["AI_API_KEY"], decision.text)
-        self.assertIn("[ключ скрыт]", decision.text)
+        plan = json.dumps({"action": "reply", "conversation": [1], "basis": [1], "target": "viewer",
+                           "reason": "reaction", "intent": "Поздороваться"})
+        content = json.dumps({"text": "Hello " + cfg["AI_API_KEY"]})
+        with patch.object(ai_client.urllib.request, "urlopen", side_effect=[response(plan), response(content)]):
+            with self.assertRaises(ValueError) as error:
+                autonomous.request_decision(cfg, [{"author": "viewer", "text": "Привет",
+                    "sequence": 1, "time": 1}], autonomous.AutoSettings())
+        self.assertNotIn(cfg["AI_API_KEY"], str(error.exception))
 
     def test_autonomous_request_remains_on_primary_without_fallback(self):
         calls = []
@@ -146,10 +146,10 @@ class BackendResilienceTests(unittest.TestCase):
             raise http.client.IncompleteRead(b"sk-private-test", 20)
         with patch.object(ai_client.urllib.request, "urlopen", side_effect=request):
             with self.assertRaises(ai_client.TemporaryAIError):
-                autonomous.request_decision(CFG, [], autonomous.AutoSettings())
+                autonomous.request_decision(CFG, [{"author": "viewer", "text": "Привет", "sequence": 1, "time": 1}], autonomous.AutoSettings())
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["model"], "primary")
-        self.assertEqual(calls[0]["max_tokens"], 512)
+        self.assertEqual(calls[0]["max_tokens"], 768)
         self.assertFalse(calls[0]["stream"])
 
     def test_damaged_twitch_response_is_retryable(self):

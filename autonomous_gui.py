@@ -24,7 +24,7 @@ PARAMETERS = (
     ("settle_seconds", "Ожидание паузы в разговоре", " с"),
     ("max_wait_seconds", "Максимальное ожидание фрагмента", " с"),
     ("reply_ttl_seconds", "Срок актуальности ответа", " с"),
-    ("request_hourly_limit", "Максимум AI-проверок за час", ""),
+    ("request_hourly_limit", "Максимум AI-запросов за час", ""),
 )
 
 
@@ -94,7 +94,26 @@ class AutonomousPage(QWidget):
         self.error = label(error, "error", True)
         self.error.setVisible(bool(error))
         layout.addWidget(self.error)
-        options, options_layout = card("Частота и контекст", "Новые сообщения собираются в короткий фрагмент. AI выбирает конкретный повод и адресата; проверки не выполняются на каждую строку.")
+        instructions, instructions_layout = card("Инструкции самостоятельного участия",
+            "Общий промпт задаёт характер и манеру общения. Эти инструкции объясняют, как поддержать один выбранный разговор: ответить, отреагировать, уточнить или пошутить.")
+        self.autonomous_prompt = ScrollPlainTextEdit(self.saved.autonomous_prompt)
+        self.autonomous_prompt.setMinimumHeight(260)
+        self.autonomous_prompt.setAccessibleName("Инструкции самостоятельного участия")
+        self.autonomous_prompt.setPlaceholderText("Опишите, какие реплики уместны для вашего канала. Сохраняйте привязку к одному разговору и не требуйте шутку в каждом ответе.")
+        self.autonomous_prompt.textChanged.connect(self._edited)
+        instructions_layout.addWidget(self.autonomous_prompt)
+        self.reset_prompt_button = QPushButton("Вернуть стандартные инструкции")
+        self.reset_prompt_button.setProperty("variant", "quiet")
+        self.reset_prompt_button.clicked.connect(self.reset_prompt)
+        instructions_layout.addWidget(self.reset_prompt_button, 0, Qt.AlignLeft)
+        instructions_layout.addWidget(label(
+            "Изменения текста и числовых параметров применяются вместе по кнопке «Применить». "
+            "До 10 000 символов; пустое поле оставляет обязательные правила приложения. "
+            "Сначала AI выбирает одну цепочку и повод, затем пишет реплику только по ней. "
+            "Шутка необязательна; качество и уместность оценивайте в предпросмотре.",
+            "muted", True))
+        layout.addWidget(instructions)
+        options, options_layout = card("Частота и контекст", "Новые сообщения собираются в короткий фрагмент. AI выбирает один разговор и адресата; проверки не выполняются на каждую строку.")
         grid = QGridLayout()
         grid.setHorizontalSpacing(24)
         grid.setVerticalSpacing(16)
@@ -130,15 +149,17 @@ class AutonomousPage(QWidget):
         options_layout.addWidget(self.advanced_panel)
         options_layout.addWidget(label(
             "Максимум за час задаётся вами. Предпросмотр учитывает те же паузы и лимиты. "
-            "Вопросы по награде всегда имеют приоритет. Проверки AI могут расходовать баланс API даже при решении промолчать.",
+            "Вопросы по награде всегда имеют приоритет. AI расходует баланс API: выбор разговора — один запрос, "
+            "написание ответа — ещё один. Оба входят в лимит AI-запросов и общий срок актуальности; "
+            "молчание тоже может расходовать баланс.",
             "muted", True))
         actions = QHBoxLayout()
-        self.hint = label("Параметры сохранены", "muted", True)
+        self.hint = label("Инструкции и параметры сохранены", "muted", True)
         actions.addWidget(self.hint, 1)
         self.reset_button = QPushButton("Сбросить настройки")
         self.reset_button.clicked.connect(self.reset)
         actions.addWidget(self.reset_button)
-        self.apply_button = QPushButton("Применить параметры")
+        self.apply_button = QPushButton("Применить")
         self.apply_button.clicked.connect(self.apply)
         actions.addWidget(self.apply_button)
         options_layout.addLayout(actions)
@@ -161,7 +182,18 @@ class AutonomousPage(QWidget):
 
     def _edited(self, *_):
         if not self._loading:
-            self.hint.setText("Параметры изменены — нажмите «Применить»")
+            self._update_hint()
+
+    def _update_hint(self):
+        changed = self.autonomous_prompt.toPlainText() != self.saved.autonomous_prompt or any(
+            widget.value() != getattr(self.saved, key) for key, widget in self.inputs.items())
+        self.hint.setText("Текст или параметры изменены — нажмите «Применить»" if changed else
+                          "Инструкции и параметры сохранены")
+
+    def reset_prompt(self):
+        # Restoring instructions is an editor action; it does not enable the mode
+        # or save unrelated numeric drafts.
+        self.autonomous_prompt.setPlainText(AutoSettings().autonomous_prompt)
 
     def _toggle_advanced(self, expanded):
         self.advanced_panel.setVisible(expanded)
@@ -172,7 +204,7 @@ class AutonomousPage(QWidget):
     def _live_change(self, *_):
         if self._loading:
             return
-        # Disabling must work even while numeric edits are inconsistent.
+        # Live controls use saved instructions and numbers, leaving all drafts intact.
         values = asdict(self.saved)
         values.update(enabled=self.enabled.isChecked(), mode=self.mode.currentData(), participation=self.participation.currentData())
         self._save(validate_settings(values))
@@ -192,13 +224,13 @@ class AutonomousPage(QWidget):
         self.saved = settings
         self.error.hide()
         self.set_running(self._running)
-        if all(widget.value() == getattr(settings, key) for key, widget in self.inputs.items()):
-            self.hint.setText("Параметры сохранены")
+        self._update_hint()
         return True
 
     def apply(self):
         values = {key: widget.value() for key, widget in self.inputs.items()}
-        values.update(enabled=self.enabled.isChecked(), mode=self.mode.currentData(), participation=self.participation.currentData())
+        values.update(enabled=self.enabled.isChecked(), mode=self.mode.currentData(), participation=self.participation.currentData(),
+                      autonomous_prompt=self.autonomous_prompt.toPlainText())
         try:
             settings = validate_settings(values)
         except ValueError as exc:
@@ -219,6 +251,7 @@ class AutonomousPage(QWidget):
             self.participation.setCurrentIndex(self.participation.findData(defaults.participation))
             for key, widget in self.inputs.items():
                 widget.setValue(getattr(defaults, key))
+            self.autonomous_prompt.setPlainText(defaults.autonomous_prompt)
         finally:
             self._loading = False
         self.hint.setText("Настройки по умолчанию сохранены. Режим выключен.")

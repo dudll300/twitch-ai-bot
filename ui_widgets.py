@@ -2,7 +2,8 @@
 
 from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve
 from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFrame, QLabel, QListView, QListWidget,
+from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
+                              QFrame, QHBoxLayout, QLabel, QListView, QListWidget,
                               QMessageBox, QPlainTextEdit, QScrollArea, QScrollBar,
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget)
 
@@ -34,22 +35,53 @@ class ScrollListWidget(ContainedWheel, QListWidget):
     pass
 
 
-class ScrollPlainTextEdit(ContainedWheel, QPlainTextEdit):
-    """Scroll long text locally; forward the wheel to the page when all text fits."""
+class TextScrollBar(QScrollBar):
+    """Use the same boundary handoff for a text editor's scrollbar and viewport."""
+
+    def __init__(self, orientation, editor):
+        super().__init__(orientation, editor)
+        self._editor = editor
 
     def wheelEvent(self, event):
-        bar = self.verticalScrollBar()
-        if bar.maximum() > bar.minimum():
-            super().wheelEvent(event)
+        if self._editor._forward_wheel_at_boundary(event):
             return
+        super().wheelEvent(event)
+        event.accept()
+
+
+class ScrollPlainTextEdit(QPlainTextEdit):
+    """Scroll text first, then continue through the page on the next wheel step."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setVerticalScrollBar(TextScrollBar(Qt.Vertical, self))
+        self.setHorizontalScrollBar(ContainedScrollBar(Qt.Horizontal, self))
+
+    def _forward_wheel_at_boundary(self, event):
+        delta = event.pixelDelta().y() or event.angleDelta().y()
+        # Horizontal gestures and zero-delta phase events belong to the editor.
+        if not delta or event.modifiers() & Qt.ShiftModifier:
+            return False
+        bar = self.verticalScrollBar()
+        at_boundary = (bar.value() <= bar.minimum() if delta > 0
+                       else bar.value() >= bar.maximum())
+        if not at_boundary:
+            return False
         parent = self.parentWidget()
         while parent is not None:
             if isinstance(parent, QScrollArea):
                 QApplication.sendEvent(parent.viewport(), event)
                 event.accept()
-                return
+                return True
             parent = parent.parentWidget()
+        return False
+
+    def wheelEvent(self, event):
+        if self._forward_wheel_at_boundary(event):
+            return
         super().wheelEvent(event)
+        # Even if this step reaches the edge, do not scroll the page as well.
+        event.accept()
 
 
 class NoWheelComboBox(QComboBox):
@@ -123,20 +155,93 @@ class SlidingSidebar(QWidget):
         super().resizeEvent(event)
 
 
-def russian_question(parent, title, text, buttons, default):
-    dialog = QMessageBox(parent)
-    dialog.setWindowTitle(title)
-    dialog.setText(text)
-    dialog.setIcon(QMessageBox.Question)
-    dialog.setStandardButtons(buttons)
-    captions = {QMessageBox.Save: "Сохранить", QMessageBox.Discard: "Не сохранять",
-                QMessageBox.Cancel: "Отмена", QMessageBox.Yes: "Да", QMessageBox.No: "Нет"}
-    for standard, caption in captions.items():
-        button = dialog.button(standard)
-        if button is not None:
+class StudioQuestionDialog(QDialog):
+    """Studio confirmation card with the usual QMessageBox result values."""
+
+    def __init__(self, parent, title, text, buttons, default):
+        super().__init__(parent, Qt.Dialog | Qt.FramelessWindowHint)
+        self.setObjectName("studioQuestion")
+        self.setWindowTitle(title)
+        self.setWindowModality(Qt.WindowModal if parent is not None else Qt.ApplicationModal)
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(text)
+        self.setMinimumWidth(480)
+        self.setMaximumWidth(560)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        self.card = QFrame()
+        self.card.setObjectName("questionCard")
+        card_layout = QVBoxLayout(self.card)
+        card_layout.setContentsMargins(28, 26, 28, 26)
+        card_layout.setSpacing(20)
+        heading = QHBoxLayout()
+        heading.setSpacing(14)
+        mark = label("?", "body")
+        mark.setObjectName("questionMark")
+        mark.setAlignment(Qt.AlignCenter)
+        mark.setFixedSize(42, 42)
+        self.title_label = label(title, "section", True)
+        self.title_label.setObjectName("questionTitle")
+        heading.addWidget(mark)
+        heading.addWidget(self.title_label, 1)
+        card_layout.addLayout(heading)
+        self.text_label = label(text, "body", True)
+        self.text_label.setObjectName("questionText")
+        self.text_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        card_layout.addWidget(self.text_label)
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton(buttons.value))
+        self.button_box.setCenterButtons(False)
+        captions = {QMessageBox.Save: "Сохранить", QMessageBox.Discard: "Не сохранять",
+                    QMessageBox.Cancel: "Отмена", QMessageBox.Yes: "Да", QMessageBox.No: "Нет"}
+        self._default = default
+        self._escape = (QMessageBox.Cancel if self.button(QMessageBox.Cancel) is not None
+                        else QMessageBox.No if self.button(QMessageBox.No) is not None
+                        else QMessageBox.Cancel)
+        for standard, caption in captions.items():
+            button = self.button(standard)
+            if button is None:
+                continue
             button.setText(caption)
-    dialog.setDefaultButton(default)
-    return dialog.exec()
+            button.setAccessibleName(caption)
+            button.setAutoDefault(False)
+            if standard in (QMessageBox.Save, QMessageBox.Yes):
+                button.setObjectName("primary")
+            elif standard == QMessageBox.Discard:
+                button.setProperty("variant", "danger")
+            else:
+                button.setProperty("variant", "quiet")
+            button.clicked.connect(lambda _checked=False, result=standard: self.done(result.value))
+        self.defaultButton().setDefault(True)
+        self.defaultButton().setFocus()
+        card_layout.addWidget(self.button_box)
+        layout.addWidget(self.card)
+
+    def button(self, standard):
+        return self.button_box.button(QDialogButtonBox.StandardButton(standard.value))
+
+    def defaultButton(self):
+        return self.button(self._default)
+
+    def reject(self):
+        self.done(self._escape.value)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        parent = self.parentWidget()
+        screen = parent.screen() if parent is not None else self.screen()
+        available = screen.availableGeometry()
+        center = parent.frameGeometry().center() if parent is not None else available.center()
+        x = max(available.left(), min(center.x() - self.width() // 2,
+                                     available.right() - self.width() + 1))
+        y = max(available.top(), min(center.y() - self.height() // 2,
+                                    available.bottom() - self.height() + 1))
+        self.move(x, y)
+        self.defaultButton().setFocus()
+
+
+def russian_question(parent, title, text, buttons, default):
+    return StudioQuestionDialog(parent, title, text, buttons, default).exec()
 
 
 class ToggleSwitch(QCheckBox):
@@ -174,15 +279,15 @@ class ToggleSwitch(QCheckBox):
         painter.setOpacity(1 if self.isEnabled() else 0.45)
         y = (self.height() - 20) // 2
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#d0d5de" if self.isChecked() else "#4b515d"))
+        painter.setBrush(QColor("#168BFF" if self.isChecked() else "#353B48"))
         painter.drawRoundedRect(0, y, 34, 20, 10, 10)
-        painter.setBrush(QColor("#242830" if self.isChecked() else "#b8bfcb"))
+        painter.setBrush(QColor("#FFFFFF" if self.isChecked() else "#A9B1C1"))
         painter.drawEllipse(round(3 + 13 * self._position), y + 3, 14, 14)
-        painter.setPen(QColor("#c5c9d1"))
+        painter.setPen(QColor("#F3F5FA"))
         painter.drawText(self.rect().adjusted(44, 0, 0, 0), Qt.AlignVCenter, self.text())
         if self.hasFocus():
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(QColor("#c5c9d1"), 1, Qt.DotLine))
+            painter.setPen(QPen(QColor("#65B3FF"), 1, Qt.DotLine))
             painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 6, 6)
 
 
@@ -198,8 +303,8 @@ def card(title: str = "", description: str = "") -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("card")
     layout = QVBoxLayout(frame)
-    layout.setContentsMargins(24, 24, 24, 24)
-    layout.setSpacing(16)
+    layout.setContentsMargins(22, 22, 22, 22)
+    layout.setSpacing(14)
     if title:
         layout.addWidget(label(title, "section"))
     if description:

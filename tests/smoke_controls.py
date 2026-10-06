@@ -70,7 +70,8 @@ def check_scrolling(app):
     app.processEvents()
     outer.verticalScrollBar().setValue(30)
     initial = outer.verticalScrollBar().value()
-    for nested in (items, text):
+    # Lists and popup catalogs keep scrolling inside their own selection surface.
+    for nested in (items,):
         bar = nested.verticalScrollBar()
         assert bar.maximum() > 0
         for value, delta in ((bar.maximum(), -120), (0, 120)):
@@ -82,6 +83,25 @@ def check_scrolling(app):
         wheel(nested.viewport(), -120)
         assert bar.value() > 0, "The nested list must still scroll normally"
         assert outer.verticalScrollBar().value() == initial
+    # A wheel step that reaches an editor edge belongs entirely to the editor.
+    # The next step continues through the page, and reversing returns to the text.
+    text_bar = text.verticalScrollBar()
+    for target in (text.viewport(), text_bar):
+        for edge, inside, delta in ((text_bar.maximum(), text_bar.maximum() - 1, -120),
+                                    (text_bar.minimum(), text_bar.minimum() + 1, 120)):
+            outer.verticalScrollBar().setValue(100)
+            text_bar.setValue(inside)
+            assert wheel(target, delta)
+            assert text_bar.value() == edge
+            assert outer.verticalScrollBar().value() == 100, "One step scrolled both text and page"
+            assert wheel(target, delta)
+            page_value = outer.verticalScrollBar().value()
+            assert (page_value > 100 if delta < 0 else page_value < 100), "Editor edge trapped the wheel"
+            assert text_bar.value() == edge
+            assert wheel(target, -delta)
+            assert text_bar.value() != edge, "Reversing the wheel must return to the editor"
+            assert outer.verticalScrollBar().value() == page_value
+    outer.verticalScrollBar().setValue(initial)
     combo.showPopup()
     app.processEvents()
     view = combo.view()
@@ -103,19 +123,23 @@ def check_scrolling(app):
         assert outer.verticalScrollBar().value() > 30
         assert wheel(form_text.viewport(), 120)
         assert outer.verticalScrollBar().value() == 30
-    # A short field becomes a contained scroller as text grows, then forwards again.
+    # A short field gains local scrolling as text grows, then forwards at either edge.
     form_text.setPlainText("\n".join(f"Draft {i}" for i in range(100)))
     app.processEvents()
     bar = form_text.verticalScrollBar()
     assert bar.maximum() > 0
     outer.verticalScrollBar().setValue(30)
-    for position, delta in ((0, -120), (bar.maximum(), -120), (0, 120)):
-        bar.setValue(position)
-        assert wheel(form_text.viewport(), delta)
-        assert outer.verticalScrollBar().value() == 30
     bar.setValue(0)
     wheel(form_text.viewport(), -120)
-    assert bar.value() > 0
+    assert bar.value() > 0 and outer.verticalScrollBar().value() == 30
+    bar.setValue(bar.maximum())
+    wheel(form_text.viewport(), -120)
+    assert outer.verticalScrollBar().value() > 30
+    outer.verticalScrollBar().setValue(100)
+    bar.setValue(0)
+    wheel(form_text.viewport(), 120)
+    assert outer.verticalScrollBar().value() < 100
+    outer.verticalScrollBar().setValue(30)
     form_text.clear()
     app.processEvents()
     assert form_text.verticalScrollBar().maximum() == 0
@@ -157,7 +181,9 @@ def check_all_page_text_fields(app):
                     outer = outer.parentWidget()
                 assert outer is not None, "Text fields must have a scrollable enclosing page"
                 if id(outer) not in expanded:
-                    outer.widget().layout().addSpacing(1200)
+                    # Force vertical overflow independently of the page's layout:
+                    # an activity page's QHBoxLayout adds horizontal spacing.
+                    outer.widget().setMinimumHeight(outer.viewport().height() + 1200)
                     expanded.add(id(outer))
                 editor.setFixedHeight(130)
                 editor.setPlainText("Short text")
@@ -178,7 +204,16 @@ def check_all_page_text_fields(app):
                 assert inner.value() > 0 and outer.verticalScrollBar().value() == 30
                 inner.setValue(inner.maximum())
                 wheel(editor.viewport(), -120)
-                assert outer.verticalScrollBar().value() == 30
+                assert outer.verticalScrollBar().value() > 30
+                page_value = outer.verticalScrollBar().value()
+                wheel(editor.viewport(), 120)
+                assert inner.value() < inner.maximum()
+                assert outer.verticalScrollBar().value() == page_value
+                outer.verticalScrollBar().setValue(100)
+                inner.setValue(0)
+                wheel(editor.viewport(), 120)
+                assert outer.verticalScrollBar().value() < 100
+                outer.verticalScrollBar().setValue(30)
                 editor.clear()
                 app.processEvents()
                 wheel(editor.viewport(), -120)
@@ -257,11 +292,30 @@ def main():
         assert window.model.findData("old-key-only") == -1
         assert window.model.currentText() == "manual/model"
         page = window.autonomous_page
+        defaults = AutoSettings()
+        assert page.autonomous_prompt.toPlainText() == defaults.autonomous_prompt
+        assert page.autonomous_prompt.minimumHeight() >= 260
+        page.autonomous_prompt.setPlainText("Поддерживай один разговор и поздравляй с победой без обязательной шутки.")
+        prompt_draft = page.autonomous_prompt.toPlainText()
+        page.inputs["pause_seconds"].setValue(7)
         assert page.participation.currentData() == "balanced"
         page.participation.setCurrentIndex(page.participation.findData("active"))
-        assert load_settings(root / "autonomous.json")[0].participation == "active"
+        live_saved = load_settings(root / "autonomous.json")[0]
+        assert live_saved.participation == "active"
+        assert live_saved.autonomous_prompt == defaults.autonomous_prompt
+        assert live_saved.pause_seconds == defaults.pause_seconds
         page.enabled.setChecked(True)
         page.mode.setCurrentIndex(page.mode.findData("publish"))
+        assert page.autonomous_prompt.toPlainText() == prompt_draft
+        assert page.inputs["pause_seconds"].value() == 7
+        assert "изменены" in page.hint.text()
+        # Returning standard instructions is a draft edit, with no file write.
+        previous_auto = (root / "autonomous.json").read_bytes()
+        page.reset_prompt_button.click()
+        assert page.autonomous_prompt.toPlainText() == defaults.autonomous_prompt
+        assert page.inputs["pause_seconds"].value() == 7
+        assert (root / "autonomous.json").read_bytes() == previous_auto
+        page.autonomous_prompt.setPlainText(prompt_draft)
         changes = {"pause_seconds": 0, "hourly_limit": 50, "context_count": 500,
                    "freshness_seconds": 1000, "active_seconds": 900,
                    "check_min_seconds": 0, "check_max_seconds": 10000,
@@ -272,6 +326,33 @@ def main():
         assert page.apply()
         saved = load_settings(root / "autonomous.json")[0]
         assert all(getattr(saved, key) == value for key, value in changes.items())
+        assert saved.autonomous_prompt == prompt_draft
+        assert "сохранены" in page.hint.text()
+        # A failed apply preserves both kinds of draft and the previous file.
+        previous_auto = (root / "autonomous.json").read_bytes()
+        failed_draft = "Не смешивай соседние разговоры. Реагируй по существу."
+        page.autonomous_prompt.setPlainText(failed_draft)
+        page.inputs["pause_seconds"].setValue(11)
+        with patch("autonomous_gui.save_settings", side_effect=OSError("Disk error")):
+            assert not page.apply()
+        assert page.autonomous_prompt.toPlainText() == failed_draft
+        assert page.inputs["pause_seconds"].value() == 11
+        assert (root / "autonomous.json").read_bytes() == previous_auto
+        with patch("autonomous_gui.save_settings", side_effect=OSError("Disk error")):
+            page.mode.setCurrentIndex(page.mode.findData("preview"))
+        assert page.mode.currentData() == "publish"
+        assert page.autonomous_prompt.toPlainText() == failed_draft
+        assert page.inputs["pause_seconds"].value() == 11
+        assert (root / "autonomous.json").read_bytes() == previous_auto
+        # A malformed prompt cannot be saved, and the complete draft stays editable.
+        page.autonomous_prompt.setPlainText("x" * 10001)
+        assert not page.apply()
+        assert len(page.autonomous_prompt.toPlainText()) == 10001
+        assert (root / "autonomous.json").read_bytes() == previous_auto
+        page.autonomous_prompt.clear()
+        assert page.apply()
+        assert load_settings(root / "autonomous.json")[0].autonomous_prompt == ""
+        page.autonomous_prompt.setPlainText(failed_draft)
         quota = root / "autonomous-quota.json"
         quota.write_text('{"times":[123],"last_text":"Previous"}', encoding="utf-8")
         quota_before = quota.read_bytes()
@@ -281,11 +362,14 @@ def main():
         assert not page.enabled.isChecked() and page.mode.currentData() == "preview"
         assert page.participation.currentData() == "balanced"
         assert all(widget.value() == asdict(AutoSettings())[key] for key, widget in page.inputs.items())
+        assert page.autonomous_prompt.toPlainText() == defaults.autonomous_prompt
         assert quota.read_bytes() == quota_before
         page.inputs["hourly_limit"].setValue(20)
+        page.autonomous_prompt.setPlainText(failed_draft)
         with patch("autonomous_gui.save_settings", side_effect=OSError("Disk error")):
             assert not page.reset()
         assert page.inputs["hourly_limit"].value() == 20
+        assert page.autonomous_prompt.toPlainText() == failed_draft
         assert not page.error.isHidden()
         # Close during a request: the thread only finishes with plain data, no Qt calls.
         started.clear()
@@ -304,7 +388,7 @@ def main():
     check_scrolling(app)
     check_all_page_text_fields(app)
     app.quit()
-    print("Controls work: on-demand catalog, draft preservation, reset and contained scrolling.")
+    print("Controls work: on-demand catalog, draft preservation, reset and text-to-page scrolling.")
 
 
 if __name__ == "__main__":

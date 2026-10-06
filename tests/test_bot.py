@@ -180,10 +180,10 @@ class BotTests(unittest.TestCase):
             self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "OK")
 
         self.assertEqual(attempts, [
-            bot.AI_MODEL, "deepseek-v4.1-pro",
-            bot.AI_MODEL, "deepseek-v4.1-pro",
-            bot.AI_MODEL, "deepseek-v4.1-pro",
-            "deepseek-v4.1-pro", bot.AI_MODEL,
+            bot.AI_MODEL, "deepseek-v4-pro",
+            bot.AI_MODEL, "deepseek-v4-pro",
+            bot.AI_MODEL, "deepseek-v4-pro",
+            "deepseek-v4-pro", bot.AI_MODEL,
         ])
         self.assertEqual(router.primary_failures, 0)
 
@@ -202,7 +202,7 @@ class BotTests(unittest.TestCase):
             self.assertEqual(router.ask(cfg, "viewer", "вопрос"), "Ответ от последней модели")
 
         self.assertEqual(attempts, [
-            bot.AI_MODEL, "deepseek-v4.1-pro", "deepseek-v4-flash",
+            bot.AI_MODEL, "deepseek-v4-pro", "deepseek-v4-flash",
         ])
         self.assertEqual(router.primary_failures, 1)
 
@@ -247,7 +247,7 @@ class BotTests(unittest.TestCase):
         log = io.StringIO()
         with patch.object(bot.urllib.request, "urlopen", fake_urlopen), redirect_stdout(log):
             self.assertEqual(bot.AIModelRouter().ask(cfg, "viewer", "вопрос"), "OK")
-        self.assertEqual(attempts, [bot.AI_MODEL, "deepseek-v4.1-pro"])
+        self.assertEqual(attempts, [bot.AI_MODEL, "deepseek-v4-pro"])
         self.assertIn("HTTP 400: model unavailable: [ключ скрыт]", log.getvalue())
         self.assertNotIn("sk-test", log.getvalue())
 
