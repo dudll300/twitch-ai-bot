@@ -92,6 +92,12 @@ def main():
         page.context_button.click()
         assert page.context.isHidden()
 
+        # A live refresh may still be running after the selected detail loads,
+        # especially on a slower CI machine. Paging is disabled during reads.
+        # Exercise that overlap deliberately instead of relying on timer timing.
+        page.refresh()
+        assert not page.older.isEnabled()
+        wait_for(lambda: not page._loading and page.older.isEnabled(), "Paging did not become ready")
         page.older.click()
         wait_for(lambda: not page._loading and len(page._cursors) == 2 and page.entries.count() == 3, "Older page missing")
         assert not page.older.isEnabled()
