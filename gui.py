@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 from autonomous_gui import AutonomousPage
 from configuration import AI_FALLBACK_MODELS, FIELDS, normalize, read_config
 from gui_theme import STYLE
+from history_gui import HistoryPage
 from local_context_gui import LocalContextPage
 from model_catalog_gui import ModelCatalogControl
 from paths import data_dir, resource_path
@@ -38,6 +39,7 @@ PAGES = (
     ("Активность", "Подключение, вопросы и ответы текущего запуска."),
     ("Тестирование", "Проверьте промпт и сравните модели без подключения Twitch."),
     ("Локальный контекст", "Пояснения выражений и уместные отсылки вашего канала."),
+    ("История", "Сохранённые ответы, самостоятельные реплики и решения бота за все запуски."),
 )
 
 
@@ -115,7 +117,7 @@ class MainWindow(QMainWindow):
         side.addSpacing(6)
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
-        nav_icons = ("plug", "sliders", "users", "messages", "activity", "flask", "book")
+        nav_icons = ("plug", "sliders", "users", "messages", "activity", "flask", "book", "history")
         for index, (name, _) in enumerate(PAGES):
             button = QPushButton(name.replace("Самостоятельные реплики", "Самостоятельные\nреплики"))
             button.setProperty("variant", "nav")
@@ -218,6 +220,8 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.testing_page)
         self.local_context_page = LocalContextPage(self._root)
         self.pages.addWidget(self.local_context_page)
+        self.history_page = HistoryPage(self._root)
+        self.pages.addWidget(self.history_page)
         self._page_effect = QGraphicsOpacityEffect(self.pages)
         self.pages.setGraphicsEffect(self._page_effect)
         self._page_effect.setOpacity(1.0)
@@ -764,6 +768,7 @@ class MainWindow(QMainWindow):
         self.testing_page.shutdown()
         self.model_catalog.shutdown()
         self.prompt_builder.shutdown()
+        self.history_page.shutdown()
         super().closeEvent(event)
 
 

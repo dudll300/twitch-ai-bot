@@ -188,6 +188,7 @@ class Pending:
     cancel: object = None
     window: object = None
     local_snapshot: object = None
+    history_ref: object = None
 
 
 @dataclass
@@ -209,13 +210,15 @@ class RequestWindow:
 class Autonomous:
     def __init__(self, cfg, root, *, profiles=None, memory_data=None,
                  clock=time.time, monotonic_clock=time.monotonic,
-                 choose_delay=random.uniform, request=request_decision, emit=None, local_manager=None):
+                 choose_delay=random.uniform, request=request_decision, emit=None, local_manager=None,
+                 history_store=None):
         self.cfg, self.root = cfg, root
         self.clock, self.choose_delay, self.request = clock, choose_delay, request
         self.monotonic_clock = monotonic_clock
         self.profiles, self.memory_data = profiles or [], memory_data
         self.emit = emit or self._print_event
         self.local_manager = local_manager
+        self.history_store = history_store
         self.local_revision = local_manager.snapshot().revision if local_manager is not None else None
         self.settings = AutoSettings()
         # HTTP reservations and publication share one atomic quota file.
@@ -404,6 +407,35 @@ class Autonomous:
                                           new_ids, self.clock(), self.settings)):
                 raise RequestCancelled("Выбранный повод уже использован или устарел.")
 
+    async def finish_history(self, pending, status, *, decision=None, reason="", sent_text=""):
+        if self.history_store is None:
+            return
+        ref = pending.history_ref
+        record_id = ref[0] if ref else None
+        if record_id is None:
+            # Injectable request implementations may omit the observer. Keep
+            # only their explicit anchors, never attach the entire chat batch.
+            context = None
+            if decision is not None and decision.action != "silent":
+                context = {"conversation": [dict(row) for row in pending.messages
+                            if row["sequence"] in decision.basis], "basis": list(decision.basis)}
+            record_id = await asyncio.to_thread(self.history_store.add, "autonomous",
+                "silent" if decision is not None and decision.action == "silent" else "generated" if decision else status,
+                channel=self.cfg.get("TWITCH_CHANNEL", ""), model=self.cfg.get("AI_MODEL", ""),
+                mode=self.settings.mode, viewer=decision.target if decision else "",
+                action=decision.action if decision else "", answer=decision.reply if decision and decision.action != "silent" else "",
+                reason=decision.reason if decision else reason, context=context)
+            if ref is not None:
+                ref[0] = record_id
+        if record_id:
+            # A silent model result has no context or outgoing message, even
+            # when its request was cancelled before the controller consumed it.
+            detail_status = "silent" if decision is not None and decision.action == "silent" else status
+            fields = {"sent_text": sent_text}
+            if reason:
+                fields["reason"] = reason
+            await asyncio.to_thread(self.history_store.update, record_id, detail_status, **fields)
+
     async def tick(self):
         self.refresh()
         self.refresh_local()
@@ -417,6 +449,7 @@ class Autonomous:
                         and (pending.window is None or pending.window.remaining(self.clock(), self.monotonic_clock()) > 0)
                         and self.clock() - pending.started_at <= self.settings.reply_ttl_seconds)
             if not current():
+                await self.finish_history(pending, "skipped", reason="Результат отменён: настройки, очередь наград или срок актуальности изменились.")
                 self.event("error" if self.quota_error else "skipped", reason=(
                     "Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
                     if self.quota_error else
@@ -450,13 +483,17 @@ class Autonomous:
                     if self.last_text:
                         previous.append(self.last_text)
                     if decision.action == "silent":
+                        await self.finish_history(pending, "silent", decision=decision)
                         self.event("silent", action=decision.action, reason=decision.reason)
                     elif not valid():
+                        await self.finish_history(pending, "skipped", decision=decision, reason="Повод устарел или обсуждение сменилось.")
                         self.event("skipped", reason="Повод устарел или обсуждение сменилось.")
                     elif repeats(text, previous):
+                        await self.finish_history(pending, "skipped", decision=decision, reason="Повтор недавней реплики или вопроса.")
                         self.event("skipped", reason="Повтор недавней реплики или вопроса.")
                     elif self.settings.mode == "preview":
                         self.reserve(text, decision.basis)
+                        await self.finish_history(pending, "preview", decision=decision)
                         self.event("preview", text, decision.reason,
                                    reason=("Творческая карточка в предпросмотре: " + redact_secret(
                                        creative_card_id, self.cfg.get("AI_API_KEY", ""))) if creative_card_id else "",
@@ -466,14 +503,18 @@ class Autonomous:
                         sent = await self.sender(text, valid, lambda: self.reserve(text, decision.basis), **kwargs)
                         if sent:
                             self.remember_reply(text, target=decision.target, basis=decision.basis)
+                        await self.finish_history(pending, "sent" if sent else "skipped", decision=decision,
+                            sent_text=text if sent else "", reason="" if sent else "Реплика уступила приоритет или была отменена.")
                         self.event("published" if sent else "skipped", text if sent else "", decision.reason,
                                    "" if sent else "Реплика уступила приоритет или была отменена.",
                                    target=decision.target if sent else "", basis=decision.basis if sent else ())
                 except RequestCancelled:
+                    await self.finish_history(pending, "cancelled", reason="Подготовка отменена: повод устарел или исчерпан лимит AI-запросов.")
                     self.event("skipped", reason=("Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
                         if self.quota_error else "Подготовка отменена: повод устарел, уже использован или исчерпан лимит AI-запросов."))
                 except Exception:
-                    # Do not log provider payloads, chat contents, credentials or error bodies.
+                    await self.finish_history(pending, "error", reason="AI или отправка недоступны, либо ответ некорректен.")
+                    # Raw rejected provider payloads and credentials are never retained.
                     self.event("error", reason="AI или отправка недоступны, либо ответ некорректен. Реплика пропущена.")
                     self.next_check = self.clock() + max(120, self.settings.check_max_seconds)
         if self.pending is not None or self.clock() < self.next_check:
@@ -506,8 +547,28 @@ class Autonomous:
                   "before_generation": lambda plan: self.before_generation(plan, rows, new_ids, generation, cancel, window)}
         if self.local_manager is not None:
             kwargs.update(local_manager=self.local_manager, local_snapshot=local_snapshot)
+        history_ref = [None]
+        if self.history_store is not None:
+            mode = self.settings.mode
+            request_cfg = dict(self.cfg)
+            history_ref[0] = await asyncio.to_thread(self.history_store.add, "autonomous", "generating",
+                channel=request_cfg.get("TWITCH_CHANNEL", ""), model=request_cfg.get("AI_MODEL", ""), mode=mode)
+            if generation != self.generation or not self.connected:
+                await asyncio.to_thread(self.history_store.update, history_ref[0], "cancelled",
+                    reason="Повод отменён до обращения к AI.")
+                return
+            def generated(decision, context):
+                status = "silent" if decision.action == "silent" else "cancelled" if cancel.is_set() else "generated"
+                fields = dict(channel=request_cfg.get("TWITCH_CHANNEL", ""), model=request_cfg.get("AI_MODEL", ""),
+                    mode=mode, viewer=decision.target, action=decision.action,
+                    answer=decision.reply if decision.action != "silent" else "", reason=decision.reason)
+                if history_ref[0]:
+                    self.history_store.update(history_ref[0], status, context=context, **fields)
+                else:
+                    history_ref[0] = self.history_store.add("autonomous", status, context=context, **fields)
+            kwargs["on_result"] = generated
         future = self.executor.submit(self.request, dict(self.cfg), rows, self.settings, **kwargs)
-        self.pending = Pending(future, generation, rows, new_ids, now, cancel, window, local_snapshot)
+        self.pending = Pending(future, generation, rows, new_ids, now, cancel, window, local_snapshot, history_ref)
         self.event("pending", reason="Выбираю один разговор; при уместном поводе подготовлю реплику.")
 
     @state_locked

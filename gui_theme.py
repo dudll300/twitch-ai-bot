@@ -44,6 +44,11 @@ QLabel[role="number"] { font-size: 28px; font-weight: 500; }
 QLabel[role="statValue"] { color: #f3f5fa; font-size: 23px; font-weight: 500; }
 QLabel[role="statLabel"] { color: #98a0b0; font-size: 11px; }
 QLabel[role="error"] { color: #ffc3c8; background: #302029; border: 1px solid #623641; padding: 12px; border-radius: 12px; }
+QLabel[role="historyStatus"] { color: #b8c1d0; background: #1b202a; border: 1px solid #303849; border-radius: 10px; padding: 7px 10px; font-size: 12px; }
+QLabel[role="historyStatus"][state="sent"] { color: #8be0bb; background: #122b27; border-color: #284e42; }
+QLabel[role="historyStatus"][state="preview"], QLabel[role="historyStatus"][state="generated"] { color: #90c5ff; background: #142943; border-color: #294d77; }
+QLabel[role="historyStatus"][state="error"], QLabel[role="historyStatus"][state="send_error"] { color: #ffc3c8; background: #302029; border-color: #633744; }
+QListWidget#historyEntries::item { padding: 10px 12px; border-radius: 10px; }
 QLabel#sidebarChannel { color: #e5eaf4; font-size: 12px; font-weight: 500; }
 QLabel#sidebarHint { color: #98a0b0; font-size: 11px; }
 QLabel#connectionPill { background: #142943; color: #90c5ff; border: 1px solid #284669; border-radius: 10px; padding: 5px 9px; font-size: 11px; }

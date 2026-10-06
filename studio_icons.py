@@ -5,7 +5,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 ICON_NAMES = (
     "sparkles", "plug", "sliders", "users", "messages", "activity", "flask",
-    "book", "play", "stop", "save", "folder", "arrow-right",
+    "book", "play", "stop", "save", "folder", "arrow-right", "history",
 )
 
 
@@ -102,6 +102,9 @@ def studio_icon(name: str, color: str = "#98A0B0", size: int = 20) -> QIcon:
         path.closeSubpath()
         painter.drawPath(path)
         line(12, 6, 12, 21)
+    elif name == "history":
+        painter.drawEllipse(QRectF(3, 3, 18, 18))
+        polyline(((12, 7), (12, 12), (16, 14)))
     elif name == "play":
         polyline(((8, 4.5), (20, 12), (8, 19.5)), close=True)
     elif name == "stop":

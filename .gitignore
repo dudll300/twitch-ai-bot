@@ -3,6 +3,10 @@
 prompt.txt
 prompt.tmp
 bot-session.log
+message-history.sqlite3
+message-history.sqlite3-wal
+message-history.sqlite3-shm
+message-history.sqlite3-journal
 memory.json
 .twitch_token.json
 .twitch_token.tmp

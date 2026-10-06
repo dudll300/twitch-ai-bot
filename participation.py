@@ -260,7 +260,7 @@ def _viewer_messages(messages, profiles, memory_data, viewer_context):
 def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=(),
                      viewer_context="", profiles=(), memory_data=None, consumed_ids=(),
                      before_request=None, before_generation=None,
-                     local_manager=None, local_snapshot=None):
+                     local_manager=None, local_snapshot=None, on_result=None):
     """One selector request; one generator request only for a valid fresh opportunity.
 
     before_request reserves one actual HTTP call and returns its timeout. The
@@ -270,6 +270,10 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
     """
     if not messages:
         raise ValueError("Для анализа нужен свежий фрагмент чата.")
+    def observed(decision, context=None):
+        if on_result is not None:
+            on_result(decision, context if decision.action != "silent" else None)
+        return decision
     new_ids = frozenset(row["sequence"] for row in messages) if new_ids is None else frozenset(new_ids)
     consumed_ids = frozenset(consumed_ids)
     autonomous_prompt = getattr(settings, "autonomous_prompt", DEFAULT_AUTONOMOUS_PROMPT)
@@ -340,7 +344,7 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
     plan = parse_plan(complete(selector, 768))
     check_plan(plan, messages, new_ids, consumed_ids)
     if plan.action == "silent":
-        return Decision("silent", reason=plan.reason)
+        return observed(Decision("silent", reason=plan.reason))
     if before_generation is not None:
         before_generation(plan)
 
@@ -404,11 +408,14 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
             raise ValueError("Поле text генератора должно быть строкой.")
         text = result["text"]
     if text == "":
-        return _with_local_context(Decision("silent", reason="insufficient_context"), bundle)
+        return observed(_with_local_context(Decision("silent", reason="insufficient_context"), bundle))
     decision = parse_decision(json.dumps({"action": "reply", "text": text, "target": plan.target,
                                          "basis": list(plan.basis), "reason": plan.reason}), settings.max_chars)
     check_basis(decision, selected, new_ids)
-    return _with_local_context(decision, bundle, creative_card_id)
+    return observed(_with_local_context(decision, bundle, creative_card_id), {
+        "conversation": list(selected), "basis": list(plan.basis), "intent": plan.intent,
+        "recent_bot_replies": _history(relevant_history), "request_messages": generator,
+    })
 
 
 def words(text):

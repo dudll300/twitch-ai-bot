@@ -45,7 +45,7 @@ def main():
             window = new_window(root)
             page = window.local_context_page
             path = root / "local-context.json"
-            assert window.pages.count() == 7
+            assert window.pages.count() == 8
             assert not page.enabled.isChecked() and not page.rows and not page.dirty
             assert not path.exists(), "Opening the tab must not create a dictionary"
             window._navigate(6)
