@@ -1,5 +1,7 @@
 """Studio desktop palette, restrained glass rims and visible keyboard focus."""
 
+from paths import resource_path
+
 COLORS = {
     "background": "#0A0B0E",
     "surface": "#14161B",
@@ -135,12 +137,13 @@ QListWidget#modelList::item:hover { background: #1c2738; }
 QListWidget#modelList::item:selected { background: #142943; color: #b1d8ff; }
 QListWidget#modelList::item:disabled { color: #788394; }
 QListWidget#modelList::indicator { width: 16px; height: 16px; border: 1px solid #69778d; border-radius: 4px; background: #111925; }
-QListWidget#modelList::indicator:checked { background: #168bff; border: 4px solid #203f63; }
+QListWidget#modelList::indicator:checked { background: #168bff; border-color: #4aa9ff; image: url("__CHECKMARK__"); }
 QListWidget#modelList::indicator:disabled { background: #222d3d; border-color: #414d60; }
 QCheckBox { spacing: 8px; color: #c5cddc; }
 QCheckBox::indicator { width: 18px; height: 18px; border-radius: 5px; border: 1px solid #69778d; background: #111925; }
 QCheckBox::indicator:hover { border-color: #8abaf0; }
-QCheckBox::indicator:checked { background: #168bff; border: 4px solid #203f63; }
+QCheckBox::indicator:checked { background: #168bff; border-color: #4aa9ff; image: url("__CHECKMARK__"); }
+QCheckBox::indicator:checked:hover { background: #319eff; border-color: #82c4ff; }
 QCheckBox::indicator:focus { border-color: #c4e3ff; }
 QCheckBox::indicator:disabled { background: #222d3d; border-color: #414d60; }
 QCheckBox:disabled { color: #778294; }
@@ -152,3 +155,6 @@ QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }
 QToolTip { color: #e4efff; background: #1b293d; border: 1px solid #4b6890; padding: 7px; }
 """
+
+# Absolute bundle paths also work when launched from a different directory.
+STYLE = STYLE.replace("__CHECKMARK__", resource_path("assets/checkmark.svg").as_posix())
