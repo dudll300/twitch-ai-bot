@@ -195,9 +195,9 @@ def check_all_page_text_fields(app):
                 assert outer.verticalScrollBar().value() > 30, (index, editor.accessibleName(),
                                                                outer.verticalScrollBar().maximum())
                 editor.setPlainText("\n".join(f"Long line {i}" for i in range(100)))
-                app.processEvents()
                 inner = editor.verticalScrollBar()
-                assert inner.maximum() > 0
+                # Qt can defer document layout until the next paint on Windows.
+                wait_for(lambda: inner.maximum() > 0)
                 outer.verticalScrollBar().setValue(30)
                 inner.setValue(0)
                 wheel(editor.viewport(), -120)
