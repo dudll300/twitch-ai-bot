@@ -10,7 +10,7 @@ from unittest.mock import patch
 from local_context import (CATALOG_BUDGET, CONTEXT_BUDGET, DOCUMENT_NAME, USAGE_NAME,
                            LocalContextManager, LocalReply, LocalSettings, direct_bundle,
                            direct_only, document_raw, load_document, normalize,
-                           save_document, validate_document)
+                           prepare_context, save_document, validate_document)
 
 
 def card(card_id="loss", name="Сасун", aliases=None, *, situational=True, **changes):
@@ -148,6 +148,18 @@ class LocalMatchingTests(unittest.TestCase):
     def test_disabled_system_and_card_do_not_add_context(self):
         for raw in (document(enabled=False), document([card(enabled=False)]), document([])):
             self.assertFalse(direct_bundle(validate_document(raw), "sasun").has_context)
+
+    def test_ambiguous_in_memory_alias_is_not_assigned_to_an_arbitrary_card(self):
+        valid = validate_document(document([
+            card("first", "Первый", ["синий еж"], situational=False),
+            card("second", "Второй", ["другая фраза"], situational=False),
+            card("short", "Еж", ["ежик"], situational=False)]))
+        ambiguous = replace(valid, cards=(valid.cards[0],
+                            replace(valid.cards[1], aliases=("синий ёж",)), valid.cards[2]))
+        self.assertFalse(direct_bundle(ambiguous, "Синий еж").has_context)
+        # A separate unambiguous mention still works.
+        self.assertEqual([row.id for row in direct_bundle(ambiguous, "Синий еж, а отдельно ежик").direct],
+                         ["short"])
 
     def test_runtime_budget_disables_entire_bundle_without_partial_definitions(self):
         rows = [card(str(index), f"Name{index}", [f"alias{index}"], situational=False,
@@ -327,6 +339,28 @@ class LocalManagerTests(unittest.TestCase):
         self.assertEqual(self.path.read_text(encoding="utf-8"), "api-key-secret malformed")
         save_document(self.path, self.raw)
         self.assertFalse(self.manager.is_current(snapshot))
+
+    def test_unexpected_loader_failure_is_disabled_without_overwriting_dictionary(self):
+        original = self.path.read_bytes()
+        with patch("local_context.load_document", side_effect=RuntimeError("private-loader-data")):
+            snapshot = self.manager.snapshot()
+            self.assertTrue(snapshot.error)
+            self.assertFalse(snapshot.settings.enabled)
+            self.assertTrue(self.manager.is_current(snapshot))
+            self.assertFalse(prepare_context(self.manager, "sasun").has_context)
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertNotIn("private-loader-data", repr(self.events))
+
+    def test_unexpected_preparation_failure_uses_the_shared_ordinary_request_boundary(self):
+        for method in ("snapshot", "bundle"):
+            with self.subTest(method=method), patch.object(
+                    self.manager, method, side_effect=RuntimeError("private-preparation-data")):
+                result = prepare_context(self.manager, "private chat says sasun")
+                self.assertFalse(result.has_context)
+                self.assertTrue(result.error)
+        self.assertNotIn("private-preparation-data", repr(self.events))
+        self.assertNotIn("private chat", repr(self.events))
+        self.assertFalse(self.manager.usage_path.exists())
 
     def test_direct_logs_only_card_ids_and_error_logs_are_not_repeated(self):
         result = self.bundle("private chat says sasun")

@@ -156,6 +156,37 @@ class LocalContextAITests(unittest.TestCase):
         self.assertTrue(ai.is_local_service_output(bad[0]))
         self.assertFalse(ai.is_local_service_output("Обычный ответ с пояснением местного слова."))
 
+    def test_nested_escaped_and_fenced_service_envelopes_never_become_published_text(self):
+        envelopes = [encoded({"text": "Ответ"}),
+                     '{"text":"Ответ","\\u0063reative_card_id":null}',
+                     '```json\n{"text":"Ответ"}\n```',
+                     encoded(encoded({"text": "Ответ", "creative_card_id": None}))]
+        for envelope in envelopes:
+            with self.subTest(envelope=envelope):
+                self.assertTrue(ai.is_local_service_output(envelope))
+                with self.assertRaises(LocalResultError):
+                    ai.parse_local_reply(encoded({"text": envelope, "creative_card_id": None}), self.bundle)
+                with self.assertRaises(LocalResultError):
+                    self.request(envelope, bundle=direct_bundle(self.snapshot, "sasun"))
+        self.assertFalse(ai.is_local_service_output('Можно выбрать ключ "text" в настройках.'))
+
+    def test_preparation_failure_keeps_both_autonomous_stages_and_plain_output_protocol(self):
+        rows = [row(1, "viewer", "Наконец победил босса")]
+        plan = part.Plan("reply", (1,), (1,), "viewer", "reaction", "Поздравить с победой")
+        events = []
+        self.manager.emit = events.append
+        with patch.object(self.manager, "bundle", side_effect=RuntimeError("private-dictionary-data")), \
+             patch("participation.request_completion", side_effect=[encoded(asdict(plan)),
+                   encoded({"text": "Поздравляю с победой!"})]) as completion:
+            reply = part.request_decision(self.cfg, rows, self.settings,
+                                          local_manager=self.manager, local_snapshot=self.snapshot)
+        self.assertEqual(reply.reply, "@viewer Поздравляю с победой!")
+        self.assertEqual(completion.call_count, 2)
+        self.assertNotIn("optional_creative_candidates", str(completion.call_args_list))
+        self.assertTrue(any(event["action"] == "error" for event in events))
+        self.assertNotIn("private-dictionary-data", repr(events))
+        self.assertFalse(self.manager.usage_path.exists())
+
     def test_recovery_rejects_metadata_before_truncation_even_when_system_was_disabled(self):
         disabled = LocalBundle(replace(self.snapshot, settings=LocalSettings()))
         long_json = encoded({"text": "x" * 500, "creative_card_id": self.card.id})

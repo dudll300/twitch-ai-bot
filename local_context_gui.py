@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 
 from autonomous_gui import NumberInput
-from local_context import document_raw, load_document, save_document, validate_document
+from local_context import DOCUMENT_NAME, document_raw, load_document, save_document, validate_document
 from ui_widgets import (
     NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch,
     card, field, label, scroll_page,
@@ -28,7 +28,7 @@ class LocalContextPage(QWidget):
 
     def __init__(self, root):
         super().__init__()
-        self.path = root / "local-context.json"
+        self.path = root / DOCUMENT_NAME
         self.saved = load_document(self.path)
         self.rows = deepcopy(document_raw(self.saved)["cards"])
         self.load_error = self.saved.error
@@ -333,14 +333,16 @@ class LocalContextPage(QWidget):
     def _live_change(self, *_):
         if self._loading:
             return
-        if self.load_error:
+        current = load_document(self.path)
+        if self.load_error or current.error:
+            self.load_error = self.load_error or current.error
             self._loading = True
             self.enabled.setChecked(self.saved.settings.enabled)
             self._loading = False
             self._show_load_error()
             return
         # A live switch applies only the saved dictionary, never an unfinished card.
-        snapshot = replace(self.saved, settings=replace(self.saved.settings, enabled=self.enabled.isChecked()))
+        snapshot = replace(current, settings=replace(current.settings, enabled=self.enabled.isChecked()))
         try:
             saved = save_document(self.path, snapshot)
         except (OSError, ValueError, TypeError):

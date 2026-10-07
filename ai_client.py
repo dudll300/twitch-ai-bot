@@ -90,7 +90,20 @@ def _unique_json_object(pairs):
 
 def is_local_service_output(content):
     """Recognise reserved enrichment metadata before an ordinary recovery sends it."""
-    return isinstance(content, str) and re.search(r'"creative_card_id"\s*:', content) is not None
+    if not isinstance(content, str):
+        return False
+    if re.search(r'"creative_card_id"\s*:', content):
+        return True
+    # JSON may escape a field name, and a provider may repeat the generator's
+    # text-only envelope during recovery. Both must be checked before truncation.
+    fenced = re.fullmatch(r"\s*```(?:json)?\s*([\s\S]*?)\s*```\s*", content)
+    try:
+        result = json.loads(fenced.group(1) if fenced else content)
+    except (ValueError, TypeError, RecursionError):
+        return False
+    if isinstance(result, str) and result != content:
+        return is_local_service_output(result)
+    return isinstance(result, dict) and ("creative_card_id" in result or set(result) == {"text"})
 
 
 def _plain_local_reply(content, api_key, bundle=None):
@@ -152,7 +165,7 @@ class TruncatedAIError(TemporaryAIError):
 def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
     try:
         raw = exc.read(4096)
-    except (AttributeError, OSError, ValueError, http.client.HTTPException):
+    except (AttributeError, KeyError, OSError, ValueError, http.client.HTTPException):
         return ""
     if not raw:
         return ""

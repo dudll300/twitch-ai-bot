@@ -291,19 +291,23 @@ def _direct_cards(snapshot, text):
     if snapshot.error or not snapshot.settings.enabled:
         return ()
     haystack = normalize(text)
-    matches = []
+    matches = {}
     for index, card in enumerate(snapshot.cards):
         if not card.enabled:
             continue
         for alias in {normalize(card.name), *(normalize(value) for value in card.aliases)}:
             for match in re.finditer(r"(?<!\w)" + re.escape(alias) + r"(?!\w)", haystack):
-                matches.append((match.start(), match.end(), index))
+                matches.setdefault((match.start(), match.end()), set()).add(index)
     occupied, chosen = [], set()
-    for start, end, index in sorted(matches, key=lambda item: (-(item[1] - item[0]), item[0], item[2])):
+    for start, end in sorted(matches, key=lambda span: (-(span[1] - span[0]), span[0])):
         if any(start < used_end and used_start < end for used_start, used_end in occupied):
             continue
         occupied.append((start, end))
-        chosen.add(index)
+        # Validation rejects duplicate aliases on disk. Still fail closed for an
+        # ambiguous in-memory snapshot, without falling back to a shorter alias.
+        owners = matches[start, end]
+        if len(owners) == 1:
+            chosen.update(owners)
     return tuple(card for index, card in enumerate(snapshot.cards) if index in chosen)
 
 
@@ -320,6 +324,23 @@ def direct_bundle(snapshot: LocalSnapshot, text: str) -> LocalBundle:
 
 def direct_only(bundle: LocalBundle) -> LocalBundle:
     return _bounded(LocalBundle(bundle.snapshot, direct=bundle.direct, error=bundle.error))
+
+
+def prepare_context(manager, text, *, snapshot=None, creative=True) -> LocalBundle:
+    """Shared optional request boundary: dictionary failures keep ordinary AI work."""
+    try:
+        if snapshot is None:
+            snapshot = manager.snapshot()
+        return (manager.bundle(snapshot, text, creative=creative) if manager is not None
+                else direct_bundle(snapshot, text))
+    except Exception:
+        error = "Не удалось подготовить локальный контекст. Ответ готовится без словаря."
+        if manager is not None:
+            try:
+                manager._notify_error(error, "unavailable", "runtime")
+            except Exception:
+                pass
+        return LocalBundle(_snapshot(error=error, revision="unavailable"), error=error)
 
 
 class LocalContextManager:
@@ -375,7 +396,13 @@ class LocalContextManager:
 
     def snapshot(self) -> LocalSnapshot:
         with self._lock:
-            result = load_document(self.path)
+            try:
+                result = load_document(self.path)
+            except Exception:
+                # This optional subsystem must also survive unexpected loader
+                # failures. Never persist the fallback or echo exception data.
+                result = _snapshot(error="Не удалось прочитать локальный контекст. Бот работает без словаря.",
+                                   revision="unavailable")
             self._notify_error(result.error, result.revision)
             self._notify_error(self._usage_error, "usage", "usage")
             return result

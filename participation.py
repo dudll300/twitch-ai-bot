@@ -8,7 +8,7 @@ import re
 
 from ai_client import (local_context_rules, parse_local_reply, redact_secret,
                        request_completion, usable_local_bundle)
-from local_context import direct_bundle
+from local_context import prepare_context
 from memory import context_for, viewer_for
 from profiles import profile_for
 from viewer_recognition import related_context
@@ -82,12 +82,8 @@ def _scene_local_bundle(snapshot, text, manager=None, *, creative=False):
     # The manager reports dictionary/storage errors separately from model errors.
     if snapshot is None:
         return None
-    try:
-        bundle = (manager.bundle(snapshot, text, creative=creative) if manager is not None
-                  else direct_bundle(snapshot, text))
-        return bundle if usable_local_bundle(bundle) else None
-    except Exception:
-        return None
+    bundle = prepare_context(manager, text, snapshot=snapshot, creative=creative)
+    return bundle if usable_local_bundle(bundle) else None
 
 
 def parse_decision(content, max_chars):

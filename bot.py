@@ -15,7 +15,7 @@ from ai_client import (AI_REQUEST_TIMEOUT_SECONDS, TemporaryAIError, call_ai, cl
                        clean_text, is_local_service_output, redact_secret)
 
 from autonomous import Autonomous
-from local_context import LocalContextManager, LocalReply, LocalResultError
+from local_context import LocalContextManager, LocalReply, LocalResultError, prepare_context
 from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
@@ -71,7 +71,7 @@ class AIModelRouter:
         bundle = None
         if self.local_context is not None:
             text = "\n".join(part for pair in history[-10:] for part in pair) + "\n" + clean_question(question)
-            bundle = self.local_context.bundle(self.local_context.snapshot(), text, creative=allow_creative)
+            bundle = prepare_context(self.local_context, text, creative=allow_creative)
         try:
             answer = self._ask_models(cfg, user, question, memory_data, user_id, history, bundle,
                                       reject_local_service=not allow_creative)

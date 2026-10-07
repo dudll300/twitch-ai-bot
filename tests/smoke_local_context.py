@@ -159,6 +159,27 @@ def main():
             root = Path(directory)
             window = new_window(root)
             page = window.local_context_page
+            fill_card(page, "Сохранённая карточка", "Объяснение владельца.")
+            assert page.apply()
+            page.meaning.setPlainText("Черновик после сохранения.")
+            path = root / "local-context.json"
+            # Corruption can happen after the page was loaded too. The live
+            # switch must not turn that file into an automatic dictionary repair.
+            path.write_text("{ damaged after opening", encoding="utf-8")
+            page.enabled.setChecked(True)
+            assert not page.enabled.isChecked() and page.load_error
+            assert path.read_text(encoding="utf-8") == "{ damaged after opening"
+            assert page.meaning.toPlainText() == "Черновик после сохранения." and page.dirty
+            assert not list(root.glob("local-context.corrupt-*.bak"))
+            assert page.apply(), "Explicit application can repair the file and back it up"
+            assert load_document(path).cards[0].meaning == "Черновик после сохранения."
+            assert len(list(root.glob("local-context.corrupt-*.bak"))) == 1
+            window.close()
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            window = new_window(root)
+            page = window.local_context_page
             fill_card(page, "Сохранить всё", "Корректная новая карточка.")
             window.prompt.setPlainText("Общий черновик.")
             close = QCloseEvent()

@@ -189,6 +189,23 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(call.kwargs["local_bundle"].candidate_ids)
             self.assertEqual(call.kwargs["local_bundle"].direct[0].id, "loss")
 
+    async def test_dictionary_preparation_failure_preserves_reward_and_model_fallback(self):
+        events = []
+        self.manager.emit = events.append
+        for method in ("snapshot", "bundle"):
+            with self.subTest(method=method), patch.object(
+                    self.manager, method, side_effect=RuntimeError("private-dictionary-data")), \
+                 patch.object(bot, "call_ai", side_effect=[bot.TemporaryAIError("unavailable"),
+                              "Полезный обычный ответ."]) as request:
+                answer = self.bot.ai_router.ask(self.cfg, "viewer", "Как пройти босса?")
+            self.assertEqual(answer, "Полезный обычный ответ.")
+            self.assertEqual([call.kwargs["model"] for call in request.call_args_list], ["primary", "backup"])
+            for call in request.call_args_list:
+                self.assertNotIn("local_bundle", call.kwargs)
+        self.assertTrue(events)
+        self.assertNotIn("private-dictionary-data", repr(events))
+        self.assertFalse(self.manager.usage_path.exists())
+
     def make_controller(self, mode="preview"):
         settings = replace(auto.AutoSettings(), enabled=True, mode=mode, min_messages=1, min_authors=1)
         auto.save_settings(self.root / "autonomous.json", settings)
