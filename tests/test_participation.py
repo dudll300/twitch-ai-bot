@@ -316,8 +316,8 @@ class ParticipationTests(unittest.TestCase):
         self.assertEqual(calls.call_count, 2)
         generator = calls.call_args_list[1].args[2]
         self.assertIn("Не подшучивать над результатами этого зрителя", str(generator))
-        self.assertIn('{"text":""}', generator[-2]["content"])
-        self.assertIn("не меняй тему или адресата", generator[-2]["content"])
+        self.assertIn('{"text":""}', generator[-3]["content"])
+        self.assertIn("не меняй тему или адресата", generator[-3]["content"])
         self.assertEqual(json.loads(generator[-1]["content"])["participation_plan"]["target"], "viewer")
 
     def test_custom_participation_prompt_is_separate_and_format_limit_has_priority(self):
@@ -330,7 +330,7 @@ class ParticipationTests(unittest.TestCase):
         self.assertIn(settings.autonomous_prompt, str(generator))
         self.assertEqual(json.loads(selector[-1]["content"])["channel_prompt"], "Характер бота")
         self.assertEqual(generator[0]["content"], "Характер бота")
-        self.assertIn("максимум 80 символов", generator[-2]["content"])
+        self.assertIn("максимум 80 символов", generator[-3]["content"])
 
     def test_selected_mentions_use_russian_alias_and_typo_profiles(self):
         self.rows[1]["text"] = "Лопотикк, поздравляю с победой!"

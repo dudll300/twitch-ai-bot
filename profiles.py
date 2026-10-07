@@ -10,6 +10,7 @@ from configuration import normalize
 MAX_PROFILE_PROMPT = 10000
 MAX_PROFILES = 1000
 MAX_ALIASES = 20
+REWARD_BLOCKED_REFUSAL = "Вам запрещено использовать эту награду. Обратитесь к владельцу канала."
 
 
 class ProfileError(ValueError):
@@ -31,11 +32,15 @@ def validate_profiles(profiles: object, *, allow_empty_prompt: bool = False) -> 
                 raise ValueError("Логин, ID и инструкция должны быть строками.")
             login = normalize("TWITCH_CHANNEL", login) if login.strip() else ""
             user_id, prompt = user_id.strip(), prompt.strip()
+            reward_blocked = raw.get("reward_blocked", False)
+            if not isinstance(reward_blocked, bool):
+                raise ValueError("reward_blocked должен быть true или false.")
             if user_id and not re.fullmatch(r"[0-9]{1,30}", user_id):
                 raise ValueError("Twitch ID должен содержать только цифры, до 30 знаков.")
             if not login and not user_id:
                 raise ValueError("Укажите Twitch-логин или числовой ID.")
-            if (not prompt and not allow_empty_prompt) or len(prompt) > MAX_PROFILE_PROMPT:
+            # Permission-only profiles remain valid when their ban is removed.
+            if (not prompt and not allow_empty_prompt and "reward_blocked" not in raw) or len(prompt) > MAX_PROFILE_PROMPT:
                 raise ValueError(f"Личная инструкция должна содержать от 1 до {MAX_PROFILE_PROMPT} символов.")
             enabled = raw.get("enabled", True)
             if not isinstance(enabled, bool):
@@ -59,7 +64,8 @@ def validate_profiles(profiles: object, *, allow_empty_prompt: bool = False) -> 
             if user_id:
                 ids.add(user_id)
             result.append({"login": login, "user_id": user_id, "prompt": prompt,
-                           "enabled": enabled, "aliases": clean_aliases})
+                           "enabled": enabled, "aliases": clean_aliases,
+                           **({"reward_blocked": reward_blocked} if "reward_blocked" in raw else {})})
         except ValueError as exc:
             raise ProfileError(f"Профиль {index + 1}: {exc}", index) from exc
     return result
@@ -100,3 +106,8 @@ def profile_for(profiles: list[dict], login: str, user_id: str = "") -> dict | N
 def prompt_for(profiles: list[dict], login: str, user_id: str = "") -> str:
     profile = profile_for(profiles, login, user_id)
     return profile["prompt"] if profile is not None and profile["enabled"] else ""
+
+
+def reward_is_blocked(profiles, login, user_id=""):
+    profile = profile_for(profiles, login, user_id)
+    return bool(profile and profile.get("reward_blocked", False))

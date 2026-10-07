@@ -7,6 +7,7 @@ from ai_client import clean_text, redact_secret, request_completion
 from configuration import normalize
 from testing import Credentials
 from reply_rules import CORE_RULES, POLICY_HEADER, upgrade_generated_prompt
+from privacy import check_question
 
 
 DEFAULT_TOPICS = "Стрим, игры, события канала и повседневное общение со зрителями"
@@ -98,6 +99,8 @@ def prepare_generation(auth: Credentials, model: str, wishes: str, base_style: s
                        topics: str, current_prompt: str = "", operation: str | None = None) -> Generation:
     model = normalize("AI_MODEL", model)
     wishes, current_prompt = wishes.strip(), upgrade_generated_prompt(current_prompt.strip())
+    for value in (wishes, base_style, topics, current_prompt):
+        check_question(value)
     operation = operation or ("improve" if current_prompt else "create")
     if operation not in ("create", "improve"):
         raise ValueError("Неизвестный режим генерации промпта.")

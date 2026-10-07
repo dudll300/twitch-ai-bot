@@ -19,7 +19,8 @@ from local_context import LocalContextManager, LocalReply, LocalResultError
 from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
-from profiles import load_profiles, profile_for, prompt_for
+from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
+from privacy import PRIVACY_REFUSAL, PrivacyViolation, check_question, safe_history_text, unsafe_question
 from viewer_recognition import related_context
 from paths import data_dir
 from rewards import RewardListener
@@ -65,6 +66,7 @@ class AIModelRouter:
     def ask(self, cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             history: tuple[tuple[str, str], ...] = (), *, allow_creative=True, on_answer=None) -> str:
+        check_question(question)
         self.last_model = ""
         bundle = None
         if self.local_context is not None:
@@ -215,12 +217,43 @@ class Bot:
         if journal is not None:
             await asyncio.to_thread(journal.update, record_id, status, **values)
 
+    def refusal_for(self, user, user_id, question):
+        profiles = getattr(self.ai_router, "profiles", [])
+        if not isinstance(profiles, (list, tuple)):
+            profiles = []
+        if reward_is_blocked(profiles, user, user_id):
+            return REWARD_BLOCKED_REFUSAL, "Запросы через награду запрещены для зрителя."
+        if unsafe_question(question):
+            return PRIVACY_REFUSAL, "Защита личных данных."
+        return None
+
+    async def refuse(self, writer, user, user_id, question, notice, reason, record_id=None):
+        if record_id is None:
+            record_id = await self.history_add("rejected", viewer=user, viewer_id=user_id,
+                question=safe_history_text(question), answer=notice, action="refusal", reason=reason)
+        else:
+            await self.history_update(record_id, "rejected", answer=notice, action="refusal", reason=reason)
+        text = clean_text(f"@{user} {notice}", CHAT_MAX_CHARS)
+        try:
+            await self.say(writer, text)
+            await self.history_update(record_id, "rejected", sent_text=text)
+        except asyncio.CancelledError:
+            await self.history_update(record_id, "cancelled", reason="Отправка отказа отменена.")
+            raise
+        except Exception:
+            await self.history_update(record_id, "send_error", reason="Не удалось передать отказ Twitch.")
+        return record_id
+
     async def worker(self, writer: asyncio.StreamWriter, queue: asyncio.Queue) -> None:
         while True:
             user, user_id, question, redemption_id = await queue.get()
             self._paid_busy = True
             record_id = None
             try:
+                refusal = self.refusal_for(user, user_id, question)
+                if refusal:
+                    await self.refuse(writer, user, user_id, question, *refusal)
+                    continue
                 record_id = await self.history_add("generating", viewer=user, viewer_id=user_id,
                                                    question=question)
                 observed = False
@@ -271,6 +304,9 @@ class Bot:
                 await self.history_update(record_id, "cancelled", reason="Ответ прерван при остановке или разрыве соединения.")
                 print(f"Награда {redemption_id} от {user}: ответ прерван; проверьте возврат баллов вручную.", flush=True)
                 raise
+            except PrivacyViolation:
+                await self.refuse(writer, user, user_id, question, PRIVACY_REFUSAL,
+                                  "Запрос или ответ отклонён защитой личных данных.", record_id)
             except Exception as exc:
                 await self.history_update(record_id, "error", reason=str(exc))
                 safe_error = redact_secret(str(exc), self.cfg.get("AI_API_KEY", ""))
@@ -292,6 +328,10 @@ class Bot:
         )
         queue: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUED_QUESTIONS)
         async def on_question(user: str, user_id: str, question: str, redemption_id: str) -> None:
+            refusal = self.refusal_for(user, user_id, question)
+            if refusal:
+                await self.refuse(writer, user, user_id, question, *refusal)
+                return
             self.autonomous.interrupt()
             try:
                 queue.put_nowait((user, user_id, question, redemption_id))

@@ -109,6 +109,11 @@ class ProfilesEditor(QWidget):
         editor_layout.addLayout(grid)
         editor_layout.addWidget(label(
             "Достаточно логина или ID. Если указан ID, используем его — даже после смены ника.", "muted", True))
+        self.reward_blocked = QCheckBox("Запретить запросы через награду")
+        editor_layout.addWidget(self.reward_blocked)
+        editor_layout.addWidget(label(
+            "Бот отправит стандартный отказ без обращения к AI. Запрет действует независимо от персонализации. "
+            "Для такого профиля личную инструкцию можно оставить пустой.", "muted", True))
         self.aliases = QLineEdit()
         self.aliases.setPlaceholderText("Например: лопотик, лопотика, Лёха")
         editor_layout.addWidget(field("Другие имена / ники · через запятую", self.aliases))
@@ -149,6 +154,7 @@ class ProfilesEditor(QWidget):
             widget.textChanged.connect(self._store)
         self.prompt.textChanged.connect(self._store)
         self.enabled.toggled.connect(self._store)
+        self.reward_blocked.toggled.connect(self._store)
         self._rebuild(0 if self.rows else -1)
         self.set_editable(True)
 
@@ -167,7 +173,7 @@ class ProfilesEditor(QWidget):
     def _item_text(self, row):
         name = row["login"].strip() or ("ID " + row["user_id"].strip() if row["user_id"].strip() else "Новый профиль")
         detail = "По Twitch ID" if row["user_id"].strip() else "По логину"
-        return name + "\n" + (detail if row["enabled"] else "Отключён")
+        return name + "\n" + ("Награда запрещена" if row.get("reward_blocked") else detail if row["enabled"] else "Отключён")
 
     def _rebuild(self, selected):
         self.list.blockSignals(True)
@@ -193,6 +199,7 @@ class ProfilesEditor(QWidget):
         self.aliases.setText(", ".join(row.get("aliases", [])))
         self.prompt.setPlainText(row["prompt"])
         self.enabled.setChecked(row["enabled"])
+        self.reward_blocked.setChecked(row.get("reward_blocked", False))
         self._loading = False
         self._update_caption()
         self.stack.setCurrentIndex(1)
@@ -224,6 +231,7 @@ class ProfilesEditor(QWidget):
             return
         self.rows[index] = {"login": self.login.text(), "user_id": self.user_id.text(),
                             "prompt": self.prompt.toPlainText(), "enabled": self.enabled.isChecked(),
+                            "reward_blocked": self.reward_blocked.isChecked(),
                             "aliases": [part.strip() for part in self.aliases.text().split(",") if part.strip()]}
         self.list.item(index).setText(self._item_text(self.rows[index]))
         self._update_caption()
@@ -291,6 +299,6 @@ class ProfilesEditor(QWidget):
     def set_editable(self, editable):
         self._editable = editable
         for widget in (self.add_button, self.remove_button, self.undo_button, self.login,
-                       self.user_id, self.aliases, self.prompt, self.enabled):
+                       self.user_id, self.aliases, self.prompt, self.enabled, self.reward_blocked):
             widget.setEnabled(editable and not self.load_error)
         self._update_caption()

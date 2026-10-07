@@ -12,6 +12,7 @@ from local_context import direct_bundle
 from memory import context_for, viewer_for
 from profiles import profile_for
 from viewer_recognition import related_context
+from privacy import protected_messages, unsafe_question
 
 
 REPLY_REASONS = {"answer", "reaction", "joke", "question"}
@@ -270,10 +271,13 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
     """
     if not messages:
         raise ValueError("Для анализа нужен свежий фрагмент чата.")
+    messages = tuple(row for row in messages if not unsafe_question(row["text"]))
     def observed(decision, context=None):
         if on_result is not None:
             on_result(decision, context if decision.action != "silent" else None)
         return decision
+    if not messages or (new_ids is not None and not set(new_ids).intersection(row["sequence"] for row in messages)):
+        return observed(Decision("silent", reason="offtopic"))
     new_ids = frozenset(row["sequence"] for row in messages) if new_ids is None else frozenset(new_ids)
     consumed_ids = frozenset(consumed_ids)
     autonomous_prompt = getattr(settings, "autonomous_prompt", DEFAULT_AUTONOMOUS_PROMPT)
@@ -341,6 +345,7 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
                     "chat_context": _chat_context(cfg, messages),
                     "new_message_ids": sorted(new_ids), "answered_message_ids": sorted(consumed_ids),
                     "recent_bot_replies": _history(recent_replies)}, ensure_ascii=False)}])
+    selector = protected_messages(selector)
     plan = parse_plan(complete(selector, 768))
     check_plan(plan, messages, new_ids, consumed_ids)
     if plan.action == "silent":
@@ -394,6 +399,7 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
                                "target": plan.target, "reason": plan.reason, "intent": plan.intent},
         "selected_conversation": _chat_context(cfg, selected),
         "recent_bot_replies": _history(relevant_history)}, ensure_ascii=False)})
+    generator = protected_messages(generator)
     content = complete(generator, 512)
     creative_card_id = None
     if bundle is not None and bundle.candidate_ids:

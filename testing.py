@@ -13,7 +13,8 @@ from ai_client import (AI_REQUEST_TIMEOUT_SECONDS, build_messages, clean_questio
 from configuration import normalize
 from memory import context_for, load_memory
 from paths import resource_path
-from profiles import prompt_for, validate_profiles
+from profiles import REWARD_BLOCKED_REFUSAL, prompt_for, reward_is_blocked, validate_profiles
+from privacy import check_question
 from viewer_recognition import related_context
 from reply_rules import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
 
@@ -104,6 +105,7 @@ def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: s
         raise ValueError("Выберите модель или добавьте её ID вручную.")
     if any(auth.api_key in model for model in model_ids):
         raise ValueError("В поле ID модели указан API-ключ.")
+    check_question(question)
     question = clean_question(question)
     if not question:
         raise ValueError("Введите пробный вопрос.")
@@ -137,6 +139,8 @@ def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: s
         login = normalize("TWITCH_CHANNEL", login) if login.strip() else ""
     else:
         raise ValueError("Неизвестный отправитель теста.")
+    if sender != "owner" and reward_is_blocked(rows, login, user_id):
+        raise ValueError(REWARD_BLOCKED_REFUSAL)
     related = related_context(rows, question, memory_data, sender_profile=sender_profile)
     messages = build_messages({"AI_PROMPT": prompt}, login, question, memory_data,
                               user_id, personal_prompt=personal,
@@ -162,6 +166,7 @@ def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: s
             clean_text(redact_secret(line, auth.api_key), 600) for line in related.diagnostics)
             if related.diagnostics else "Упоминаний зрителей с профилями не найдено."),
         "История реальных разговоров недоступна и не учитывалась.",
+        "Защита личных данных: обязательна для всех моделей.",
         f"Вопрос ограничен {QUESTION_MAX_CHARS} символами, ответ — {ANSWER_MAX_CHARS}, как у бота.",
     ))
     return TestSnapshot(auth, model_ids, tuple((m["role"], m["content"]) for m in messages),

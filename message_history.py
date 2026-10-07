@@ -10,9 +10,10 @@ import time
 import uuid
 
 from ai_client import redact_secret
+from privacy import safe_history_text
 
 STATUSES = {"generating", "generated", "sent", "preview", "silent", "skipped",
-            "cancelled", "error", "send_error"}
+            "cancelled", "error", "send_error", "rejected"}
 FIELDS = ("channel", "viewer", "viewer_id", "model", "action", "reason", "question",
           "answer", "sent_text", "mode")
 SUMMARY = "seq, id, created, updated, kind, status, " + ", ".join(FIELDS)
@@ -60,8 +61,8 @@ class MessageHistory:
             for secret in self.secrets:
                 value = redact_secret(value, secret)
             # Never retain obvious credentials echoed in chat or an error.
-            return re.sub(r"(?i)\b(?:bearer\s+|oauth:)[a-z0-9._~+/=-]+",
-                          "[токен скрыт]", value)
+            return safe_history_text(re.sub(r"(?i)\b(?:bearer\s+|oauth:)[a-z0-9._~+/=-]+",
+                          "[токен скрыт]", value))
         if isinstance(value, dict):
             return {key: "[секрет скрыт]" if str(key).casefold() in SECRET_FIELDS
                     else self.redact(item) for key, item in value.items()}
@@ -136,7 +137,7 @@ class MessageHistory:
             # A late AI result can be retained after cancellation, but cannot
             # turn a cancelled request back into a candidate for delivery.
             new_status = row["status"] if status == "generated" and row["status"] in {
-                "cancelled", "skipped", "error", "send_error"} else status
+                "cancelled", "skipped", "error", "send_error", "rejected"} else status
             if merged["action"] == "silent":
                 new_status = "silent"
             stored_context = row["context"]

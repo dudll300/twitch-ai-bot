@@ -11,6 +11,7 @@ from configuration import SYSTEM_PROMPT
 from local_context import LocalReply, LocalResultError
 from memory import context_for
 from reply_rules import ANSWER_LENGTH_RULE, ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
+from privacy import check_output, check_question, protected_messages, safe_history_text
 
 AI_REQUEST_TIMEOUT_SECONDS = 20
 
@@ -169,7 +170,7 @@ def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
     if not isinstance(detail, str):
         detail = str(detail)
     detail = redact_secret(detail, api_key)
-    detail = clean_text(detail, 240)
+    detail = clean_text(safe_history_text(detail), 240)
     return f": {detail}" if detail else ""
 
 
@@ -178,6 +179,7 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
             history: tuple[tuple[str, str], ...] = (),
             personal_prompt: str = "", sender_role: str | None = None,
             viewer_context: str = "", local_bundle=None) -> list[dict]:
+    check_question(question)
     messages = []
     prompt = upgrade_generated_prompt(cfg.get("AI_PROMPT", SYSTEM_PROMPT).strip())
     if prompt:
@@ -203,7 +205,7 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
         messages.append({"role": "user", "content": f"{author} {user} спрашивает: {previous_question}"})
         messages.append({"role": "assistant", "content": previous_answer})
     messages.append({"role": "user", "content": f"{author} {user} спрашивает: {clean_question(question)}"})
-    return messages
+    return protected_messages(messages)
 
 
 def call_ai(cfg: dict[str, str], user: str, question: str,
@@ -247,6 +249,9 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
             or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
         raise ValueError("Некорректное время ожидания AI API.")
     timeout_seconds = min(timeout_seconds, AI_REQUEST_TIMEOUT_SECONDS)
+    messages = protected_messages(messages)
+    for message in messages:
+        check_output(message["content"])
     payload = {
         "model": model,
         "messages": messages,
@@ -288,6 +293,7 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         raise TemporaryAIError("AI API вернул некорректный ответ") from None
     if not isinstance(answer, str) or not answer.strip():
         raise TemporaryAIError("AI API вернул пустой ответ")
+    check_output(answer)
     if reject_truncated and choice.get("finish_reason") == "length":
         raise TruncatedAIError("AI API обрезал результат. Повторите генерацию с более короткими пожеланиями.")
     return answer

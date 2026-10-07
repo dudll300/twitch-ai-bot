@@ -106,7 +106,7 @@ class TestingTests(unittest.TestCase):
 
     def test_no_real_history_and_bot_limits(self):
         snapshot = self.snapshot(prompt="", memory_data=None, question="x" * 450)
-        self.assertEqual(len(snapshot.messages), 2)
+        self.assertEqual(len(snapshot.messages), 3)
         self.assertIn("не учитывалась", snapshot.context)
         self.assertIn("ответ — 400", snapshot.context)
         self.assertTrue(snapshot.messages[-1][1].endswith("x" * 400))

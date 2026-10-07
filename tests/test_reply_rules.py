@@ -56,7 +56,7 @@ class ReplyRulesTests(unittest.TestCase):
         )
         self.assertEqual(snapshot.messages, tuple((m["role"], m["content"]) for m in live))
         self.assertEqual(live[0]["content"], rules.upgrade_generated_prompt(previous))
-        self.assertEqual(live[-2]["content"], rules.ANSWER_LENGTH_RULE)
+        self.assertIn({"role": "system", "content": rules.ANSWER_LENGTH_RULE}, live)
         self.assertIn("ответ — 400", snapshot.context)
         self.assertEqual(cfg["AI_PROMPT"], previous)
 

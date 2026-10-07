@@ -20,6 +20,7 @@ import urllib.request
 import uuid
 
 from ai_client import clean_text, redact_secret
+from privacy import unsafe_question
 from local_context import LocalBundle, LocalResultError
 from participation import (DEFAULT_AUTONOMOUS_PROMPT, Decision, PARTICIPATION, RequestCancelled, check_basis, parse_decision,
                            repeats, request_decision, still_relevant)
@@ -146,6 +147,8 @@ class ChatBuffer:
         if not re.fullmatch(r"[a-z0-9_]{1,25}", author) or author == bot_name.casefold() or tags.get("custom-reward-id"):
             return False
         text = " ".join(text.split())
+        if unsafe_question(text):
+            return False
         if (not text or len(text) > 500 or text.startswith(("!", "/", "."))
                 or any(ord(c) < 32 for c in text) or not any(c.isalnum() for c in text)
                 or re.search(r"(.)\1{7,}", text, re.IGNORECASE)

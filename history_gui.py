@@ -16,6 +16,7 @@ STATUS_NAMES = {
     "sent": "Отправлено", "preview": "Предпросмотр", "silent": "Решение: молчать",
     "skipped": "Не отправлено", "cancelled": "Отменено", "error": "Ошибка",
     "send_error": "Ошибка отправки · доставка не подтверждена",
+    "rejected": "Отказ",
 }
 REASONS = {"answer": "Ответ на вопрос", "reaction": "Реакция", "joke": "Шутка", "question": "Уточнение",
            "no_reason": "Нет повода для участия", "offtopic": "Вне темы канала",
@@ -81,7 +82,7 @@ class HistoryPage(QWidget):
             self.kind.addItem(title, value)
         self.status = NoWheelComboBox()
         for title, value in (("Все статусы", ""), ("Отправлено", "sent"), ("Предпросмотр", "preview"),
-                             ("Не отправлено", "not_sent"), ("Молчание", "silent"), ("Ошибки", "errors")):
+                             ("Не отправлено", "not_sent"), ("Молчание", "silent"), ("Ошибки", "errors"), ("Отказы", "rejected")):
             self.status.addItem(title, value)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Поиск по вопросам, ответам и логинам")
