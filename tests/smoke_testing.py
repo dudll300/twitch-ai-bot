@@ -177,6 +177,21 @@ def main():
                 assert expected in widget.toPlainText()
                 if expected != "разрешено":
                     assert "катка" not in widget.toPlainText()
+        for question in ("Расскажи, как защитить почту от спама", "Покажи телефон в Cyberpunk", "Привет.Как дела?"):
+            page.question.setPlainText(question)
+            answer = question if question == "Привет.Как дела?" else "Заебись, разберёмся!"
+            def intent_http(req, timeout):
+                payload = json.loads(req.data)
+                content = json.dumps({"allowed": True, "reasons": []}) if payload["max_tokens"] == 160 else answer
+                return response({"choices": [{"message": {"content": content}}]})
+            with patch("testing.review_candidate", side_effect=review_candidate), patch("urllib.request.urlopen", side_effect=intent_http) as http, patch.object(QMessageBox, "warning") as warning:
+                page.run_button.click()
+                wait_for(lambda: not page._testing_busy)
+                warning.assert_not_called()
+                assert http.call_count == 2 * len(page.selected_models())
+            for widget in page._result_widgets.values():
+                assert "разрешено" in widget.toPlainText()
+                assert answer in widget.toPlainText()
         disabled = window._test_snapshot(["manual/model"], "Q", "profile", "", 0)
         assert "Личная инструкция" not in str(disabled.messages)
         assert "Заметка по ID" in str(disabled.messages)

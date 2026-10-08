@@ -49,14 +49,25 @@ class SafetyBlocked(ValueError):
         super().__init__("Проверка безопасности: " + ", ".join(review.reasons or (review.status,)))
 
 
+# Cyrillic root-zone suffixes, checked against IANA on 2026-10-08:
+# https://data.iana.org/TLD/tlds-alpha-by-domain.txt
+# A local snapshot, never DNS/network lookup. ASCII and punycode rules retain
+# their existing broad detection; arbitrary Cyrillic sentence words are not TLDs.
+_CYRILLIC_TLDS = frozenset("москва қаз католик онлайн сайт срб бг бел дети мкд ею ком укр мон рус рф".split())
+_DOMAIN = re.compile(r"(?<![\w])(?:[^\W_][\w-]{0,62}\.)+(?:[a-zA-Z\u0400-\u04ff]{2,63}|xn--[a-z0-9-]+)(?!\w)", re.I)
+
+
 def has_link(text):
     value = _normalized(text)
     value = re.sub(r"\s*(?:\[\.\]|\(\.\)|\{\.\})\s*", ".", value)
     value = re.sub(r"(?i)\s+(?:\[dot\]|\(dot\)|точка)\s+", ".", value)
     if re.search(r"(?i)\b(?:https?|hxxps?|ftp|mailto|tg|discord)\s*[:：]|\bwww\s*[.\[]|\]\s*\(", value):
         return True
-    # Require an alphabetic TLD. Dots in 1.2.3 or an ordinary sentence are safe.
-    return bool(re.search(r"(?<![\w])(?:[^\W_][\w-]{0,62}\.)+(?:[a-zA-Z\u0400-\u04ff]{2,63}|xn--[a-z0-9-]+)(?!\w)", value))
+    for domain in _DOMAIN.finditer(value):
+        suffix = domain.group().rsplit(".", 1)[1].casefold()
+        if suffix.isascii() or suffix in _CYRILLIC_TLDS:
+            return True
+    return False
 
 
 def local_review(text, *, limit=450, target=""):

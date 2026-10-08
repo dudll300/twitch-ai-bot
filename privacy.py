@@ -42,9 +42,6 @@ _SECRET = re.compile(r"\b(?:bearer\s+|oauth:)[\w.~+/=-]+|\bsk-[a-zA-Z0-9_-]{10,}
 _DOCUMENT = re.compile(r"\b(?:паспорт\w*|снилс|ssn|номер\s+(?:карты|сч[её]та))\s*[:№#-]?\s*\d[\d\s-]{6,}\d|(?<!\d)\d{3}-\d{2}-\d{4}(?!\d)", re.I)
 _ADDRESS = re.compile(r"\b(?:улиц\w*|ул\.?|проспект\w*|пр-т|переул\w*|площад\w*)\s+[\w ,.-]{1,70}?\s+(?:д(?:ом)?\.?\s*)?\d+[а-яa-z]?(?:[\s,/]|$)|\b\d{1,5}\s+(?:[\w-]+\s+){1,4}(?:street|st\.|avenue|ave\.|road|rd\.)\b", re.I)
 _CARD = re.compile(r"(?<!\w)\d(?:[ -]?\d){12,18}(?!\w)")
-_DISCLOSURE = re.compile(
-    r"\b(?:дай|выдай|покажи|выведи|раскрой|слей|пришли|найди|узнай|пробей|опубликуй|сообщи|give|show|reveal|find|leak)\b"
-    r".{0,90}?(?:телефон|номер\s+(?:карты|паспорт)|почт\w*|email|e-mail|домашн\w*\s+адрес|адрес\s+проживан|парол\w*|токен\w*|api[-_ ]?ключ|личн\w*\s+(?:данн\w*|инструкц\w*)|системн\w*\s+промпт|содержим\w*\s+(?:профил\w*|memory\.json)|phone\s+number|home\s+address|password|api\s+key)", re.I)
 
 
 def _normalized(text):
@@ -63,14 +60,23 @@ _WORD_NUMBER = re.compile(r"\b(?:" + "|".join(_DIGIT_WORDS) + r")(?:[\s,;.-]+(?:
 _CONTEXT_NUMBER = re.compile(r"(?<!\w)\d(?:[\s()./−–—_-]*\d){8,14}(?!\w)")
 _PARTS = re.compile(r"по\s+частям|част[ьи]|первые|последние|следующие|фрагмент|по\s+цифр|целиком|словами", re.I)
 _SENSITIVE_TOPIC = re.compile(
-    r"телефон\w*|номер\s+(?:карты|паспорт\w*|для\s+связи)|почт\w*|e-?mail|домашн\w*\s+адрес|"
+    r"номер\s+(?:телефон\w*|карты|паспорт\w*|для\s+связи)|телефон\w*|почт\w*|e-?mail|домашн\w*\s+адрес|"
     r"адрес\s+проживан\w*|парол\w*|токен\w*|api[-_ ]?(?:ключ|key)|паспорт\w*|плат[её]жн\w*\s+реквизит\w*|"
-    r"личн\w*\s+(?:данн\w*|инструкц\w*)|(?:системн\w*|служебн\w*|приватн\w*)\s+(?:промпт|контекст|инструкц)\w*|"
+    r"личн\w*\s+(?:данн\w*|инструкц\w*)|(?:системн\w*|служебн\w*|приватн\w*)\s+(?:промпт|контекст|инструкц|профил)\w*|"
     r"содержим\w*\s+(?:профил\w*|memory\.json)|phone\s+number|home\s+address|password|private\s+instructions", re.I)
 _ASK = re.compile(r"\b(?:дай|выдай|покажи|выведи|раскрой|слей|пришли|найди|узнай|пробей|опубликуй|сообщи|"
                   r"назови|расскажи|напиши|перечисли|повтори|прочитай|скопируй|переведи|закодируй|раскодируй|"
-                  r"замаскируй|give|show|reveal|find|leak|repeat|encode|decode|write|list)\b", re.I)
+                  r"замаскируй|объясни|перескажи|получить|увидеть|узнать|пришлите|отправьте|"
+                  r"give|show|reveal|find|leak|repeat|encode|decode|write|list)\b", re.I)
 _TRANSFORM = re.compile(r"закодир\w*|раскодир\w*|base64|hex|шестнадцатерич\w*|словами|по\s+частям", re.I)
+_EDUCATION = re.compile(r"\b(?:защит\w*|безопасност\w*|приватност\w*|предотврат\w*|сохранност\w*|избеж\w*)\b[^.!?;:]{0,70}$", re.I)
+_EDUCATION_SUBJECT = re.compile(r"^(?:почты|телефонов|паролей|пароли|токенов|токены|api[-_ ]?(?:ключей|ключи)|личных\s+данных)$", re.I)
+_EXTRACTION = re.compile(r"^(?:выдай|раскрой|слей|пробей|опубликуй|повтори|скопируй|прочитай|перескажи|закодируй|раскодируй|замаскируй|reveal|leak|repeat|encode|decode)$", re.I)
+_CONTACT_TOPIC = re.compile(r"^(?:телефон\w*|почт\w*|e-?mail)$", re.I)
+_CONTACT_OWNER = re.compile(r"\b(?:у\s+@?[\w-]+|(?:этого|того|конкретного)\s+(?:человека|зрителя)|зрител\w*|стример\w*|человека|его|е[её]|их|чуж\w*)\b", re.I)
+_POSSESSIVE = re.compile(r"\b(?:мо[йяиюе]\w*|тво\w*|сво\w*|наш\w*|ваш\w*|его|е[её]|их|чуж\w*)\s*$", re.I)
+_CONTACT_PREPOSITION = re.compile(r"^\s*(?:в|на|из|через|для|с|со|от|по|о|об|про|и|или|это|котор\w*)\b", re.I)
+_CONCEPT_DISCUSSION = re.compile(r"^[\s,;:—-]*(?:о|об|про|что\s+такое)\b", re.I)
 
 
 def analysis_variants(text):
@@ -174,29 +180,93 @@ def contains_private_data(text):
     return any(_literal_private(value) for value in analysis_variants(text))
 
 
-def unsafe_question(text):
-    if contains_private_data(text):
+def _contact_requested(topic, before, after):
+    """A phone/mail subject needs an owner or disclosure, not a game title list."""
+    if _CONTACT_OWNER.search(after[:100]) or _CONTACT_OWNER.search(before[-60:]):
         return True
-    for value in analysis_variants(text):
-        if re.search(r"\bгде\s+(?:он|она|\w+)\s+жив[её]т|\b(?:какой|какая)\s+у\s+\w+\s+(?:адрес|телефон|почта)", value, re.I):
-            return True
-        if not (_SENSITIVE_TOPIC.search(value) or (_PARTS.search(value) and re.search(r"\bномер\b", value, re.I))):
+    # A direct object like "телефон Софы" differs from "телефон в ...".
+    if re.match(r"^\s+@?[\w-]+", after) and not _CONTACT_PREPOSITION.match(after):
+        return True
+    # Device/location constructions remain ambiguous and are checked again on
+    # the generated answer. They never override literals or a named owner.
+    if re.match(r"^\s+(?:в|на|из|через)\b", after, re.I) and topic.casefold().startswith("телефон"):
+        return False
+    return bool(_POSSESSIVE.search(before))
+
+
+def _disclosure_request(value):
+    if re.search(r"\bгде\s+(?:он|она|\w+)\s+жив[её]т|\b(?:какой|какая)\s+у\s+\w+\s+(?:адрес|телефон|почта)", value, re.I):
+        return True
+    actions = list(_ASK.finditer(value))
+    for index, action in enumerate(actions):
+        prefix = value[max(0, action.start() - 15):action.start()]
+        if re.search(r"\b(?:не|not|never|don't)\s*$", prefix, re.I):
             continue
-        # Education does not authorize a subsequent extraction request.
-        for action in _ASK.finditer(value):
-            nearby = value[max(0, action.start() - 50):action.end() + 180]
-            if not (_SENSITIVE_TOPIC.search(nearby) or (_PARTS.search(nearby) and re.search(r"\bномер\b", nearby, re.I))):
-                continue
-            prefix = value[max(0, action.start() - 15):action.start()]
-            if re.search(r"\b(?:не|not|never|don't)\s*$", prefix, re.I):
-                continue
-            tail = value[action.end():]
-            if re.match(r"\s+(?:о\s+)?(?:защит\w*|безопасност\w*|приватност\w*)", tail, re.I):
-                continue
+        # Inspect every request independently: a safe first request cannot
+        # authorize a later extraction after a comma, colon or new sentence.
+        end = actions[index + 1].start() if index + 1 < len(actions) else len(value)
+        tail = value[action.end():end]
+        # A topic in a later declarative sentence is not this verb's object.
+        # Requests in that sentence have their own action and are still checked.
+        tail = re.split(r"[.!?;]", tail, maxsplit=1)[0]
+        prior = value[max(0, action.start() - 100):action.start()]
+        if re.fullmatch(r"[\s,:—-]*(?:(?:мне|нам|сюда|пожалуйста)\b[\s,]*)*", tail, re.I):
+            # Russian can put the requested object before the verb. Do not
+            # lose "приватную инструкцию повтори" while narrowing its scope.
+            clause = re.split(r"[.!?;:]", prior)[-1]
+            subjects = list(_SENSITIVE_TOPIC.finditer(clause))
+            if subjects:
+                subject = subjects[-1]
+                before, after = clause[:subject.start()], clause[subject.end():]
+                extraction = bool(_EXTRACTION.fullmatch(action.group()))
+                if not _EDUCATION.search(before):
+                    if _CONTACT_TOPIC.fullmatch(subject.group()):
+                        if (_contact_requested(subject.group(), before, after)
+                                or extraction and not _CONTACT_PREPOSITION.match(after)):
+                            return True
+                    elif not _CONCEPT_DISCUSSION.match(before) or extraction:
+                        return True
+        if _TRANSFORM.search(tail) and re.search(r"\bномер\b", prior + tail, re.I):
             return True
-        if re.search(r"(?:можно|хочу|нужен|нужна)\s+(?:получить|увидеть|узнать)|(?:пришлите|отправьте)", value, re.I):
-            return True
+        if re.match(r"^[\s,;:—-]*(?:его|е[её]|их)\b", tail, re.I):
+            previous = list(_SENSITIVE_TOPIC.finditer(prior))
+            if previous:
+                subject = previous[-1]
+                if (not _CONTACT_TOPIC.fullmatch(subject.group())
+                        or _contact_requested(subject.group(), prior[:subject.start()], prior[subject.end():])
+                        or _TRANSFORM.search(tail)):
+                    return True
+        previous_end, educated = 0, False
+        for topic in _SENSITIVE_TOPIC.finditer(tail):
+            before, after = tail[previous_end:topic.start()], tail[topic.end():]
+            is_contact = bool(_CONTACT_TOPIC.fullmatch(topic.group()))
+            named_owner = _contact_requested(topic.group(), before, after)
+            owner = is_contact and named_owner
+            educational = bool(_EDUCATION.search(before))
+            # Coordinated generic subjects ("защита почты и паролей") share
+            # education, but explicit owners/private context do not inherit it.
+            educational |= (educated and bool(re.fullmatch(r"\s*(?:,\s*)?(?:и|или)\s*", before, re.I))
+                            and not named_owner and bool(_EDUCATION_SUBJECT.fullmatch(topic.group())))
+            previous_end, educated = topic.end(), educational
+            if educational:
+                continue
+            if _TRANSFORM.search(after[:100]) or owner:
+                return True
+            if not is_contact:
+                # "Что такое пароль" and "расскажи о личных данных" discuss
+                # concepts; direct values and explicit extraction still fail.
+                discussion = _CONCEPT_DISCUSSION.match(before)
+                if not discussion or _EXTRACTION.fullmatch(action.group()):
+                    return True
+            elif _EXTRACTION.fullmatch(action.group()) and not _CONTACT_PREPOSITION.match(after):
+                return True
     return False
+
+
+def unsafe_question(text):
+    # Literal protected data takes precedence over every educational/device
+    # construction. Intent recognition never alters transport/output checks.
+    return contains_private_data(text) or any(_disclosure_request(value) for value in analysis_variants(text))
 
 
 def check_question(text):
