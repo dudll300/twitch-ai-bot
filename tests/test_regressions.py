@@ -1,3 +1,4 @@
+from safety_fakes import stub_reviews
 import asyncio
 import io
 import json
@@ -15,6 +16,9 @@ import twitch_auth
 
 
 class RegressionTests(unittest.TestCase):
+    def setUp(self):
+        stub_reviews(self)
+
     def values(self):
         return {**configuration.DEFAULTS, "TWITCH_CHANNEL": "streamer",
                 "TWITCH_BOT_NAME": "helper", "TWITCH_CLIENT_ID": "client",
@@ -91,7 +95,8 @@ class RegressionTests(unittest.TestCase):
         response = io.BytesIO(json.dumps({"choices": [{"message": {"content": "\u0000"}}]}).encode())
         cfg = {**self.values(), "AI_CHAT_URL": "https://example.com/chat/completions"}
         with patch.object(bot.urllib.request, "urlopen", return_value=response):
-            with self.assertRaises(bot.TemporaryAIError):
+            from safety import SafetyBlocked
+            with self.assertRaises(SafetyBlocked):
                 bot.call_ai(cfg, "viewer", "question")
 
     def test_custom_reward_and_deduplication(self):

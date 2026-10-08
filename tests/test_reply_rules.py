@@ -104,20 +104,24 @@ class ReplyRulesTests(unittest.TestCase):
             async def send(_writer, line):
                 sent.append(line)
             instance.send = send
-            await instance.say(None, "@" + "a" * 25 + " " + answer)
+            from safety import SafetyReview
+            final = "@" + "a" * 25 + " " + answer
+            await instance.say(None, final, approval=SafetyReview("allowed", final))
             self.assertEqual(sent, ["PRIVMSG #channel :@" + "a" * 25 + " " + "Я" * 400])
             self.assertEqual(len(sent[0].partition(" :")[2]), 427)
         asyncio.run(scenario())
 
-    def test_short_reply_is_not_padded_and_overlong_output_is_redacted_first(self):
+    def test_short_reply_is_not_padded_and_secret_output_is_rejected_whole(self):
         cfg = {"AI_API_KEY": "secret-test-key", "AI_CHAT_URL": "https://example.com/v1/chat/completions"}
-        for raw, expected in (("Кратко.\nПо делу.", "Кратко. По делу."),
-                              ("x" * 392 + cfg["AI_API_KEY"], "x" * 392 + "[ключ ск")):
+        for raw, expected in (("Кратко.\nПо делу.", "Кратко. По делу."), ("x" * 700, "x" * 400)):
             response = io.BytesIO(json.dumps({"choices": [{"message": {"content": raw}}]}).encode())
             with patch.object(ai_client.urllib.request, "urlopen", return_value=response):
                 answer = ai_client.send_messages(cfg, "model", [])
             self.assertEqual(answer, expected)
             self.assertNotIn(cfg["AI_API_KEY"], answer)
+        response = io.BytesIO(json.dumps({"choices": [{"message": {"content": "x" * 500 + cfg["AI_API_KEY"]}}]}).encode())
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response), self.assertRaises(ai_client.PrivacyViolation):
+            ai_client.send_messages(cfg, "model", [])
 
 
 if __name__ == "__main__":

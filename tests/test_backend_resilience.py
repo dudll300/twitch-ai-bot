@@ -1,3 +1,4 @@
+from safety_fakes import stub_reviews
 """Failure-path checks without Twitch accounts or paid API calls."""
 
 import asyncio
@@ -25,6 +26,9 @@ def response(content):
 
 
 class BackendResilienceTests(unittest.TestCase):
+    def setUp(self):
+        stub_reviews(self)
+
     def test_interrupted_ai_response_uses_backup_without_logging_partial_body(self):
         for failure in (http.client.IncompleteRead(b"sk-private-test", 20),
                         ConnectionResetError("sk-private-test"),
@@ -83,7 +87,9 @@ class BackendResilienceTests(unittest.TestCase):
         dirty = "Hello\x01ACTION\x00world\x7f\x9b\r\nfriend"
         self.assertEqual(ai_client.clean_question(dirty), "Hello ACTION world friend")
         with patch.object(ai_client.urllib.request, "urlopen", return_value=response(dirty)):
-            self.assertEqual(ai_client.call_ai(CFG, "viewer", "Question"), "Hello ACTION world friend")
+            from safety import SafetyBlocked
+            with self.assertRaises(SafetyBlocked):
+                ai_client.call_ai(CFG, "viewer", "Question")
 
     def test_primary_repeated_as_backup_never_enters_cooldown(self):
         router = bot.AIModelRouter()
@@ -103,7 +109,7 @@ class BackendResilienceTests(unittest.TestCase):
                 def ask(self, *args):
                     return "OK"
             instance.ai_router = Router()
-            async def say(*args):
+            async def say(*args, **kwargs):
                 pass
             instance.say = say
             queue = asyncio.Queue()
@@ -114,7 +120,7 @@ class BackendResilienceTests(unittest.TestCase):
                     await asyncio.wait_for(queue.join(), 2)
                 self.assertEqual(set(instance.histories), {"1", "3"})
                 self.assertEqual(len(instance.histories["1"]), 2)
-                async def failed_send(*args):
+                async def failed_send(*args, **kwargs):
                     raise ConnectionResetError()
                 instance.say = failed_send
                 queue.put_nowait(("viewer4", "4", "Unsent", "4"))

@@ -1,3 +1,5 @@
+from safety import SafetyReview
+from safety_fakes import stub_reviews
 """Publication and recovery integration; no real Twitch or AI calls."""
 
 import asyncio
@@ -33,6 +35,7 @@ class FakeExecutor:
 
 class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        stub_reviews(self)
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -57,12 +60,12 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.writer.drain = AsyncMock()
 
     async def test_reward_and_autonomous_share_only_successful_creative_usage(self):
-        await self.bot.say(self.writer, "@viewer Полоса!", local_bundle=self.bundle, creative_card_id="loss")
+        await self.bot.say(self.writer, "@viewer Полоса!", approval=SafetyReview("allowed", "@viewer Полоса!"), local_bundle=self.bundle, creative_card_id="loss")
         used = json.loads(self.manager.usage_path.read_text(encoding="utf-8"))
         self.assertEqual(used, {"version": 1, "uses": [{"card_id": "loss", "time": self.now}]})
         self.bot.last_sent = 0
         reserve = Mock()
-        self.assertFalse(await self.bot.say_autonomous(self.writer, "Полоса!", lambda: True, reserve,
+        self.assertFalse(await self.bot.say_autonomous(self.writer, "Полоса!", lambda: True, reserve, approval=SafetyReview("allowed", "Полоса!"),
                                                        local_bundle=self.bundle, creative_card_id="loss"))
         reserve.assert_not_called()
         current = self.manager.bundle(self.manager.snapshot(), "Что значит полоса неудач?")
@@ -75,11 +78,11 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 self.writer.drain.side_effect = failure
                 self.bot.last_sent = 0
                 with self.assertRaises(type(failure)):
-                    await self.bot.say(self.writer, "Полоса!", local_bundle=self.bundle, creative_card_id="loss")
+                    await self.bot.say(self.writer, "Полоса!", approval=SafetyReview("allowed", "Полоса!"), local_bundle=self.bundle, creative_card_id="loss")
                 self.assertFalse(self.manager.usage_path.exists())
                 self.assertTrue(self.manager.is_allowed(self.bundle, "loss"))
                 with self.assertRaises(type(failure)):
-                    await self.bot.say_autonomous(self.writer, "Полоса!", lambda: True, Mock(),
+                    await self.bot.say_autonomous(self.writer, "Полоса!", lambda: True, Mock(), approval=SafetyReview("allowed", "Полоса!"),
                                                  local_bundle=self.bundle, creative_card_id="loss")
                 self.assertFalse(self.manager.usage_path.exists())
                 self.assertTrue(self.manager.is_allowed(self.bundle, "loss"))
@@ -87,7 +90,7 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_autonomous_reservation_failure_does_not_consume_local_usage(self):
         with self.assertRaises(OSError):
             await self.bot.say_autonomous(self.writer, "Полоса!", lambda: True,
-                Mock(side_effect=OSError("quota")), local_bundle=self.bundle, creative_card_id="loss")
+                Mock(side_effect=OSError("quota")), approval=SafetyReview("allowed", "Полоса!"), local_bundle=self.bundle, creative_card_id="loss")
         self.writer.write.assert_not_called()
         self.assertFalse(self.manager.usage_path.exists())
         self.assertTrue(self.manager.is_allowed(self.bundle, "loss"))
@@ -98,10 +101,10 @@ class ContextIntegrationTests(unittest.IsolatedAsyncioTestCase):
             entered.set()
             await release.wait()
         self.writer.drain.side_effect = slow_drain
-        first = asyncio.create_task(self.bot.say(self.writer, "Полоса!", local_bundle=self.bundle,
+        first = asyncio.create_task(self.bot.say(self.writer, "Полоса!", approval=SafetyReview("allowed", "Полоса!"), local_bundle=self.bundle,
                                                   creative_card_id="loss"))
         await entered.wait()
-        self.assertFalse(await self.bot.say_autonomous(self.writer, "Полоса!", lambda: True, Mock(),
+        self.assertFalse(await self.bot.say_autonomous(self.writer, "Полоса!", lambda: True, Mock(), approval=SafetyReview("allowed", "Полоса!"),
                                                        local_bundle=self.bundle, creative_card_id="loss"))
         release.set()
         await first

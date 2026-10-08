@@ -13,6 +13,7 @@ from memory import context_for, viewer_for
 from profiles import profile_for
 from viewer_recognition import related_context
 from privacy import protected_messages, unsafe_question
+from safety import check_candidate_source
 
 
 REPLY_REASONS = {"answer", "reaction", "joke", "question"}
@@ -98,6 +99,7 @@ def parse_decision(content, max_chars):
         if text or target or basis or reason not in SILENT_REASONS:
             raise ValueError("Для silent нужны пустые text, target и basis и допустимая причина.")
         return Decision(action, reason=reason)
+    check_candidate_source(text)
     text = text.strip()
     if (not text or any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in text)
             or text.startswith(("/", ".", "!", "@")) or re.search(r"https?://|www\.", text, re.IGNORECASE)):

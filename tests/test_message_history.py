@@ -1,3 +1,4 @@
+from safety_fakes import stub_reviews
 import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
@@ -108,6 +109,7 @@ class StorageTests(unittest.TestCase):
 
 class RewardHistoryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        stub_reviews(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.instance = bot.Bot.__new__(bot.Bot)
@@ -161,11 +163,12 @@ class RewardHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("попробуй позже", rows[0]["sent_text"])
         self.assertEqual(self.instance.histories, {})
 
-    async def test_cancelled_worker_retains_late_generation_without_sending_it(self):
-        started, release = Event(), Event()
+    async def test_cancelled_worker_does_not_retain_unreviewed_late_generation(self):
+        started, release, finished = Event(), Event(), Event()
         def reply(*args, **kwargs):
             started.set()
             release.wait(2)
+            finished.set()
             return "Late answer"
         queue = asyncio.Queue()
         queue.put_nowait(("viewer", "123", "Question", "redemption"))
@@ -175,13 +178,15 @@ class RewardHistoryTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             release.set()
+            await asyncio.to_thread(finished.wait, 2)
+            # Join the history callback before removing its temporary database.
             for _ in range(100):
                 rows = self.instance.history.page()["rows"]
-                if rows and rows[0]["answer"] == "Late answer":
+                if rows and rows[0]["status"] == "cancelled" and rows[0]["model"] == "primary":
                     break
                 await asyncio.sleep(.01)
         self.assertEqual(rows[0]["status"], "cancelled")
-        self.assertEqual(rows[0]["answer"], "Late answer")
+        self.assertEqual(rows[0]["answer"], "")
         self.instance.say.assert_not_awaited()
 
     async def test_regeneration_retains_both_candidates_and_only_one_sent_answer(self):
@@ -215,6 +220,7 @@ class Executor:
 
 class AutonomousHistoryTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        stub_reviews(self)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.now = 10000.
@@ -226,7 +232,7 @@ class AutonomousHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.controller = autonomous.Autonomous(cfg, self.root, clock=lambda: self.now,
             monotonic_clock=lambda: self.now, choose_delay=lambda a, b: a, history_store=self.store, emit=Mock())
         self.controller.executor = Executor()
-        async def sender(text, valid, reserve):
+        async def sender(text, valid, reserve, **kwargs):
             if not valid():
                 return False
             reserve()
@@ -296,15 +302,15 @@ class AutonomousHistoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(row["context"])
         self.sender.assert_not_awaited()
 
-    async def test_cancelled_generated_reply_keeps_text_and_context_but_is_not_sent(self):
+    async def test_cancelled_generated_reply_drops_unreviewed_text_and_context(self):
         await self.generate({"action": "reply", "conversation": [3], "basis": [3], "target": "viewer3",
                              "reason": "answer", "intent": "Help"}, "Dodge the attack.")
         self.controller.interrupt()
         await self.controller.tick()
         row = self.store.detail(self.store.page()["rows"][0]["id"])
         self.assertEqual(row["status"], "skipped")
-        self.assertIn("Dodge", row["answer"])
-        self.assertEqual(len(row["context"]["conversation"]), 1)
+        self.assertEqual(row["answer"], "")
+        self.assertIsNone(row["context"])
         self.sender.assert_not_awaited()
 
     async def test_successful_publication_is_recorded_after_sender_returns(self):
@@ -328,8 +334,8 @@ class AutonomousHistoryTests(unittest.IsolatedAsyncioTestCase):
         row = self.store.detail(self.store.page()["rows"][0]["id"])
         self.assertEqual(row["status"], "error")
         self.assertEqual(row["sent_text"], "")
-        self.assertIn("Dodge", row["answer"])
-        self.assertEqual(len(row["context"]["conversation"]), 1)
+        self.assertEqual(row["answer"], "")
+        self.assertIsNone(row["context"])
 
     async def test_logging_error_does_not_change_preview_or_ai_request_count(self):
         with patch("message_history.sqlite3.connect", side_effect=OSError("Disk full")):

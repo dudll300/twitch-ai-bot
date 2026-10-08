@@ -11,7 +11,8 @@ from configuration import SYSTEM_PROMPT
 from local_context import LocalReply, LocalResultError
 from memory import context_for
 from reply_rules import ANSWER_LENGTH_RULE, ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
-from privacy import check_output, check_question, protected_messages, safe_history_text
+from privacy import PrivacyViolation, check_output, check_question, protected_messages, safe_history_text
+from safety import SafetyBlocked, check_candidate_source
 
 AI_REQUEST_TIMEOUT_SECONDS = 20
 
@@ -109,6 +110,7 @@ def is_local_service_output(content):
 def _plain_local_reply(content, api_key, bundle=None):
     if is_local_service_output(content) or redact_secret(content, api_key) != content:
         raise LocalResultError("Некорректный обычный ответ после локального контекста; результат отклонён.")
+    check_candidate_source(content)
     answer = clean_text(content, ANSWER_MAX_CHARS)
     if not answer:
         raise LocalResultError("AI вернул пустой ответ с локальным контекстом.")
@@ -132,6 +134,8 @@ def parse_local_reply(content, bundle, *, api_key="", max_chars=ANSWER_MAX_CHARS
         text, card_id = result["text"], result["creative_card_id"]
         if not isinstance(text, str) or (card_id is not None and not isinstance(card_id, str)):
             raise ValueError("Недопустимые типы")
+        if text.strip():
+            check_candidate_source(text)
         if is_local_service_output(text):
             raise ValueError("Служебные метаданные внутри текста")
         if card_id is not None:
@@ -149,6 +153,8 @@ def parse_local_reply(content, bundle, *, api_key="", max_chars=ANSWER_MAX_CHARS
             text = clean_text(text, max_chars)
             if not text:
                 raise ValueError("Пустая реплика")
+    except (SafetyBlocked, PrivacyViolation):
+        raise
     except (ValueError, TypeError, AttributeError, RecursionError):
         raise LocalResultError(error) from None
     return LocalReply(text, bundle, card_id)
@@ -248,7 +254,9 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
 
 
 def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
-    answer = clean_text(redact_secret(request_completion(cfg, model, messages), cfg["AI_API_KEY"]), ANSWER_MAX_CHARS)
+    content = request_completion(cfg, model, messages)
+    check_candidate_source(content)
+    answer = clean_text(redact_secret(content, cfg["AI_API_KEY"]), ANSWER_MAX_CHARS)
     if not answer:
         raise TemporaryAIError("AI API вернул пустой ответ")
     return answer
@@ -307,6 +315,8 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
     if not isinstance(answer, str) or not answer.strip():
         raise TemporaryAIError("AI API вернул пустой ответ")
     check_output(answer)
+    if redact_secret(answer, cfg["AI_API_KEY"]) != answer:
+        raise PrivacyViolation()
     if reject_truncated and choice.get("finish_reason") == "length":
         raise TruncatedAIError("AI API обрезал результат. Повторите генерацию с более короткими пожеланиями.")
     return answer

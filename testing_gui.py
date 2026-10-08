@@ -24,7 +24,7 @@ def comparison_worker(snapshot, pending, output, cancel):
             return
         if cancel.is_set():
             return
-        result = test_model(snapshot, model)
+        result = test_model(snapshot, model, cancelled=cancel.is_set)
         if not cancel.is_set():
             output.put(("result", result))
 
@@ -362,7 +362,8 @@ class TestingPage(QWidget):
                 result = event[1]
                 self._result_widgets[result.model].setPlainText(
                     f"{result.model} · {result.seconds:.2f} с\n" +
-                    ("Ошибка: " + result.error if result.error else result.answer))
+                    ("Ошибка: " + result.error if result.error else
+                     "Проверка безопасности: разрешено\n" + result.answer))
                 self._remaining -= 1
                 self.status.setText(f"Ожидаем ответы: {self._remaining}." if self._remaining else "Тест завершён.")
                 if not self._remaining:

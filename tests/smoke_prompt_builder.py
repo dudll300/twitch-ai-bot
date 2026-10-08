@@ -37,6 +37,8 @@ def wait_for(predicate):
 
 
 def main():
+    from safety_fakes import approved
+    patch("testing.review_candidate", side_effect=approved).start()
     app = QApplication.instance() or QApplication([])
     main_thread = get_ident()
     with tempfile.TemporaryDirectory() as directory:

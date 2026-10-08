@@ -1,3 +1,4 @@
+from safety_fakes import stub_reviews
 import asyncio
 from concurrent.futures import Future
 from dataclasses import asdict, replace
@@ -41,6 +42,7 @@ class FakeExecutor:
 
 class AutoTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        stub_reviews(self)
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.now = 10000.0
@@ -53,7 +55,7 @@ class AutoTests(unittest.IsolatedAsyncioTestCase):
             clock=lambda: self.now, choose_delay=lambda low, high: low, emit=self.events.append)
         self.executor = FakeExecutor()
         self.controller.executor = self.executor
-        async def sender(text, valid, reserve):
+        async def sender(text, valid, reserve, **kwargs):
             if not valid():
                 return False
             reserve()
@@ -190,7 +192,7 @@ class AutoTests(unittest.IsolatedAsyncioTestCase):
         self.configure(mode="publish")
         self.chat()
         await self.start_check()
-        async def change_settings_before_send(text, valid, reserve):
+        async def change_settings_before_send(text, valid, reserve, **kwargs):
             auto.save_settings(self.root / "autonomous.json", replace(self.settings, enabled=False))
             self.assertFalse(valid())
             return False
@@ -594,6 +596,9 @@ class AutoProtocolTests(unittest.TestCase):
 
 
 class PriorityTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        stub_reviews(self)
+
     async def test_background_send_reserves_once_and_respects_send_gap(self):
         instance = bot.Bot.__new__(bot.Bot)
         instance.cfg = {"TWITCH_CHANNEL": "channel"}
@@ -603,7 +608,8 @@ class PriorityTests(unittest.IsolatedAsyncioTestCase):
         writer.drain = AsyncMock()
         reserve = Mock()
         with patch.object(bot.time, "monotonic", return_value=100):
-            self.assertTrue(await instance.say_autonomous(writer, "Hello", lambda: True, reserve))
+            from safety import SafetyReview
+            self.assertTrue(await instance.say_autonomous(writer, "Hello", lambda: True, reserve, approval=SafetyReview("allowed", "Hello")))
             self.assertFalse(await instance.say_autonomous(writer, "Again", lambda: True, reserve))
         reserve.assert_called_once_with()
         writer.write.assert_called_once_with(b"PRIVMSG #channel :Hello\r\n")
@@ -635,7 +641,8 @@ class PriorityTests(unittest.IsolatedAsyncioTestCase):
             queue.put_nowait(("viewer", "123", "Вопрос", "reward"))
             task = asyncio.create_task(instance.worker(None, queue))
             await asyncio.wait_for(queue.join(), 1)
-            instance.say.assert_awaited_once_with(None, "@viewer Платный ответ")
+            self.assertEqual(instance.say.await_args.args, (None, "@viewer Платный ответ"))
+            self.assertTrue(instance.say.await_args.kwargs["approval"].allowed)
             self.assertFalse(future.done())
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

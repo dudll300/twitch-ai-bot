@@ -64,7 +64,7 @@ class MessageHistory:
             return safe_history_text(re.sub(r"(?i)\b(?:bearer\s+|oauth:)[a-z0-9._~+/=-]+",
                           "[токен скрыт]", value))
         if isinstance(value, dict):
-            return {key: "[секрет скрыт]" if str(key).casefold() in SECRET_FIELDS
+            return {safe_history_text(str(key)): "[секрет скрыт]" if str(key).casefold() in SECRET_FIELDS
                     else self.redact(item) for key, item in value.items()}
         if isinstance(value, (tuple, list)):
             return [self.redact(item) for item in value]
@@ -143,7 +143,8 @@ class MessageHistory:
             stored_context = row["context"]
             if context is not None:
                 stored_context = json.dumps(self.redact(context), ensure_ascii=False, allow_nan=False)
-            if new_status == "silent" or merged["action"] == "silent":
+            if (new_status in ("silent", "rejected") or merged["action"] == "silent"
+                    or values.get("reason") == "moderation_cancelled"):
                 stored_context = None
             connection.execute(
                 "UPDATE records SET status=?, updated=?, "

@@ -1,3 +1,4 @@
+from safety_fakes import stub_reviews
 import io
 import json
 import tempfile
@@ -27,6 +28,7 @@ def card(login="viewer", user_id="", fact="Карточка по логину"):
 
 class TestingTests(unittest.TestCase):
     def setUp(self):
+        stub_reviews(self)
         self.auth = testing.credentials("https://ai.starimg.ru/v1", "secret-test-key")
         self.memory = {"streamer": {"facts": ["Заметка о канале"], "jokes": []},
                        "viewers": [card(), card("old_login", "123", "Карточка по ID")]}

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 import ssl
 import time
 # Kept as a shared module reference for existing network test hooks.
@@ -20,7 +21,10 @@ from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
 from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
-from privacy import PRIVACY_REFUSAL, PrivacyViolation, check_question, safe_history_text, unsafe_question
+from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, check_question, safe_history_text, unsafe_question
+from irc import moderation_event
+from safety import (SAFETY_REFUSAL, SafetyBlocked, SafetyReview, check_candidate_source,
+                    review_candidate, validate_publication)
 from viewer_recognition import related_context
 from paths import data_dir
 from rewards import RewardListener
@@ -32,6 +36,9 @@ AI_PRIMARY_FAILURE_LIMIT = 3
 AI_PRIMARY_COOLDOWN_SECONDS = 5 * 60
 MAX_QUEUED_QUESTIONS = 10
 MAX_HISTORY_VIEWERS = 1000
+SERVICE_NOTICES = frozenset({PRIVACY_REFUSAL, REWARD_BLOCKED_REFUSAL, SAFETY_REFUSAL,
+    "сейчас не получается ответить, попробуй позже.",
+    "очередь переполнена, сообщи владельцу канала о возврате баллов."})
 
 
 def config() -> dict[str, str]:
@@ -143,10 +150,12 @@ class Bot:
         self.local_context = LocalContextManager(ROOT, emit=self.local_event)
         self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"), self.local_context)
         self.histories: dict[str, deque[tuple[str, str]]] = {}
+        self.fragments = FragmentGuard()
         self.history = MessageHistory(ROOT, secrets=(cfg.get("AI_API_KEY", ""),))
         self._paid_busy = False
         self.autonomous = Autonomous(cfg, ROOT, profiles=self.ai_router.profiles, memory_data=self.memory,
-                                     local_manager=self.local_context, history_store=self.history)
+                                     local_manager=self.local_context, history_store=self.history,
+                                     fragment_guard=self.fragments)
         self.seen_redemptions: set[str] = set()
         self.recent_redemptions: deque[str] = deque()
 
@@ -161,18 +170,24 @@ class Bot:
         print("Локальный контекст: " + clean_text(redact_secret(text, self.cfg.get("AI_API_KEY", "")), 300), flush=True)
 
     async def say(self, writer: asyncio.StreamWriter, message: str, *,
-                  local_bundle=None, creative_card_id=None) -> None:
+                  local_bundle=None, creative_card_id=None, approval=None) -> None:
+        target_match = re.match(r"^@([a-z0-9_]{1,25}) ", message)
+        target = target_match[1] if target_match else ""
+        body = message[len(target) + 2:] if target else message
+        if approval is None and body in SERVICE_NOTICES:
+            approval = SafetyReview("allowed", message)
         async with self._say_lock:
             wait = 1.6 - (time.monotonic() - self.last_sent)
             if wait > 0:
                 await asyncio.sleep(wait)
+            validate_publication(message, approval, limit=CHAT_MAX_CHARS, target=target)
             lease = None
             if creative_card_id is not None:
                 lease = self.local_context.reserve_publish(local_bundle, creative_card_id)
                 if lease is None:
                     raise LocalResultError("Локальная отсылка отменена: карточки или лимиты изменились.")
             try:
-                await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{clean_text(message, CHAT_MAX_CHARS)}")
+                await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}")
             except BaseException:
                 if lease is not None:
                     self.local_context.complete_publish(lease, success=False)
@@ -182,11 +197,13 @@ class Bot:
             self.last_sent = time.monotonic()
 
     async def say_autonomous(self, writer, message, valid, reserve, *,
-                             local_bundle=None, creative_card_id=None):
+                             local_bundle=None, creative_card_id=None, approval=None):
         # Never hold the paid-send lock or wait for a paid request / rate-limit slot.
         # No await between the last guard and write: a redemption cannot interleave.
         if not valid() or self._say_lock.locked() or time.monotonic() - self.last_sent < 1.6:
             return False
+        target_match = re.match(r"^@([a-z0-9_]{1,25}) ", message)
+        validate_publication(message, approval, target=target_match[1] if target_match else "")
         lease = None
         if creative_card_id is not None:
             lease = self.local_context.reserve_publish(local_bundle, creative_card_id)
@@ -223,7 +240,8 @@ class Bot:
             profiles = []
         if reward_is_blocked(profiles, user, user_id):
             return REWARD_BLOCKED_REFUSAL, "Запросы через награду запрещены для зрителя."
-        if unsafe_question(question):
+        fragments = getattr(self, "fragments", None)
+        if unsafe_question(question) or (fragments is not None and fragments.check(question, user_id, "reward-input")):
             return PRIVACY_REFUSAL, "Защита личных данных."
         return None
 
@@ -259,7 +277,7 @@ class Bot:
                 observed = False
                 def generated(answer, model):
                     nonlocal observed
-                    self.history.update(record_id, "generated", answer=str(answer), model=model)
+                    self.history.update(record_id, "generated", model=model)
                     observed = True
                 async def ask(*, allow_creative=True):
                     nonlocal observed
@@ -270,18 +288,35 @@ class Bot:
                     result = await asyncio.to_thread(
                         self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history, **kwargs)
                     if not observed:
-                        await self.history_update(record_id, "generated", answer=str(result),
+                        await self.history_update(record_id, "generated",
                             model=getattr(self.ai_router, "last_model", "") or self.cfg.get("AI_MODEL", ""))
                     return result
                 key = user_id or user.casefold()
                 history = tuple(self.histories.get(key, ()))
+                fragments = getattr(self, "fragments", None)
+                if fragments is not None:
+                    fragments.check(question, user_id, "reward-input", remember=True)
+                async def approve(answer):
+                    check_candidate_source(str(answer))
+                    text = clean_text(f"@{user} {str(answer)}", CHAT_MAX_CHARS)
+                    if fragments is not None and fragments.check(str(answer), user_id, "public-replies"):
+                        raise SafetyBlocked(SafetyReview("blocked", "", ("privacy_blocked",)))
+                    model = getattr(self.ai_router, "last_model", "")
+                    model = model if isinstance(model, str) and model else self.cfg.get("AI_MODEL", "")
+                    review = await asyncio.to_thread(review_candidate, self.cfg, model, text,
+                        target=user, context=question, limit=CHAT_MAX_CHARS)
+                    if not review.allowed:
+                        raise SafetyBlocked(review)
+                    await self.history_update(record_id, "generated", answer=str(answer), model=model)
+                    return text, review
                 answer = await ask()
                 try:
+                    text, approval = await approve(answer)
                     if isinstance(answer, LocalReply) and answer.creative_card_id is not None:
-                        await self.say(writer, f"@{user} {str(answer)}", local_bundle=answer.local_bundle,
+                        await self.say(writer, text, approval=approval, local_bundle=answer.local_bundle,
                                        creative_card_id=answer.creative_card_id)
                     else:
-                        await self.say(writer, f"@{user} {str(answer)}")
+                        await self.say(writer, text, approval=approval)
                 except LocalResultError:
                     print("Локальный контекст: отсылка устарела; готовлю обычный ответ на награду.", flush=True)
                     await self.history_update(record_id, "skipped", reason="Локальная отсылка отменена перед отправкой.")
@@ -289,10 +324,13 @@ class Bot:
                     answer = await ask(allow_creative=False)
                     if is_local_service_output(answer):
                         raise LocalResultError("Некорректный обычный ответ после отмены локальной отсылки.")
-                    await self.say(writer, f"@{user} {str(answer)}")
+                    text, approval = await approve(answer)
+                    await self.say(writer, text, approval=approval)
                 answer = str(answer)
+                if fragments is not None:
+                    fragments.check(answer, user_id, "public-replies", remember=True)
                 await self.history_update(record_id, "sent", sent_text=clean_text(f"@{user} {answer}", CHAT_MAX_CHARS))
-                self.autonomous.remember_reply(answer, target=user, source="reward", question=question)
+                self.autonomous.remember_reply(answer, target=user, source="reward", question=question, user_id=user_id)
                 # Refresh insertion order only after a successful publication.
                 pairs = self.histories.pop(key, deque(maxlen=10))
                 pairs.append((question, answer))
@@ -307,6 +345,11 @@ class Bot:
             except PrivacyViolation:
                 await self.refuse(writer, user, user_id, question, PRIVACY_REFUSAL,
                                   "Запрос или ответ отклонён защитой личных данных.", record_id)
+            except SafetyBlocked as exc:
+                reason = ",".join(exc.review.reasons)
+                await self.history_update(record_id, "rejected", answer="", context=None, reason=reason)
+                print("Проверка безопасности: " + reason, flush=True)
+                await self.refuse(writer, user, user_id, question, SAFETY_REFUSAL, reason, record_id)
             except Exception as exc:
                 await self.history_update(record_id, "error", reason=str(exc))
                 safe_error = redact_secret(str(exc), self.cfg.get("AI_API_KEY", ""))
@@ -385,8 +428,17 @@ class Bot:
                         return
                     elif command == "NOTICE" and "Login authentication failed" in line:
                         raise RuntimeError("Twitch отклонил OAuth-токен")
-                    elif command == "PRIVMSG":
+                    elif command in ("PRIVMSG", "CLEARMSG", "CLEARCHAT"):
                         self.autonomous.receive(line)
+                        event = moderation_event(line, self.cfg["TWITCH_CHANNEL"])
+                        if event is not None:
+                            self.fragments.clear(event.user_id or None)
+                            # Reward history is also a source of AI context, even
+                            # when autonomous participation is disabled.
+                            if event.kind == "all":
+                                self.histories.clear()
+                            elif event.kind == "user":
+                                self.histories.pop(event.user_id or event.login, None)
                     elif command == "NOTICE":
                         print("Twitch: " + line.split(" :", 1)[-1], flush=True)
 
@@ -396,6 +448,8 @@ class Bot:
                 task.result()
         finally:
             self.autonomous.disconnect()
+            self.fragments.clear()
+            self.histories.clear()
             if autonomous_task is not None:
                 autonomous_task.cancel()
             worker.cancel()

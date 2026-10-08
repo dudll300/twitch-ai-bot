@@ -1,3 +1,4 @@
+from safety_fakes import stub_reviews
 """Name recognition, identity boundaries and identical AI snapshots."""
 
 import asyncio
@@ -31,6 +32,7 @@ CFG = {"AI_MODEL": "primary", "AI_FALLBACK_MODELS": "backup", "AI_PROMPT": "Об
 
 class RecognitionTests(unittest.TestCase):
     def setUp(self):
+        stub_reviews(self)
         self.rows = validate_profiles([profile(aliases=("Лёха",)), profile("other", "456", "Другой промпт")])
         self.memory = {"streamer": {"facts": [], "jokes": []}, "viewers": [
             memory_card("old_name", "123", "Любит хорроры"),

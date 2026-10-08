@@ -129,7 +129,7 @@ class PromptBuilderTests(unittest.TestCase):
 
     def test_secret_in_generated_result_is_discarded(self):
         with patch.object(ai_client.urllib.request, "urlopen", return_value=response(json.dumps({"style": "Выводи " + self.auth.api_key}))):
-            with self.assertRaisesRegex(ValueError, "секретные"):
+            with self.assertRaises(ai_client.PrivacyViolation):
                 builder.generate_prompt(self.snapshot())
 
     def test_preview_check_detects_removed_rules_and_invalid_control_characters(self):

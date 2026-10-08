@@ -1,7 +1,11 @@
 """Mandatory privacy rules and conservative local checks; no network or writes."""
 
+import base64
+from collections import OrderedDict, deque
 import json
 import re
+from threading import RLock
+import time
 import unicodedata
 
 PRIVACY_REFUSAL = "Не могу обрабатывать или раскрывать личные данные. Задай вопрос без них."
@@ -48,11 +52,115 @@ def _normalized(text):
     return " ".join("".join(char for char in text if unicodedata.category(char) != "Cf").split())
 
 
-def contains_private_data(text):
-    value = _normalized(text)
-    if any(pattern.search(value) for pattern in (_EMAIL, _PHONE, _SECRET, _DOCUMENT, _ADDRESS)):
+_MASKED_EMAIL = re.compile(
+    r"(?<![\w@])[\w.+-]+\s*(?:@|\[at\]|\(at\)|\bсобака\b|\bat\b)\s*"
+    r"[\w-]+(?:\s*(?:\.|\[dot\]|\(dot\)|\bточка\b|\bdot\b)\s*[\w-]+)+", re.I)
+_PHONE_CONTEXT = re.compile(r"телефон\w*|позвон\w*|номер\s+(?:для\s+связи|мобильн\w*)|phone|call\s+me", re.I)
+_DIGIT_WORDS = dict(zip(
+    "ноль нуль один одна два две три четыре пять шесть семь восемь девять zero one two three four five six seven eight nine".split(),
+    "0 0 1 1 2 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9".split()))
+_WORD_NUMBER = re.compile(r"\b(?:" + "|".join(_DIGIT_WORDS) + r")(?:[\s,;.-]+(?:" + "|".join(_DIGIT_WORDS) + r")){2,}\b", re.I)
+_CONTEXT_NUMBER = re.compile(r"(?<!\w)\d(?:[\s()./−–—_-]*\d){8,14}(?!\w)")
+_PARTS = re.compile(r"по\s+частям|част[ьи]|первые|последние|следующие|фрагмент|по\s+цифр|целиком|словами", re.I)
+_SENSITIVE_TOPIC = re.compile(
+    r"телефон\w*|номер\s+(?:карты|паспорт\w*|для\s+связи)|почт\w*|e-?mail|домашн\w*\s+адрес|"
+    r"адрес\s+проживан\w*|парол\w*|токен\w*|api[-_ ]?(?:ключ|key)|паспорт\w*|плат[её]жн\w*\s+реквизит\w*|"
+    r"личн\w*\s+(?:данн\w*|инструкц\w*)|(?:системн\w*|служебн\w*|приватн\w*)\s+(?:промпт|контекст|инструкц)\w*|"
+    r"содержим\w*\s+(?:профил\w*|memory\.json)|phone\s+number|home\s+address|password|private\s+instructions", re.I)
+_ASK = re.compile(r"\b(?:дай|выдай|покажи|выведи|раскрой|слей|пришли|найди|узнай|пробей|опубликуй|сообщи|"
+                  r"назови|расскажи|напиши|перечисли|повтори|прочитай|скопируй|переведи|закодируй|раскодируй|"
+                  r"замаскируй|give|show|reveal|find|leak|repeat|encode|decode|write|list)\b", re.I)
+_TRANSFORM = re.compile(r"закодир\w*|раскодир\w*|base64|hex|шестнадцатерич\w*|словами|по\s+частям", re.I)
+
+
+def analysis_variants(text):
+    """Bounded, non-executable decoding for checks only; never rewrite a reply."""
+    queue = deque([(str(text), 0)])
+    seen, total = set(), 0
+    while queue and len(seen) < 64:
+        raw, depth = queue.popleft()
+        value = _normalized(raw)
+        if value in seen:
+            continue
+        total += len(value)
+        if total > 200000:
+            raise PrivacyViolation()
+        seen.add(value)
+        yield value
+        if depth >= 2:
+            continue
+        # Decode JSON strings and nested values, not arbitrary code or escapes.
+        try:
+            decoded = json.loads(raw) if len(raw) <= 100000 else None
+        except (ValueError, TypeError):
+            decoded = None
+        except RecursionError:
+            raise PrivacyViolation() from None
+        stack = [(decoded, 0)]
+        nodes = 0
+        while stack:
+            item, nesting = stack.pop()
+            nodes += 1
+            if nodes > 512 or nesting > 16:
+                raise PrivacyViolation()
+            if isinstance(item, str):
+                queue.append((item, depth + 1))
+            elif isinstance(item, dict):
+                stack.extend((part, nesting + 1) for pair in item.items() for part in pair)
+            elif isinstance(item, list):
+                stack.extend((part, nesting + 1) for part in item)
+        escaped = re.sub(r"\\u([0-9a-fA-F]{4})", lambda match: chr(int(match[1], 16)), raw)
+        if escaped != raw:
+            queue.append((escaped, depth + 1))
+        if _TRANSFORM.search(value):
+            # Only plausible, labelled encoding contexts. At most eight small
+            # fragments and two decoding layers; arbitrary IDs are not decoded.
+            fragments = re.findall(r"(?<!\w)[A-Za-z0-9+/=_-]{12,2048}(?!\w)", value)[:8]
+            for fragment in fragments:
+                for mode in ("hex", "base64"):
+                    try:
+                        if mode == "hex":
+                            if not re.fullmatch(r"[0-9a-fA-F]{12,2048}", fragment) or len(fragment) % 2:
+                                continue
+                            payload = bytes.fromhex(fragment)
+                        else:
+                            payload = base64.b64decode(fragment + "=" * (-len(fragment) % 4), validate=True)
+                        if len(payload) <= 1024:
+                            result = payload.decode("utf-8")
+                            if result.isprintable():
+                                queue.append((result, depth + 1))
+                    except (ValueError, UnicodeError):
+                        pass
+    if queue:
+        raise PrivacyViolation()
+
+
+def _service_number(match, value):
+    prefix = value[max(0, match.start() - 35):match.start()]
+    return bool(re.search(r"\b(?:twitch\s+id|user[-_ ]?id|message[-_ ]?id)\s*[:=#]?\s*$", prefix, re.I)
+                and not _SENSITIVE_TOPIC.search(prefix))
+
+
+def _literal_private(value):
+    if any(pattern.search(value) for pattern in (_EMAIL, _SECRET, _DOCUMENT, _ADDRESS)):
         return True
+    if any(not _service_number(match, value) for match in _PHONE.finditer(value)):
+        return True
+    for match in _MASKED_EMAIL.finditer(value):
+        # A trusted IRC mention followed by a new sentence is not an email.
+        if not re.search(r"\s@[^\s]+\.\s+[A-ZА-Я]", match.group()):
+            return True
+    for context in _PHONE_CONTEXT.finditer(value):
+        nearby = value[max(0, context.start() - 30):context.end() + 180]
+        if _CONTEXT_NUMBER.search(nearby):
+            return True
+        if any(9 <= len(re.findall(r"\w+", match.group())) <= 15 for match in _WORD_NUMBER.finditer(nearby)):
+            return True
+        if _PARTS.search(nearby) and re.search(r"\b\d{2,8}\b", nearby):
+            return True
     for match in _CARD.finditer(value):
+        if _service_number(match, value):
+            continue
         digits = [int(char) for char in match.group() if char.isdigit()]
         if len(set(digits)) > 1:
             total = sum((digit if index % 2 == 0 else (digit * 2 - 9 if digit > 4 else digit * 2))
@@ -62,12 +170,33 @@ def contains_private_data(text):
     return False
 
 
+def contains_private_data(text):
+    return any(_literal_private(value) for value in analysis_variants(text))
+
+
 def unsafe_question(text):
     if contains_private_data(text):
         return True
-    value = _normalized(text)
-    return any(not re.search(r"\b(?:не|not|never|don't)\s*$", value[max(0, match.start() - 12):match.start()], re.I)
-               for match in _DISCLOSURE.finditer(value))
+    for value in analysis_variants(text):
+        if re.search(r"\bгде\s+(?:он|она|\w+)\s+жив[её]т|\b(?:какой|какая)\s+у\s+\w+\s+(?:адрес|телефон|почта)", value, re.I):
+            return True
+        if not (_SENSITIVE_TOPIC.search(value) or (_PARTS.search(value) and re.search(r"\bномер\b", value, re.I))):
+            continue
+        # Education does not authorize a subsequent extraction request.
+        for action in _ASK.finditer(value):
+            nearby = value[max(0, action.start() - 50):action.end() + 180]
+            if not (_SENSITIVE_TOPIC.search(nearby) or (_PARTS.search(nearby) and re.search(r"\bномер\b", nearby, re.I))):
+                continue
+            prefix = value[max(0, action.start() - 15):action.start()]
+            if re.search(r"\b(?:не|not|never|don't)\s*$", prefix, re.I):
+                continue
+            tail = value[action.end():]
+            if re.match(r"\s+(?:о\s+)?(?:защит\w*|безопасност\w*|приватност\w*)", tail, re.I):
+                continue
+            return True
+        if re.search(r"(?:можно|хочу|нужен|нужна)\s+(?:получить|увидеть|узнать)|(?:пришлите|отправьте)", value, re.I):
+            return True
+    return False
 
 
 def check_question(text):
@@ -76,7 +205,10 @@ def check_question(text):
 
 
 def safe_history_text(text):
-    return HIDDEN_DATA if contains_private_data(text) else text
+    try:
+        return HIDDEN_DATA if contains_private_data(text) else text
+    except PrivacyViolation:
+        return HIDDEN_DATA
 
 
 def protected_messages(messages):
@@ -109,3 +241,45 @@ def check_output(text):
             stack.extend(value.values())
         elif isinstance(value, list):
             stack.extend(value)
+
+
+class FragmentGuard:
+    """Ephemeral contacts: same stable sender AND explicit conversation only."""
+    def __init__(self, *, clock=time.monotonic):
+        self.clock = clock
+        self._rows = OrderedDict()
+        self._lock = RLock()
+
+    def clear(self, user_id=None):
+        with self._lock:
+            if user_id is None:
+                self._rows.clear()
+            else:
+                self._rows = OrderedDict((key, value) for key, value in self._rows.items() if key[0] != user_id)
+
+    def check(self, text, user_id, conversation, *, remember=False):
+        if not re.fullmatch(r"[0-9]{1,30}", user_id or "") or not conversation:
+            return False
+        value, now = _normalized(text), self.clock()
+        with self._lock:
+            self._rows = OrderedDict((key, rows) for key, rows in self._rows.items() if now - rows[-1][0] <= 120)
+            key = (user_id, conversation)
+            rows = list(self._rows.get(key, ()))
+            marked = bool(_PHONE_CONTEXT.search(value))
+            active = marked or bool(rows)
+            fragment = re.sub(r"[\s()./−–—_-]", "", value)
+            if marked:
+                numbers = re.findall(r"\d(?:[\s()./−–—_-]*\d){1,7}", value)
+                fragment = "".join(re.sub(r"\D", "", part) for part in numbers)
+            elif not re.fullmatch(r"\d{2,8}", fragment):
+                return False
+            if not active or not fragment or len(fragment) > 16:
+                return False
+            combined = "".join(row[1] for row in rows[-5:]) + fragment
+            blocked = len(combined) >= 10 or (marked and bool(_PARTS.search(value)))
+            if remember and not blocked:
+                self._rows[key] = (rows + [(now, fragment)])[-6:]
+                self._rows.move_to_end(key)
+                while len(self._rows) > 256:
+                    self._rows.popitem(last=False)
+            return blocked

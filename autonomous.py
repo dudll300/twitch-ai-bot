@@ -1,7 +1,7 @@
 """Low-priority, bounded chat participation with live local settings."""
 
 import asyncio
-from collections import deque
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -20,7 +20,9 @@ import urllib.request
 import uuid
 
 from ai_client import clean_text, redact_secret
-from privacy import unsafe_question
+from privacy import FragmentGuard, PrivacyViolation, unsafe_question
+from irc import moderation_event
+from safety import SafetyBlocked, SafetyReview, review_candidate, validate_publication
 from local_context import LocalBundle, LocalResultError
 from participation import (DEFAULT_AUTONOMOUS_PROMPT, Decision, PARTICIPATION, RequestCancelled, check_basis, parse_decision,
                            repeats, request_decision, still_relevant)
@@ -122,10 +124,47 @@ class ChatBuffer:
         self.messages = deque()
         self.sequence = 0
         self.seen = deque(maxlen=1000)
+        self.deleted = OrderedDict()
+        self.cutoffs = OrderedDict()
+        self.fragments = FragmentGuard()
 
     def clear(self):
         self.messages.clear()
         self.seen.clear()
+        self.fragments.clear()
+
+    def reset_session(self):
+        self.clear()
+        self.deleted.clear()
+        self.cutoffs.clear()
+
+    def moderate(self, event, now):
+        removed = [row for row in self.messages if event.affects(row)]
+        if event.kind in ("all", "uncertain"):
+            self.seen.clear()
+        else:
+            removed_ids = {row.get("message_id") for row in removed}
+            self.seen = deque((row for row in self.seen if row[2] not in removed_ids), maxlen=1000)
+        self.messages = deque(row for row in self.messages if not event.affects(row))
+        ids = {row["message_id"] for row in removed if row.get("message_id")}
+        if event.message_id:
+            ids.add(event.message_id)
+        for identity in ids:
+            self.deleted[identity] = now
+            self.deleted.move_to_end(identity)
+        while len(self.deleted) > 1000:
+            self.deleted.popitem(last=False)
+        if event.timestamp and event.kind in ("user", "all"):
+            key = ("id", event.user_id) if event.user_id else ("login", event.login) if event.login else ("all", "")
+            self.cutoffs[key] = (now, max(event.timestamp, self.cutoffs.get(key, (now, 0))[1]))
+            self.cutoffs.move_to_end(key)
+            while len(self.cutoffs) > 256:
+                self.cutoffs.popitem(last=False)
+        if event.user_id:
+            self.fragments.clear(event.user_id)
+        else:
+            self.fragments.clear()
+        return removed
 
     def fresh(self, now, settings):
         while self.messages and now - self.messages[0]["time"] > settings.freshness_seconds:
@@ -135,6 +174,8 @@ class ChatBuffer:
         return list(self.messages)
 
     def add_irc(self, line, channel, bot_name, now, settings):
+        self.deleted = OrderedDict((key, at) for key, at in self.deleted.items() if now - at <= 300)
+        self.cutoffs = OrderedDict((key, row) for key, row in self.cutoffs.items() if now - row[0] <= 300)
         tags = {}
         if line.startswith("@"):
             tag_text, _, line = line.partition(" ")
@@ -146,9 +187,21 @@ class ChatBuffer:
         author = parts[0].lstrip(":").split("!", 1)[0].casefold()
         if not re.fullmatch(r"[a-z0-9_]{1,25}", author) or author == bot_name.casefold() or tags.get("custom-reward-id"):
             return False
-        text = " ".join(text.split())
         if unsafe_question(text):
             return False
+        uid = tags.get("user-id", "")
+        mid = tags.get("id", "")
+        if mid and mid in self.deleted:
+            return False
+        sent = tags.get("tmi-sent-ts", "")
+        if re.fullmatch(r"[0-9]{1,16}", sent):
+            for key in (("all", ""), ("id", uid), ("login", author)):
+                if key in self.cutoffs and int(sent) <= self.cutoffs[key][1]:
+                    return False
+        conversation = tags.get("reply-thread-parent-msg-id") or tags.get("reply-parent-msg-id") or "sender"
+        if self.fragments.check(text, uid, conversation, remember=True):
+            return False
+        text = " ".join(text.split())
         if (not text or len(text) > 500 or text.startswith(("!", "/", "."))
                 or any(ord(c) < 32 for c in text) or not any(c.isalnum() for c in text)
                 or re.search(r"(.)\1{7,}", text, re.IGNORECASE)
@@ -214,7 +267,7 @@ class Autonomous:
     def __init__(self, cfg, root, *, profiles=None, memory_data=None,
                  clock=time.time, monotonic_clock=time.monotonic,
                  choose_delay=random.uniform, request=request_decision, emit=None, local_manager=None,
-                 history_store=None):
+                 history_store=None, fragment_guard=None):
         self.cfg, self.root = cfg, root
         self.clock, self.choose_delay, self.request = clock, choose_delay, request
         self.monotonic_clock = monotonic_clock
@@ -222,6 +275,7 @@ class Autonomous:
         self.emit = emit or self._print_event
         self.local_manager = local_manager
         self.history_store = history_store
+        self.output_fragments = fragment_guard or FragmentGuard()
         self.local_revision = local_manager.snapshot().revision if local_manager is not None else None
         self.settings = AutoSettings()
         # HTTP reservations and publication share one atomic quota file.
@@ -235,6 +289,8 @@ class Autonomous:
         self.batch_started = None
         self.last_message_at = 0
         self.pending = None
+        self.reviewing = None
+        self.moderation_generation = -1
         self.executor = None
         self.sender = None
         self.paid_busy = lambda: False
@@ -299,8 +355,9 @@ class Autonomous:
     def interrupt(self):
         with self._state_lock:
             self.generation += 1
-            if self.pending is not None and self.pending.cancel is not None:
-                self.pending.cancel.set()
+            for pending in (self.pending, self.reviewing):
+                if pending is not None and pending.cancel is not None:
+                    pending.cancel.set()
             # A reward or settings change closes the old opportunity, even if
             # a later chat batch still contains its original messages.
             self.consume(row["sequence"] for row in self.buffer.messages)
@@ -312,19 +369,51 @@ class Autonomous:
         self.sender, self.paid_busy = sender, paid_busy
         self.connected = True
         self.interrupt()
-        self.buffer.clear()
+        self.buffer.reset_session()
         self.next_check = self.clock()
 
     @state_locked
     def disconnect(self):
         self.connected = False
         self.interrupt()
-        self.buffer.clear()
+        self.buffer.reset_session()
         self.recent_replies.clear()
         self.recent_candidates.clear()
+        self.output_fragments.clear()
+        self.reviewing = None
 
     def receive(self, line):
         with self._state_lock:
+            event = moderation_event(line, self.cfg["TWITCH_CHANNEL"])
+            if event is not None and self.connected:
+                removed = self.buffer.moderate(event, self.clock())
+                self.output_fragments.clear(event.user_id or None)
+                active = self.pending or self.reviewing
+                affected = active is not None and any(event.affects(row) for row in active.messages)
+                if affected or event.kind in ("all", "uncertain"):
+                    if active is not None and active.cancel is not None:
+                        active.cancel.set()
+                    self.moderation_generation = active.generation if active is not None else self.generation
+                    self.generation += 1
+                removed_sequences = {row["sequence"] for row in removed}
+                self.recent_replies = deque((row for row in self.recent_replies
+                    if not removed_sequences.intersection(row.get("basis", ()))
+                    and not any(event.affects(source) for source in row.get("source_rows", ()))
+                    and not (event.user_id and row.get("user_id") == event.user_id)
+                    and not (event.login and row["target"] == event.login)), maxlen=10)
+                if event.kind in ("all", "uncertain") or affected:
+                    self.recent_replies.clear()
+                # Candidate history and the old publication fingerprint can
+                # otherwise bring a removed discussion back into a later prompt.
+                if removed or affected or event.kind in ("all", "uncertain"):
+                    self.recent_candidates.clear()
+                    self.last_text = ""
+                if event.kind == "all":
+                    self.recent_replies.clear()
+                    self.batch_started = None
+                    self.last_checked = self.buffer.sequence
+                self.event("skipped", reason="moderation_cancelled")
+                return
             if self.connected and self.settings.enabled:
                 now = self.clock()
                 if self.buffer.add_irc(line, self.cfg["TWITCH_CHANNEL"], self.cfg["TWITCH_BOT_NAME"], now, self.settings):
@@ -333,12 +422,13 @@ class Autonomous:
                     self.last_message_at = now
 
     @state_locked
-    def remember_reply(self, text, *, target="", source="autonomous", question="", basis=()):
+    def remember_reply(self, text, *, target="", source="autonomous", question="", basis=(), user_id="", source_rows=()):
         if not self.connected or not self.settings.enabled:
             return
         self.recent_replies.append({"time": self.clock(), "text": clean_text(
             redact_secret(text, self.cfg.get("AI_API_KEY", "")), 450), "target": target, "source": source,
-            "question": clean_text(redact_secret(question, self.cfg.get("AI_API_KEY", "")), 400), "basis": tuple(basis)})
+            "question": clean_text(redact_secret(question, self.cfg.get("AI_API_KEY", "")), 400), "basis": tuple(basis),
+            "user_id": user_id, "source_rows": tuple({key: row.get(key, "") for key in ("message_id", "user_id", "author")} for row in source_rows)})
 
     def eligible(self, *, new_context=True):
         with self._state_lock:
@@ -419,14 +509,15 @@ class Autonomous:
             # Injectable request implementations may omit the observer. Keep
             # only their explicit anchors, never attach the entire chat batch.
             context = None
-            if decision is not None and decision.action != "silent":
+            if (status not in ("rejected", "skipped", "cancelled") and reason != "moderation_cancelled"
+                    and decision is not None and decision.action != "silent"):
                 context = {"conversation": [dict(row) for row in pending.messages
                             if row["sequence"] in decision.basis], "basis": list(decision.basis)}
             record_id = await asyncio.to_thread(self.history_store.add, "autonomous",
                 "silent" if decision is not None and decision.action == "silent" else "generated" if decision else status,
                 channel=self.cfg.get("TWITCH_CHANNEL", ""), model=self.cfg.get("AI_MODEL", ""),
                 mode=self.settings.mode, viewer=decision.target if decision else "",
-                action=decision.action if decision else "", answer=decision.reply if decision and decision.action != "silent" else "",
+                action=decision.action if decision else "", answer=decision.reply if context is not None else "",
                 reason=decision.reason if decision else reason, context=context)
             if ref is not None:
                 ref[0] = record_id
@@ -435,6 +526,13 @@ class Autonomous:
             # when its request was cancelled before the controller consumed it.
             detail_status = "silent" if decision is not None and decision.action == "silent" else status
             fields = {"sent_text": sent_text}
+            if status in ("rejected", "skipped", "cancelled"):
+                fields["answer"] = ""
+                fields["context"] = None
+            elif decision is not None and decision.action != "silent":
+                fields["answer"] = decision.reply
+                if ref is not None and len(ref) > 1:
+                    fields["context"] = ref[1]
             if reason:
                 fields["reason"] = reason
             await asyncio.to_thread(self.history_store.update, record_id, detail_status, **fields)
@@ -445,6 +543,7 @@ class Autonomous:
         if self.pending is not None and self.pending.future.done():
             pending = self.pending
             self.pending = None
+            self.reviewing = pending
             def current():
                 self.refresh()
                 return (pending.generation == self.generation and self.eligible(new_context=False)
@@ -452,7 +551,7 @@ class Autonomous:
                         and (pending.window is None or pending.window.remaining(self.clock(), self.monotonic_clock()) > 0)
                         and self.clock() - pending.started_at <= self.settings.reply_ttl_seconds)
             if not current():
-                await self.finish_history(pending, "skipped", reason="Результат отменён: настройки, очередь наград или срок актуальности изменились.")
+                await self.finish_history(pending, "skipped", reason="moderation_cancelled" if pending.generation == self.moderation_generation else "Результат отменён: настройки, очередь наград или срок актуальности изменились.")
                 self.event("error" if self.quota_error else "skipped", reason=(
                     "Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
                     if self.quota_error else
@@ -481,6 +580,21 @@ class Autonomous:
                                 and still_relevant(decision, pending.messages,
                                     self.buffer.fresh(self.clock(), self.settings), pending.new_ids, self.clock(), self.settings))
                     text = decision.reply
+                    approval = None
+                    if decision.action != "silent" and valid():
+                        addressed = next((row for row in pending.messages if row["sequence"] in decision.basis
+                                          and (not decision.target or row["author"] == decision.target)), {})
+                        target_id = addressed.get("user_id", "")
+                        if self.output_fragments.check(decision.text, target_id, "public-replies"):
+                            raise SafetyBlocked(SafetyReview("blocked", "", ("privacy_blocked",)))
+                        scene = "\n".join(row["text"] for row in pending.messages if row["sequence"] in decision.basis)
+                        approval = await asyncio.to_thread(review_candidate, self.cfg, self.cfg.get("AI_MODEL", ""), text,
+                            kind="autonomous", target=decision.target, context=scene, limit=min(self.settings.max_chars, 450),
+                            before_request=lambda: self.before_request(pending.generation, pending.cancel, pending.window, pending.local_snapshot),
+                            cancelled=lambda: not current())
+                        if not approval.allowed:
+                            raise SafetyBlocked(approval)
+                        validate_publication(text, approval, limit=min(self.settings.max_chars, 450), target=decision.target)
                     previous = [row[1] for row in self.recent_candidates if self.clock() - row[0] < 3600]
                     previous += [row["text"] for row in self.recent_replies if self.clock() - row["time"] < 3600]
                     if self.last_text:
@@ -495,22 +609,36 @@ class Autonomous:
                         await self.finish_history(pending, "skipped", decision=decision, reason="Повтор недавней реплики или вопроса.")
                         self.event("skipped", reason="Повтор недавней реплики или вопроса.")
                     elif self.settings.mode == "preview":
-                        self.reserve(text, decision.basis)
                         await self.finish_history(pending, "preview", decision=decision)
-                        self.event("preview", text, decision.reason,
-                                   reason=("Творческая карточка в предпросмотре: " + redact_secret(
-                                       creative_card_id, self.cfg.get("AI_API_KEY", ""))) if creative_card_id else "",
-                                   target=decision.target, basis=decision.basis)
+                        if not valid():
+                            await self.finish_history(pending, "skipped", reason="moderation_cancelled" if pending.generation == self.moderation_generation else "Повод устарел.")
+                            self.event("skipped", reason="Реплика отменена до предпросмотра.")
+                        else:
+                            self.reserve(text, decision.basis)
+                            self.event("preview", text, decision.reason,
+                                       reason=("Творческая карточка в предпросмотре: " + redact_secret(
+                                           creative_card_id, self.cfg.get("AI_API_KEY", ""))) if creative_card_id else "",
+                                       target=decision.target, basis=decision.basis)
                     else:
                         kwargs = {"local_bundle": local_bundle, "creative_card_id": creative_card_id} if creative_card_id is not None else {}
+                        kwargs["approval"] = approval
                         sent = await self.sender(text, valid, lambda: self.reserve(text, decision.basis), **kwargs)
-                        if sent:
-                            self.remember_reply(text, target=decision.target, basis=decision.basis)
+                        if (sent and pending.generation == self.generation and self.connected
+                                and (pending.cancel is None or not pending.cancel.is_set())):
+                            self.output_fragments.check(decision.text, target_id, "public-replies", remember=True)
+                            self.remember_reply(text, target=decision.target, basis=decision.basis,
+                                                user_id=target_id, source_rows=pending.messages)
+                        final_reason = ("moderation_cancelled" if pending.generation == self.moderation_generation else
+                                        "" if sent else "Реплика уступила приоритет или была отменена.")
                         await self.finish_history(pending, "sent" if sent else "skipped", decision=decision,
-                            sent_text=text if sent else "", reason="" if sent else "Реплика уступила приоритет или была отменена.")
+                            sent_text=text if sent else "", reason=final_reason)
                         self.event("published" if sent else "skipped", text if sent else "", decision.reason,
-                                   "" if sent else "Реплика уступила приоритет или была отменена.",
+                                   final_reason,
                                    target=decision.target if sent else "", basis=decision.basis if sent else ())
+                except (SafetyBlocked, PrivacyViolation) as exc:
+                    reason = ",".join(exc.review.reasons) if isinstance(exc, SafetyBlocked) else "privacy_blocked"
+                    await self.finish_history(pending, "rejected", reason=reason)
+                    self.event("skipped", reason=reason)
                 except RequestCancelled:
                     await self.finish_history(pending, "cancelled", reason="Подготовка отменена: повод устарел или исчерпан лимит AI-запросов.")
                     self.event("skipped", reason=("Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
@@ -520,7 +648,8 @@ class Autonomous:
                     # Raw rejected provider payloads and credentials are never retained.
                     self.event("error", reason="AI или отправка недоступны, либо ответ некорректен. Реплика пропущена.")
                     self.next_check = self.clock() + max(120, self.settings.check_max_seconds)
-        if self.pending is not None or self.clock() < self.next_check:
+            self.reviewing = None
+        if self.pending is not None or self.reviewing is not None or self.clock() < self.next_check:
             return
         now = self.clock()
         if (not self.eligible() or self.batch_started is None or
@@ -550,7 +679,7 @@ class Autonomous:
                   "before_generation": lambda plan: self.before_generation(plan, rows, new_ids, generation, cancel, window)}
         if self.local_manager is not None:
             kwargs.update(local_manager=self.local_manager, local_snapshot=local_snapshot)
-        history_ref = [None]
+        history_ref = [None, None]
         if self.history_store is not None:
             mode = self.settings.mode
             request_cfg = dict(self.cfg)
@@ -564,7 +693,10 @@ class Autonomous:
                 status = "silent" if decision.action == "silent" else "cancelled" if cancel.is_set() else "generated"
                 fields = dict(channel=request_cfg.get("TWITCH_CHANNEL", ""), model=request_cfg.get("AI_MODEL", ""),
                     mode=mode, viewer=decision.target, action=decision.action,
-                    answer=decision.reply if decision.action != "silent" else "", reason=decision.reason)
+                    answer="", reason="moderation_cancelled" if cancel.is_set() else decision.reason)
+                # Do not persist an unreviewed candidate or a late deleted scene.
+                history_ref[1] = context if not cancel.is_set() else None
+                context = None
                 if history_ref[0]:
                     self.history_store.update(history_ref[0], status, context=context, **fields)
                 else:

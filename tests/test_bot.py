@@ -1,3 +1,4 @@
+from safety_fakes import stub_reviews
 import asyncio
 import io
 import json
@@ -6,7 +7,7 @@ import unittest
 import urllib.error
 from contextlib import redirect_stdout
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import bot
 import memory
@@ -16,6 +17,9 @@ import rewards
 
 
 class BotTests(unittest.TestCase):
+    def setUp(self):
+        stub_reviews(self)
+
     def test_reward_events_only_and_history_per_viewer(self):
         async def scenario():
             instance = bot.Bot.__new__(bot.Bot)
@@ -30,7 +34,7 @@ class BotTests(unittest.TestCase):
                     return "OK"
             instance.ai_router = Router()
             replies = []
-            async def say(writer, message):
+            async def say(writer, message, **kwargs):
                 replies.append(message)
             instance.say = say
             queue = asyncio.Queue()
@@ -47,7 +51,7 @@ class BotTests(unittest.TestCase):
             self.assertEqual(calls[12], ("2", ()))
             self.assertEqual(len(replies), 13)
             self.assertEqual(instance.autonomous.remember_reply.call_count, 13)
-            instance.autonomous.remember_reply.assert_called_with("OK", target="two", source="reward", question="Другой вопрос")
+            instance.autonomous.remember_reply.assert_called_with("OK", target="two", source="reward", question="Другой вопрос", user_id="2")
 
         asyncio.run(scenario())
 
@@ -70,6 +74,18 @@ class BotTests(unittest.TestCase):
             rewards.subscribe("client", "token", "123", "session")
         payload = api.call_args.args[3]
         self.assertEqual(payload["condition"], {"broadcaster_user_id": "123"})
+
+    def test_reward_input_is_preserved_until_full_privacy_check(self):
+        async def scenario():
+            on_question = AsyncMock()
+            listener = rewards.RewardListener("client", "channel", Path("token"), on_question)
+            question = "x" * 600 + " alex @ example . invalid"
+            await listener.handle_notification({"event": {"id": "full-input", "reward": {"id": "r", "title": "вопрос ии"},
+                "user_login": "viewer", "user_id": "123", "user_input": question}})
+            self.assertEqual(on_question.call_args.args[2], question)
+            with self.assertRaises(bot.PrivacyViolation):
+                bot.check_question(on_question.call_args.args[2])
+        asyncio.run(scenario())
 
     def test_ai_receives_ten_complete_pairs_before_current_question(self):
         class Response(io.BytesIO):

@@ -95,7 +95,7 @@ class LocalContextAITests(unittest.TestCase):
         self.assertFalse(self.manager.usage_path.exists())
 
     def test_valid_metadata_is_separate_and_text_limit_is_applied_after_json(self):
-        reply, _ = self.request(encoded({"text": "x" * 410 + "\nЕщё текст",
+        reply, _ = self.request(encoded({"text": "x" * 410 + " Ещё текст",
                                         "creative_card_id": self.card.id}))
         self.assertEqual(str(reply), "x" * 400)
         self.assertEqual(reply.creative_card_id, self.card.id)

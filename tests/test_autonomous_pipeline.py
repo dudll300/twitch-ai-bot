@@ -1,3 +1,4 @@
+from safety_fakes import stub_reviews
 """Replay cancellation, quota and snapshot boundaries without AI or Twitch access."""
 
 from dataclasses import asdict, replace
@@ -21,6 +22,7 @@ def response(value):
 
 class PipelineControllerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        stub_reviews(self)
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name)
         self.now, self.monotonic = 10000., 5000.

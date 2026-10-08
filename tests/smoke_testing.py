@@ -36,6 +36,8 @@ def response(data):
 
 
 def main():
+    from safety_fakes import approved
+    patch("testing.review_candidate", side_effect=approved).start()
     app = QApplication.instance() or QApplication([])
     main_thread = get_ident()
     with tempfile.TemporaryDirectory() as directory:
@@ -159,6 +161,22 @@ def main():
         assert before == {path.name: path.read_bytes() for path in root.iterdir()}
 
         editor.enabled.setChecked(False)
+        # Exercise the actual shared evaluator and existing result widgets.
+        from safety import review_candidate
+        for verdict, expected in (({"allowed": False, "reasons": ["unsupported_personal_claim"]}, "unsupported_personal_claim"),
+                                  ("bad verdict", "review_unavailable"),
+                                  ({"allowed": True, "reasons": []}, "разрешено")):
+            def safety_http(req, timeout):
+                payload = json.loads(req.data)
+                content = (json.dumps(verdict) if isinstance(verdict, dict) else verdict) if payload["max_tokens"] == 160 else "Заебись, ещё одна катка!"
+                return response({"choices": [{"message": {"content": content}}]})
+            with patch("testing.review_candidate", side_effect=review_candidate), patch("urllib.request.urlopen", side_effect=safety_http):
+                page.run_button.click()
+                wait_for(lambda: not page._testing_busy)
+            for widget in page._result_widgets.values():
+                assert expected in widget.toPlainText()
+                if expected != "разрешено":
+                    assert "катка" not in widget.toPlainText()
         disabled = window._test_snapshot(["manual/model"], "Q", "profile", "", 0)
         assert "Личная инструкция" not in str(disabled.messages)
         assert "Заметка по ID" in str(disabled.messages)
