@@ -234,7 +234,7 @@ class ParticipationTests(unittest.TestCase):
             with self.assertRaises(ValueError) as error:
                 part.request_decision(self.cfg, rows, AutoSettings(), new_ids={3})
             self.assertEqual(calls.call_count, 1)
-            self.assertEqual(str(error.exception), "Выбранная ветка содержит некорректные связи сообщений.")
+            self.assertEqual(str(error.exception), "autonomous_selection")
             self.assertNotIn(private_id, str(error.exception))
         # A damaged parallel branch must not invalidate an unlinked valid scene.
         part.check_plan(replace(plan, conversation=(4,), basis=(4,)), rows, {4})

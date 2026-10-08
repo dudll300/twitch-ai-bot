@@ -157,6 +157,7 @@ class PipelineControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.controller.requests), 2)
         self.assertFalse(self.controller.quota)
         self.assertEqual(self.events[-1]["status"], "error")
+        self.assertEqual(self.events[-1]["reason"], "autonomous_timeout")
         self.assertNotIn("private body", str(self.events))
         self.assertNotIn("test-secret", str(self.events))
 

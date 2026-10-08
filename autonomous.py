@@ -24,7 +24,7 @@ from privacy import FragmentGuard, PrivacyViolation, unsafe_question
 from irc import moderation_event
 from safety import SafetyBlocked, SafetyReview, review_candidate, validate_publication
 from local_context import LocalBundle, LocalResultError
-from participation import (DEFAULT_AUTONOMOUS_PROMPT, Decision, PARTICIPATION, RequestCancelled, check_basis, parse_decision,
+from participation import (DEFAULT_AUTONOMOUS_PROMPT, Decision, PARTICIPATION, ParticipationError, RequestCancelled, check_basis, parse_decision,
                            repeats, request_decision, still_relevant)
 
 
@@ -428,7 +428,14 @@ class Autonomous:
         self.recent_replies.append({"time": self.clock(), "text": clean_text(
             redact_secret(text, self.cfg.get("AI_API_KEY", "")), 450), "target": target, "source": source,
             "question": clean_text(redact_secret(question, self.cfg.get("AI_API_KEY", "")), 400), "basis": tuple(basis),
-            "user_id": user_id, "source_rows": tuple({key: row.get(key, "") for key in ("message_id", "user_id", "author")} for row in source_rows)})
+            "user_id": user_id, "status": "sent", "channel": self.cfg.get("TWITCH_CHANNEL", ""),
+            "basis_messages": tuple({"author": row["author"], "text": row["text"]} for row in source_rows
+                                    if row["sequence"] in basis),
+            "source_rows": tuple({key: row.get(key, "") for key in ("message_id", "user_id", "author")} for row in source_rows)})
+
+    @state_locked
+    def reward_reply_snapshot(self):
+        return tuple(deepcopy(row) for row in self.recent_replies)
 
     def eligible(self, *, new_context=True):
         with self._state_lock:
@@ -531,6 +538,9 @@ class Autonomous:
                 fields["context"] = None
             elif decision is not None and decision.action != "silent":
                 fields["answer"] = decision.reply
+                recipient = next((row for row in pending.messages if row["sequence"] in decision.basis
+                                  and decision.target and row["author"] == decision.target), {})
+                fields["viewer_id"] = recipient.get("user_id", "")
                 if ref is not None and len(ref) > 1:
                     fields["context"] = ref[1]
             if reason:
@@ -558,6 +568,7 @@ class Autonomous:
                     "Подготовленная реплика отменена: изменились настройки, контекст или очередь наград либо истёк срок ответа."))
             else:
                 try:
+                    stage = "autonomous_validation"
                     result = pending.future.result()
                     # Injected request implementations are checked by the same protocol.
                     decision = parse_decision(json.dumps({key: getattr(result, key)
@@ -622,6 +633,7 @@ class Autonomous:
                     else:
                         kwargs = {"local_bundle": local_bundle, "creative_card_id": creative_card_id} if creative_card_id is not None else {}
                         kwargs["approval"] = approval
+                        stage = "autonomous_send"
                         sent = await self.sender(text, valid, lambda: self.reserve(text, decision.basis), **kwargs)
                         if (sent and pending.generation == self.generation and self.connected
                                 and (pending.cancel is None or not pending.cancel.is_set())):
@@ -643,10 +655,11 @@ class Autonomous:
                     await self.finish_history(pending, "cancelled", reason="Подготовка отменена: повод устарел или исчерпан лимит AI-запросов.")
                     self.event("skipped", reason=("Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
                         if self.quota_error else "Подготовка отменена: повод устарел, уже использован или исчерпан лимит AI-запросов."))
-                except Exception:
-                    await self.finish_history(pending, "error", reason="AI или отправка недоступны, либо ответ некорректен.")
+                except Exception as exc:
+                    code = exc.code if isinstance(exc, ParticipationError) else "autonomous_timeout" if isinstance(exc, TimeoutError) else stage
+                    await self.finish_history(pending, "send_error" if code == "autonomous_send" else "error", reason=code)
                     # Raw rejected provider payloads and credentials are never retained.
-                    self.event("error", reason="AI или отправка недоступны, либо ответ некорректен. Реплика пропущена.")
+                    self.event("error", reason=code)
                     self.next_check = self.clock() + max(120, self.settings.check_max_seconds)
             self.reviewing = None
         if self.pending is not None or self.reviewing is not None or self.clock() < self.next_check:

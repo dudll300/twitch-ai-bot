@@ -11,6 +11,7 @@ import uuid
 
 from ai_client import redact_secret
 from privacy import safe_history_text
+from recent_context import PERSONAL_REPLY_SECONDS, PERSONAL_REPLY_LIMIT, personal_reply
 
 STATUSES = {"generating", "generated", "sent", "preview", "silent", "skipped",
             "cancelled", "error", "send_error", "rejected"}
@@ -212,3 +213,46 @@ class MessageHistory:
                 "SELECT time, status, note FROM events WHERE record_id=? ORDER BY seq", (record_id,))]
             return result
         return self._read(select, cancel)
+
+    def recent_personal_replies(self, channel, login, user_id, now):
+        """Read successful publications by sent-event time, including older schemas.
+
+        Existing autonomous records may lack viewer_id: derive it only from the
+        selected basis authored by the actual tagged recipient, never mentions.
+        No schema migration, prompts, profiles or full conversations are returned.
+        """
+        def select(connection):
+            if connection is None:
+                return []
+            rows = connection.execute("""
+                SELECT r.viewer, r.viewer_id, r.sent_text, r.context, r.mode, r.channel,
+                       MIN(e.time) AS sent_at
+                FROM records r JOIN events e ON e.record_id=r.id AND e.status='sent'
+                WHERE r.kind='autonomous' AND r.status='sent' AND r.mode!='preview'
+                      AND lower(r.channel)=?
+                GROUP BY r.id HAVING sent_at BETWEEN ? AND ? ORDER BY sent_at DESC, r.seq DESC
+                """, (channel.casefold(), now - PERSONAL_REPLY_SECONDS, now))
+            result = []
+            for row in rows:
+                try:
+                    context = json.loads(row["context"]) if row["context"] else {}
+                    basis = context.get("basis", [])
+                    anchors = [item for item in context.get("conversation", [])
+                               if isinstance(item, dict) and item.get("sequence") in basis]
+                    ids = {item.get("user_id") for item in anchors
+                           if item.get("author", "").casefold() == row["viewer"].casefold() and item.get("user_id")}
+                    saved_id = row["viewer_id"] or (next(iter(ids)) if len(ids) == 1 else "")
+                    # Ambiguous identities in a damaged/legacy record are never login fallback.
+                    if not row["viewer_id"] and len(ids) > 1:
+                        continue
+                    candidate = {"source": "autonomous", "status": "sent", "mode": row["mode"],
+                                 "channel": row["channel"], "time": row["sent_at"], "text": row["sent_text"],
+                                 "target": row["viewer"], "user_id": saved_id, "basis_messages": anchors}
+                    if personal_reply(candidate, login, user_id, now, channel=channel):
+                        result.append(self.redact(candidate))
+                    if len(result) >= PERSONAL_REPLY_LIMIT:
+                        break
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            return result
+        return self._read(select)

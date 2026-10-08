@@ -20,6 +20,7 @@ from local_context import LocalContextManager, LocalReply, LocalResultError, pre
 from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
+from recent_context import for_reward
 from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
 from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, check_question, safe_history_text, unsafe_question
 from irc import moderation_event
@@ -72,7 +73,8 @@ class AIModelRouter:
 
     def ask(self, cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
-            history: tuple[tuple[str, str], ...] = (), *, allow_creative=True, on_answer=None) -> str:
+            history: tuple[tuple[str, str], ...] = (), *, allow_creative=True, on_answer=None,
+            recent_context=(), history_times=()) -> str:
         check_question(question)
         self.last_model = ""
         bundle = None
@@ -81,7 +83,8 @@ class AIModelRouter:
             bundle = prepare_context(self.local_context, text, creative=allow_creative)
         try:
             answer = self._ask_models(cfg, user, question, memory_data, user_id, history, bundle,
-                                      reject_local_service=not allow_creative)
+                                      reject_local_service=not allow_creative,
+                                      recent_context=recent_context, history_times=history_times)
             if not allow_creative and is_local_service_output(answer):
                 raise LocalResultError("Некорректный обычный ответ после отмены локальной отсылки.")
             if on_answer is not None:
@@ -92,10 +95,11 @@ class AIModelRouter:
                 raise
             print("Локальный контекст: некорректный результат; повторяю ответ без творческой отсылки.", flush=True)
             return self.ask(cfg, user, question, memory_data, user_id, history,
-                            allow_creative=False, on_answer=on_answer)
+                            allow_creative=False, on_answer=on_answer,
+                            recent_context=recent_context, history_times=history_times)
 
     def _ask_models(self, cfg, user, question, memory_data, user_id, history, local_bundle,
-                    *, reject_local_service=False):
+                    *, reject_local_service=False, recent_context=(), history_times=()):
         primary = cfg["AI_MODEL"]
         backups = tuple(dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",")
                                       if name.strip() and name.strip() != primary))
@@ -109,6 +113,8 @@ class AIModelRouter:
         for model in models:
             try:
                 kwargs = {"model": model, "history": history}
+                if recent_context:
+                    kwargs.update(recent_context=recent_context, history_times=history_times)
                 if personal_prompt:
                     kwargs["personal_prompt"] = personal_prompt
                 if context.prompt:
@@ -150,6 +156,7 @@ class Bot:
         self.local_context = LocalContextManager(ROOT, emit=self.local_event)
         self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"), self.local_context)
         self.histories: dict[str, deque[tuple[str, str]]] = {}
+        self.history_times: dict[str, deque[float]] = {}
         self.fragments = FragmentGuard()
         self.history = MessageHistory(ROOT, secrets=(cfg.get("AI_API_KEY", ""),))
         self._paid_busy = False
@@ -285,6 +292,8 @@ class Bot:
                     kwargs = {} if allow_creative else {"allow_creative": False}
                     if getattr(self, "history", None) is not None and isinstance(self.ai_router, AIModelRouter):
                         kwargs["on_answer"] = generated
+                    if isinstance(self.ai_router, AIModelRouter) and recent:
+                        kwargs.update(recent_context=recent, history_times=history_times)
                     result = await asyncio.to_thread(
                         self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history, **kwargs)
                     if not observed:
@@ -293,6 +302,13 @@ class Bot:
                     return result
                 key = user_id or user.casefold()
                 history = tuple(self.histories.get(key, ()))
+                if not hasattr(self, "history_times"):
+                    self.history_times = {}
+                history_times = tuple(self.history_times.get(key, ()))
+                autonomous = getattr(self, "autonomous", None)
+                rows = autonomous.reward_reply_snapshot() if isinstance(autonomous, Autonomous) else ()
+                recent = await asyncio.to_thread(for_reward, getattr(self, "history", None), rows,
+                    self.cfg.get("TWITCH_CHANNEL", ""), user, user_id, time.time())
                 fragments = getattr(self, "fragments", None)
                 if fragments is not None:
                     fragments.check(question, user_id, "reward-input", remember=True)
@@ -335,8 +351,13 @@ class Bot:
                 pairs = self.histories.pop(key, deque(maxlen=10))
                 pairs.append((question, answer))
                 self.histories[key] = pairs
+                times = self.history_times.pop(key, deque(maxlen=10))
+                times.append(time.time())
+                self.history_times[key] = times
                 if len(self.histories) > MAX_HISTORY_VIEWERS:
-                    del self.histories[next(iter(self.histories))]
+                    oldest = next(iter(self.histories))
+                    del self.histories[oldest]
+                    self.history_times.pop(oldest, None)
                 print(f"Ответ отправлен для {user}", flush=True)
             except asyncio.CancelledError:
                 await self.history_update(record_id, "cancelled", reason="Ответ прерван при остановке или разрыве соединения.")
@@ -437,8 +458,10 @@ class Bot:
                             # when autonomous participation is disabled.
                             if event.kind == "all":
                                 self.histories.clear()
+                                self.history_times.clear()
                             elif event.kind == "user":
                                 self.histories.pop(event.user_id or event.login, None)
+                                self.history_times.pop(event.user_id or event.login, None)
                     elif command == "NOTICE":
                         print("Twitch: " + line.split(" :", 1)[-1], flush=True)
 
@@ -450,6 +473,7 @@ class Bot:
             self.autonomous.disconnect()
             self.fragments.clear()
             self.histories.clear()
+            self.history_times.clear()
             if autonomous_task is not None:
                 autonomous_task.cancel()
             worker.cancel()

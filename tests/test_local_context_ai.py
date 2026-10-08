@@ -325,8 +325,9 @@ class LocalContextAITests(unittest.TestCase):
                 self.assertEqual(len(calls), 2)
                 self.assertIsNone(reply.creative_card_id)
                 self.assertEqual(reply.action, "reply" if text else "silent")
-        with self.assertRaises(LocalResultError):
+        with self.assertRaises(part.ParticipationError) as failure:
             self.pipeline(rows, plan, {"text": "", "creative_card_id": self.card.id})
+        self.assertEqual(failure.exception.code, "autonomous_validation")
 
     def test_autonomous_generator_keeps_strict_controls_length_and_plan(self):
         rows = [row(1, "viewer", "Снова проиграл босса"), row(2, "friend", "Получится в следующий раз")]
