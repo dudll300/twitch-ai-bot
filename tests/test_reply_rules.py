@@ -101,12 +101,14 @@ class ReplyRulesTests(unittest.TestCase):
             instance._say_lock = asyncio.Lock()
             instance.last_sent = 0
             sent = []
-            async def send(_writer, line):
-                sent.append(line)
-            instance.send = send
+            class Writer:
+                def write(self, data):
+                    sent.append(data.decode().rstrip('\r\n'))
+                async def drain(self):
+                    pass
             from safety import SafetyReview
             final = "@" + "a" * 25 + " " + answer
-            await instance.say(None, final, approval=SafetyReview("allowed", final))
+            await instance.say(Writer(), final, approval=SafetyReview("allowed", final))
             self.assertEqual(sent, ["PRIVMSG #channel :@" + "a" * 25 + " " + "Я" * 400])
             self.assertEqual(len(sent[0].partition(" :")[2]), 427)
         asyncio.run(scenario())

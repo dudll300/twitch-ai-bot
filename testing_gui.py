@@ -6,12 +6,15 @@ from threading import Event, Thread
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit,
                               QListWidgetItem, QPushButton,
-                              QVBoxLayout, QWidget)
+                              QVBoxLayout, QWidget, QStackedWidget)
 
 from ai_client import redact_secret
 from configuration import normalize
 from testing import Model, test_model
 from model_catalog_gui import catalog_worker
+from safety_gui import DiagnosticPanel
+from safety_settings import PolicyStore
+from paths import data_dir
 from prompt_builder import TEST_CASES
 from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, field, label, scroll_page
 
@@ -30,7 +33,7 @@ def comparison_worker(snapshot, pending, output, cancel):
 
 
 class TestingPage(QWidget):
-    def __init__(self, get_credentials, get_snapshot, get_profiles):
+    def __init__(self, get_credentials, get_snapshot, get_profiles, *, safety_store=None, get_answer_model=lambda: ''):
         super().__init__()
         self.get_credentials = get_credentials
         self.get_snapshot = get_snapshot
@@ -148,7 +151,17 @@ class TestingPage(QWidget):
         results_layout.addLayout(self.results_layout)
         layout.addWidget(results)
         layout.addStretch()
-        outer.addWidget(scroll_page(page))
+        self.mode = NoWheelComboBox()
+        self.mode.addItem('Сравнение моделей')
+        self.mode.addItem('Проверка точного текста')
+        self.mode.setAccessibleName('Режим тестирования')
+        outer.addWidget(self.mode)
+        self.modes = QStackedWidget()
+        self.modes.addWidget(scroll_page(page))
+        self.diagnostic = DiagnosticPanel(safety_store or PolicyStore(data_dir()), get_credentials, get_answer_model)
+        self.modes.addWidget(self.diagnostic)
+        outer.addWidget(self.modes)
+        self.mode.currentIndexChanged.connect(self._mode_changed)
         # Provider errors and IDs are always plain text, never HTML.
         for widget in (self.status, self.catalog_status):
             widget.setTextFormat(Qt.PlainText)
@@ -172,12 +185,14 @@ class TestingPage(QWidget):
             self.viewer.setCurrentIndex(selected)
 
     def open_for_profile(self, index):
+        self.mode.setCurrentIndex(0)
         self.clear_prompt_override()
         self.refresh_profiles()
         self.sender.setCurrentIndex(self.sender.findData("profile"))
         self.viewer.setCurrentIndex(self.viewer.findData(index))
 
     def open_for_prompt(self, prompt=None):
+        self.mode.setCurrentIndex(0)
         self.prompt_override = prompt
         self.prompt_source.setText("Следующий тест использует копию варианта из генератора. Общий промпт не заменён и не сохранён."
                                    if prompt is not None else "Следующий тест использует текущий общий промпт из «Поведения».")
@@ -370,7 +385,22 @@ class TestingPage(QWidget):
                     self._testing_busy = False
                     self._set_busy()
 
+    def _mode_changed(self, index):
+        self._cancel.set()
+        self._cancel = Event()
+        # Old workers retain their old queue; late results cannot enter a new run.
+        self._events = Queue()
+        self._testing_busy = self._catalog_busy = False
+        self._remaining = 0
+        self._set_busy()
+        self.diagnostic.invalidate()
+        self.modes.setCurrentIndex(index)
+
+    def open_diagnostic(self):
+        self.mode.setCurrentIndex(1)
+
     def shutdown(self):
+        self.diagnostic.shutdown()
         self._closed = True
         self._cancel.set()
         self._timer.stop()

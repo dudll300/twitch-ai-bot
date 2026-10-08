@@ -42,7 +42,7 @@ def window_at(root):
         window = gui.MainWindow()
     window.resize(1400, 940)
     window.show()
-    window._navigate(7)
+    window._navigate(gui.PAGE_HISTORY)
     return window
 
 
@@ -73,7 +73,7 @@ def main():
         silent = store.add("autonomous", "silent", action="silent", reason="no_reason")
         window = window_at(root)
         page = window.history_page
-        assert window.nav_buttons[7].text() == "История"
+        assert window.nav_buttons[gui.PAGE_HISTORY].text() == "История"
         wait_for(lambda: not page._loading and page._detail_id == silent, "Initial history did not load")
         assert page.entries.count() == 50
         assert page.context_card.isHidden()

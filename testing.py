@@ -17,7 +17,8 @@ from profiles import REWARD_BLOCKED_REFUSAL, prompt_for, reward_is_blocked, vali
 from privacy import check_question
 from viewer_recognition import related_context
 from reply_rules import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
-from safety import SafetyBlocked, review_candidate
+from safety import SafetyBlocked, SafetyReview, review_candidate, describe_review, validate_publication
+from safety_settings import PolicyStore, current_policy, policy_scope, policy_binding
 from privacy import PrivacyViolation
 
 
@@ -97,6 +98,8 @@ class TestSnapshot:
     models: tuple[str, ...]
     messages: tuple[tuple[str, str], ...] = field(repr=False)
     context: str
+    policy: object = field(default_factory=current_policy)
+    policy_store: object = field(default_factory=lambda: policy_binding()[0], repr=False)
 
 
 def make_snapshot(auth: Credentials, models: list[str], question: str, prompt: str,
@@ -186,6 +189,11 @@ class Result:
 
 
 def test_model(snapshot: TestSnapshot, model: str, *, cancelled=lambda: False) -> Result:
+    with policy_scope(snapshot.policy_store, snapshot.policy):
+        return _test_model(snapshot, model, cancelled=cancelled)
+
+
+def _test_model(snapshot: TestSnapshot, model: str, *, cancelled=lambda: False) -> Result:
     started = time.monotonic()
     try:
         if cancelled():
@@ -196,14 +204,16 @@ def test_model(snapshot: TestSnapshot, model: str, *, cancelled=lambda: False) -
                                   context=snapshot.messages[-1][1], limit=ANSWER_MAX_CHARS,
                                   cancelled=cancelled)
         if not review.allowed:
-            return Result(model, time.monotonic() - started, error="Проверка безопасности: " + ", ".join(review.reasons),
+            return Result(model, time.monotonic() - started, error=describe_review(review),
                           safety_status=review.status, safety_reasons=review.reasons)
+        validate_publication(answer, review, limit=ANSWER_MAX_CHARS)
         return Result(model, time.monotonic() - started,
                       answer=redact_secret(answer, snapshot.auth.api_key), safety_status="allowed")
     except (SafetyBlocked, PrivacyViolation) as exc:
         reasons = exc.review.reasons if isinstance(exc, SafetyBlocked) else ("privacy_blocked",)
-        return Result(model, time.monotonic() - started, error="Проверка безопасности: " + ", ".join(reasons),
-                      safety_status="blocked", safety_reasons=reasons)
+        review = exc.review if isinstance(exc, SafetyBlocked) else SafetyReview('blocked', '', reasons)
+        return Result(model, time.monotonic() - started, error=describe_review(review),
+                      safety_status=review.status, safety_reasons=reasons)
     except Exception as exc:
         error = redact_secret(str(exc), snapshot.auth.api_key)
         return Result(model, time.monotonic() - started, error=clean_text(error, 500) or "Ошибка AI API")

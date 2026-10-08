@@ -29,3 +29,7 @@ local-context.*.tmp
 local-context.corrupt-*.bak
 local-context-usage.json
 local-context-usage.*.tmp
+safety-settings.json
+.safety-settings.lock
+.safety-settings-*.tmp
+.test-tmp/

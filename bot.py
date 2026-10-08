@@ -25,7 +25,8 @@ from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_
 from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, check_question, safe_history_text, unsafe_question
 from irc import moderation_event
 from safety import (SAFETY_REFUSAL, SafetyBlocked, SafetyReview, check_candidate_source,
-                    review_candidate, validate_publication)
+                    review_candidate, validate_publication, publication_guard)
+from safety_settings import PolicyStore, policy_scope, current_policy, policy_binding
 from viewer_recognition import related_context
 from paths import data_dir
 from rewards import RewardListener
@@ -150,6 +151,7 @@ class AIModelRouter:
 class Bot:
     def __init__(self, cfg: dict[str, str]):
         self.cfg = cfg
+        self.safety_store = PolicyStore(ROOT)
         self.memory = load_memory(ensure_local_memory(ROOT / "memory.json"))
         self.last_sent = 0.0
         self._say_lock = asyncio.Lock()
@@ -181,20 +183,22 @@ class Bot:
         target_match = re.match(r"^@([a-z0-9_]{1,25}) ", message)
         target = target_match[1] if target_match else ""
         body = message[len(target) + 2:] if target else message
-        if approval is None and body in SERVICE_NOTICES:
-            approval = SafetyReview("allowed", message)
+        service_notice = approval is None and target and body in SERVICE_NOTICES
         async with self._say_lock:
             wait = 1.6 - (time.monotonic() - self.last_sent)
             if wait > 0:
                 await asyncio.sleep(wait)
-            validate_publication(message, approval, limit=CHAT_MAX_CHARS, target=target)
+            if service_notice:
+                approval = SafetyReview("allowed", message, policy_version=policy_binding()[0].snapshot().version)
             lease = None
-            if creative_card_id is not None:
-                lease = self.local_context.reserve_publish(local_bundle, creative_card_id)
-                if lease is None:
-                    raise LocalResultError("Локальная отсылка отменена: карточки или лимиты изменились.")
             try:
-                await self.send(writer, f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}")
+                with publication_guard(message, approval, limit=CHAT_MAX_CHARS, target=target):
+                    if creative_card_id is not None:
+                        lease = self.local_context.reserve_publish(local_bundle, creative_card_id)
+                        if lease is None:
+                            raise LocalResultError("Локальная отсылка отменена: карточки или лимиты изменились.")
+                    writer.write((f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}\r\n").encode("utf-8"))
+                await writer.drain()
             except BaseException:
                 if lease is not None:
                     self.local_context.complete_publish(lease, success=False)
@@ -210,16 +214,16 @@ class Bot:
         if not valid() or self._say_lock.locked() or time.monotonic() - self.last_sent < 1.6:
             return False
         target_match = re.match(r"^@([a-z0-9_]{1,25}) ", message)
-        validate_publication(message, approval, target=target_match[1] if target_match else "")
         lease = None
-        if creative_card_id is not None:
-            lease = self.local_context.reserve_publish(local_bundle, creative_card_id)
-            if lease is None:
-                return False
         try:
-            reserve()
-            writer.write((f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}\r\n").encode("utf-8"))
-            self.last_sent = time.monotonic()
+            with publication_guard(message, approval, target=target_match[1] if target_match else ""):
+                if creative_card_id is not None:
+                    lease = self.local_context.reserve_publish(local_bundle, creative_card_id)
+                    if lease is None:
+                        return False
+                reserve()
+                writer.write((f"PRIVMSG #{self.cfg['TWITCH_CHANNEL']} :{message}\r\n").encode("utf-8"))
+                self.last_sent = time.monotonic()
             await writer.drain()
         except BaseException:
             if lease is not None:
@@ -228,6 +232,11 @@ class Bot:
         if lease is not None:
             self.local_context.complete_publish(lease, success=True)
         return True
+
+    async def safety_decision(self, record_id, review):
+        journal = getattr(self, "history", None)
+        if journal is not None:
+            await asyncio.to_thread(journal.safety_event, "reward", review, record_id=record_id)
 
     async def history_add(self, status, **values):
         journal = getattr(self, "history", None)
@@ -258,6 +267,8 @@ class Bot:
                 question=safe_history_text(question), answer=notice, action="refusal", reason=reason)
         else:
             await self.history_update(record_id, "rejected", answer=notice, action="refusal", reason=reason)
+        if notice == PRIVACY_REFUSAL:
+            await self.safety_decision(record_id, SafetyReview("blocked", "", ("privacy_blocked",), stage="question"))
         text = clean_text(f"@{user} {notice}", CHAT_MAX_CHARS)
         try:
             await self.say(writer, text)
@@ -274,6 +285,8 @@ class Bot:
             user, user_id, question, redemption_id = await queue.get()
             self._paid_busy = True
             record_id = None
+            scope = policy_scope(getattr(self, "safety_store", PolicyStore(ROOT)))
+            scope.__enter__()
             try:
                 refusal = self.refusal_for(user, user_id, question)
                 if refusal:
@@ -281,6 +294,8 @@ class Bot:
                     continue
                 record_id = await self.history_add("generating", viewer=user, viewer_id=user_id,
                                                    question=question)
+                if current_policy().error:
+                    raise SafetyBlocked(SafetyReview('error', '', ('settings_invalid',), stage='question'))
                 observed = False
                 def generated(answer, model):
                     nonlocal observed
@@ -321,6 +336,7 @@ class Bot:
                     model = model if isinstance(model, str) and model else self.cfg.get("AI_MODEL", "")
                     review = await asyncio.to_thread(review_candidate, self.cfg, model, text,
                         target=user, context=question, limit=CHAT_MAX_CHARS)
+                    await self.safety_decision(record_id, review)
                     if not review.allowed:
                         raise SafetyBlocked(review)
                     await self.history_update(record_id, "generated", answer=str(answer), model=model)
@@ -364,9 +380,11 @@ class Bot:
                 print(f"Награда {redemption_id} от {user}: ответ прерван; проверьте возврат баллов вручную.", flush=True)
                 raise
             except PrivacyViolation:
+                await self.safety_decision(record_id, SafetyReview("blocked", "", ("privacy_blocked",)))
                 await self.refuse(writer, user, user_id, question, PRIVACY_REFUSAL,
                                   "Запрос или ответ отклонён защитой личных данных.", record_id)
             except SafetyBlocked as exc:
+                await self.safety_decision(record_id, exc.review)
                 reason = ",".join(exc.review.reasons)
                 await self.history_update(record_id, "rejected", answer="", context=None, reason=reason)
                 print("Проверка безопасности: " + reason, flush=True)
@@ -382,6 +400,7 @@ class Bot:
                 except Exception as send_error:
                     await self.history_update(record_id, "send_error", reason=str(send_error))
             finally:
+                scope.__exit__(None, None, None)
                 self._paid_busy = False
                 queue.task_done()
 

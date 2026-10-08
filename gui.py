@@ -29,6 +29,8 @@ from settings import load_settings, save_settings
 from studio_icons import studio_icon
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
+from safety_gui import SafetyPage
+from safety_settings import policy_scope
 from ui_widgets import ScrollPlainTextEdit, SlidingSidebar, card, field, label, menu_icon, russian_question, scroll_page
 
 PAGES = (
@@ -36,11 +38,13 @@ PAGES = (
     ("Поведение", "Задайте общий характер, язык и правила общения."),
     ("Зрители", "Личные инструкции для тех, кого бот должен узнавать."),
     ("Самостоятельные реплики", "Ответы и реакции по свежему разговору — с приоритетом наград."),
+    ("Безопасность", "Проверки, политика публикации и понятные причины решений."),
     ("Активность", "Подключение, вопросы и ответы текущего запуска."),
     ("Тестирование", "Проверьте промпт и сравните модели без подключения Twitch."),
     ("Локальный контекст", "Пояснения выражений и уместные отсылки вашего канала."),
     ("История", "Сохранённые ответы, самостоятельные реплики и решения бота за все запуски."),
 )
+PAGE_CONNECTION, PAGE_BEHAVIOR, PAGE_VIEWERS, PAGE_AUTONOMOUS, PAGE_SAFETY, PAGE_ACTIVITY, PAGE_TESTING, PAGE_LOCAL_CONTEXT, PAGE_HISTORY = range(len(PAGES))
 
 
 def available_screen_size():
@@ -117,7 +121,7 @@ class MainWindow(QMainWindow):
         side.addSpacing(6)
         self.nav_group = QButtonGroup(self)
         self.nav_buttons = []
-        nav_icons = ("plug", "sliders", "users", "messages", "activity", "flask", "book", "history")
+        nav_icons = ("plug", "sliders", "users", "messages", "sliders", "activity", "flask", "book", "history")
         for index, (name, _) in enumerate(PAGES):
             button = QPushButton(name.replace("Самостоятельные реплики", "Самостоятельные\nреплики"))
             button.setProperty("variant", "nav")
@@ -214,14 +218,19 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.profiles_editor)
         self.autonomous_page = AutonomousPage(self._root)
         self.pages.addWidget(self.autonomous_page)
+        self.safety_page = SafetyPage(self._root, self._test_credentials, lambda: self.model.currentText())
+        self.pages.addWidget(self.safety_page)
         self.pages.addWidget(self._build_activity())
         self.testing_page = TestingPage(self._test_credentials, self._test_snapshot,
-                                        lambda: self.profiles_editor.rows)
+                                        lambda: self.profiles_editor.rows, safety_store=self.safety_page.store,
+                                        get_answer_model=lambda: self.model.currentText())
         self.pages.addWidget(self.testing_page)
         self.local_context_page = LocalContextPage(self._root)
         self.pages.addWidget(self.local_context_page)
         self.history_page = HistoryPage(self._root)
         self.pages.addWidget(self.history_page)
+        self.safety_page.test_requested.connect(self._test_security)
+        self.safety_page.history_requested.connect(self._security_history)
         self._page_effect = QGraphicsOpacityEffect(self.pages)
         self.pages.setGraphicsEffect(self._page_effect)
         self._page_effect.setOpacity(1.0)
@@ -247,7 +256,7 @@ class MainWindow(QMainWindow):
         shell.addWidget(main_area, 1)
         self.setCentralWidget(body)
         self._set_sidebar(self._sidebar_expanded, animate=False)
-        self._navigate(0)
+        self._navigate(PAGE_CONNECTION)
         for widget in (self.channel, self.bot_name, self.client_id, self.reward_title,
                        self.base_url, self.api_key, self.fallback_models):
             widget.textChanged.connect(self._mark_dirty)
@@ -263,8 +272,12 @@ class MainWindow(QMainWindow):
         self.api_key.textChanged.connect(self.prompt_builder.model_catalog.invalidate)
         self.base_url.textChanged.connect(self.prompt_builder.model_catalog.invalidate)
         self.prompt_builder.test_requested.connect(self._test_prompt_draft)
-        self.prompt_builder.connection_requested.connect(lambda: self._navigate(0))
+        self.prompt_builder.connection_requested.connect(lambda: self._navigate(PAGE_CONNECTION))
         self.local_context_page.changed.connect(self._local_context_changed)
+        self.safety_page.changed.connect(self._local_context_changed)
+        self.api_key.textChanged.connect(self.safety_page.model_catalog.invalidate)
+        self.base_url.textChanged.connect(self.safety_page.model_catalog.invalidate)
+        self.model.currentTextChanged.connect(self.safety_page._changed)
         self.autonomous_page.enabled.toggled.connect(self._refresh_workspace)
         self.autonomous_page.mode.currentIndexChanged.connect(self._refresh_workspace)
         self.autonomous_page.apply_button.clicked.connect(self._refresh_workspace)
@@ -289,7 +302,7 @@ class MainWindow(QMainWindow):
         self.sidebar.set_expanded(expanded, animate)
 
     def _navigate(self, index):
-        if index == 5:
+        if index == PAGE_TESTING:
             self.testing_page.refresh_profiles()
         changed = self.pages.currentIndex() != index
         self.pages.setCurrentIndex(index)
@@ -317,21 +330,34 @@ class MainWindow(QMainWindow):
             if profile_index is not None and 0 <= profile_index < len(self.profiles_editor.rows):
                 profile = deepcopy(self.profiles_editor.rows[profile_index])
         prompt = self.prompt.toPlainText() if prompt_override is None else prompt_override
-        return make_snapshot(auth, models, question, prompt, sender,
-                             login, profile, read_test_memory(self._root),
-                             profiles=deepcopy(self.profiles_editor.rows))
+        with policy_scope(self.safety_page.store):
+            return make_snapshot(auth, models, question, prompt, sender,
+                                 login, profile, read_test_memory(self._root),
+                                 profiles=deepcopy(self.profiles_editor.rows))
+
+    def _test_security(self):
+        self.testing_page.open_diagnostic()
+        self._navigate(PAGE_TESTING)
+
+    def _security_history(self, scenario):
+        kind = 'reward' if scenario == 'reward' else 'autonomous' if scenario in ('autonomous', 'preview') else ''
+        self.history_page.kind.setCurrentIndex(self.history_page.kind.findData(kind))
+        self.history_page.status.setCurrentIndex(self.history_page.status.findData('preview' if scenario == 'preview' else ''))
+        self.history_page.search.clear()
+        self.history_page.refresh(reset=True)
+        self._navigate(PAGE_HISTORY)
 
     def _test_prompt(self):
         self.testing_page.open_for_prompt()
-        self._navigate(5)
+        self._navigate(PAGE_TESTING)
 
     def _test_prompt_draft(self, prompt):
         self.testing_page.open_for_prompt(prompt)
-        self._navigate(5)
+        self._navigate(PAGE_TESTING)
 
     def _test_profile(self, index):
         self.testing_page.open_for_profile(index)
-        self._navigate(5)
+        self._navigate(PAGE_TESTING)
 
     def _open_folder(self):
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(self._root)))
@@ -480,7 +506,7 @@ class MainWindow(QMainWindow):
         shortcuts.setObjectName("inspectorCard")
         shortcuts_layout.setContentsMargins(20, 18, 20, 18)
         shortcuts_layout.setSpacing(10)
-        for caption, index, icon in (("Поведение бота", 1, "sliders"), ("Проверить ответ", 5, "flask")):
+        for caption, index, icon in (("Поведение бота", PAGE_BEHAVIOR, "sliders"), ("Проверить ответ", PAGE_TESTING, "flask")):
             button = QPushButton(caption)
             button.setProperty("variant", "inspector")
             button.setIcon(studio_icon(icon, size=16))
@@ -534,7 +560,9 @@ class MainWindow(QMainWindow):
         self._refresh_workspace()
 
     def _local_context_changed(self):
-        if self.local_context_page.dirty:
+        if self.safety_page.dirty:
+            self.save_hint.setText("Есть несохранённые настройки безопасности — нажмите «Применить»")
+        elif self.local_context_page.dirty:
             self.save_hint.setText("Локальный контекст изменён — примените его в своей вкладке")
         else:
             self.save_hint.setText("Есть несохранённые изменения" if self._dirty else "Все изменения сохранены")
@@ -549,7 +577,7 @@ class MainWindow(QMainWindow):
             try:
                 rows = self.profiles_editor.validated()
             except ProfileError:
-                self._navigate(2)
+                self._navigate(PAGE_VIEWERS)
                 raise
             fields = self._fields()
             previous = read_config(self._root / ".env")
@@ -561,11 +589,11 @@ class MainWindow(QMainWindow):
                     try:
                         normalize(name, value)
                     except ValueError:
-                        self._navigate(0)
+                        self._navigate(PAGE_CONNECTION)
                         self._field_widgets()[name].setFocus()
                         raise
             if len(self.prompt.toPlainText().strip()) > 20000:
-                self._navigate(1)
+                self._navigate(PAGE_BEHAVIOR)
                 raise ValueError("Общий промпт должен содержать не более 20 000 символов.")
             prompt = upgrade_generated_prompt(self.prompt.toPlainText())
             save_settings(fields, prompt, self._root, allow_incomplete=not for_start)
@@ -610,7 +638,7 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(running)
         self.save_hint.setText("Самостоятельные реплики и локальный контекст можно менять во время работы" if running else
                                "Есть несохранённые изменения" if self._dirty else "Все изменения сохранены")
-        if self.local_context_page.dirty:
+        if self.local_context_page.dirty or self.safety_page.dirty:
             self._local_context_changed()
         self._refresh_workspace()
 
@@ -641,7 +669,7 @@ class MainWindow(QMainWindow):
         self._auth_url = ""
         self._auth_account = ""
         self.auth_hint.setVisible(False)
-        self._navigate(4)
+        self._navigate(PAGE_ACTIVITY)
         self.autonomous_page.log.clear()
         self._question_count = self._answer_count = 0
         self.questions_label.setText("0")
@@ -740,16 +768,20 @@ class MainWindow(QMainWindow):
             self.auth_hint.setVisible(True)
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        if self._dirty or self.local_context_page.dirty:
+        if self._dirty or self.local_context_page.dirty or self.safety_page.dirty:
             choice = russian_question(self, "Несохранённые изменения",
-                "Сохранить изменения настроек, профилей и карточек локального контекста перед закрытием?",
+                "Сохранить изменения настроек, безопасности, профилей и карточек перед закрытием?",
                 QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel, QMessageBox.Save)
             if choice == QMessageBox.Cancel:
                 event.ignore()
                 return
             if choice == QMessageBox.Save:
+                if self.safety_page.dirty and not self.safety_page.apply():
+                    self._navigate(PAGE_SAFETY)
+                    event.ignore()
+                    return
                 if self.local_context_page.dirty and not self.local_context_page.apply():
-                    self._navigate(6)
+                    self._navigate(PAGE_LOCAL_CONTEXT)
                     event.ignore()
                     return
                 if self._dirty and not self._save():
@@ -769,6 +801,7 @@ class MainWindow(QMainWindow):
         self.model_catalog.shutdown()
         self.prompt_builder.shutdown()
         self.history_page.shutdown()
+        self.safety_page.shutdown()
         super().closeEvent(event)
 
 

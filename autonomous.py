@@ -22,7 +22,8 @@ import uuid
 from ai_client import clean_text, redact_secret
 from privacy import FragmentGuard, PrivacyViolation, unsafe_question
 from irc import moderation_event
-from safety import SafetyBlocked, SafetyReview, review_candidate, validate_publication
+from safety_settings import PolicyStore, policy_scope, run_with_policy, current_policy
+from safety import SafetyBlocked, SafetyReview, review_candidate, validate_publication, publication_guard
 from local_context import LocalBundle, LocalResultError
 from participation import (DEFAULT_AUTONOMOUS_PROMPT, Decision, PARTICIPATION, ParticipationError, RequestCancelled, check_basis, parse_decision,
                            repeats, request_decision, still_relevant)
@@ -245,6 +246,9 @@ class Pending:
     window: object = None
     local_snapshot: object = None
     history_ref: object = None
+    policy: object = None
+    review_ref: object = None
+    answer_model: str = ''
 
 
 @dataclass
@@ -269,6 +273,7 @@ class Autonomous:
                  choose_delay=random.uniform, request=request_decision, emit=None, local_manager=None,
                  history_store=None, fragment_guard=None):
         self.cfg, self.root = cfg, root
+        self.safety_store = PolicyStore(root)
         self.clock, self.choose_delay, self.request = clock, choose_delay, request
         self.monotonic_clock = monotonic_clock
         self.profiles, self.memory_data = profiles or [], memory_data
@@ -472,6 +477,8 @@ class Autonomous:
     def before_request(self, generation, cancel, window, local_snapshot=None):
         """Reserve each attempted HTTP call durably, from the AI worker."""
         with self._state_lock:
+            if not self.safety_store.is_current(current_policy()):
+                raise SafetyBlocked(SafetyReview("cancelled", "", ("policy_changed",)))
             remaining = window.remaining(self.clock(), self.monotonic_clock())
             try:
                 _, revision = load_settings(self.root / "autonomous.json")
@@ -546,6 +553,14 @@ class Autonomous:
             if reason:
                 fields["reason"] = reason
             await asyncio.to_thread(self.history_store.update, record_id, detail_status, **fields)
+            review = pending.review_ref[0] if pending.review_ref else None
+            if reason in ("moderation_cancelled", "policy_changed"):
+                from dataclasses import replace
+                review = replace(review or SafetyReview("cancelled", ""), status="cancelled", text="",
+                                 reasons=(reason,), stage="publication")
+            if review is not None:
+                await asyncio.to_thread(self.history_store.safety_event,
+                    "preview" if self.settings.mode == "preview" else "autonomous", review, record_id=record_id)
 
     async def tick(self):
         self.refresh()
@@ -554,113 +569,132 @@ class Autonomous:
             pending = self.pending
             self.pending = None
             self.reviewing = pending
-            def current():
-                self.refresh()
-                return (pending.generation == self.generation and self.eligible(new_context=False)
-                        and (pending.local_snapshot is None or self.local_manager.is_current(pending.local_snapshot))
-                        and (pending.window is None or pending.window.remaining(self.clock(), self.monotonic_clock()) > 0)
-                        and self.clock() - pending.started_at <= self.settings.reply_ttl_seconds)
-            if not current():
-                await self.finish_history(pending, "skipped", reason="moderation_cancelled" if pending.generation == self.moderation_generation else "Результат отменён: настройки, очередь наград или срок актуальности изменились.")
-                self.event("error" if self.quota_error else "skipped", reason=(
-                    "Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
-                    if self.quota_error else
-                    "Подготовленная реплика отменена: изменились настройки, контекст или очередь наград либо истёк срок ответа."))
-            else:
-                try:
-                    stage = "autonomous_validation"
-                    result = pending.future.result()
-                    # Injected request implementations are checked by the same protocol.
-                    decision = parse_decision(json.dumps({key: getattr(result, key)
-                        for key in ("action", "text", "target", "basis", "reason")}), self.settings.max_chars)
-                    local_bundle = getattr(result, "local_bundle", None)
-                    creative_card_id = getattr(result, "creative_card_id", None)
-                    if creative_card_id is not None and (self.local_manager is None
-                            or not isinstance(local_bundle, LocalBundle)
-                            or creative_card_id not in local_bundle.candidate_ids):
-                        raise LocalResultError("Некорректная локальная отсылка.")
-                    check_basis(decision, pending.messages, pending.new_ids)
-                    if redact_secret(decision.reply, self.cfg.get("AI_API_KEY", "")) != decision.reply:
-                        raise ValueError("secret in reply")
-                    def valid():
-                        return (current() and not set(decision.basis).intersection(self.consumed_ids)
-                                and (not isinstance(local_bundle, LocalBundle)
-                                     or self.local_manager.is_current(local_bundle.snapshot))
-                                and (creative_card_id is None
-                                     or self.local_manager.is_allowed(local_bundle, creative_card_id))
-                                and still_relevant(decision, pending.messages,
-                                    self.buffer.fresh(self.clock(), self.settings), pending.new_ids, self.clock(), self.settings))
-                    text = decision.reply
-                    approval = None
-                    if decision.action != "silent" and valid():
-                        addressed = next((row for row in pending.messages if row["sequence"] in decision.basis
-                                          and (not decision.target or row["author"] == decision.target)), {})
-                        target_id = addressed.get("user_id", "")
-                        if self.output_fragments.check(decision.text, target_id, "public-replies"):
-                            raise SafetyBlocked(SafetyReview("blocked", "", ("privacy_blocked",)))
-                        scene = "\n".join(row["text"] for row in pending.messages if row["sequence"] in decision.basis)
-                        approval = await asyncio.to_thread(review_candidate, self.cfg, self.cfg.get("AI_MODEL", ""), text,
-                            kind="autonomous", target=decision.target, context=scene, limit=min(self.settings.max_chars, 450),
-                            before_request=lambda: self.before_request(pending.generation, pending.cancel, pending.window, pending.local_snapshot),
-                            cancelled=lambda: not current())
-                        if not approval.allowed:
-                            raise SafetyBlocked(approval)
-                        validate_publication(text, approval, limit=min(self.settings.max_chars, 450), target=decision.target)
-                    previous = [row[1] for row in self.recent_candidates if self.clock() - row[0] < 3600]
-                    previous += [row["text"] for row in self.recent_replies if self.clock() - row["time"] < 3600]
-                    if self.last_text:
-                        previous.append(self.last_text)
-                    if decision.action == "silent":
-                        await self.finish_history(pending, "silent", decision=decision)
-                        self.event("silent", action=decision.action, reason=decision.reason)
-                    elif not valid():
-                        await self.finish_history(pending, "skipped", decision=decision, reason="Повод устарел или обсуждение сменилось.")
-                        self.event("skipped", reason="Повод устарел или обсуждение сменилось.")
-                    elif repeats(text, previous):
-                        await self.finish_history(pending, "skipped", decision=decision, reason="Повтор недавней реплики или вопроса.")
-                        self.event("skipped", reason="Повтор недавней реплики или вопроса.")
-                    elif self.settings.mode == "preview":
-                        await self.finish_history(pending, "preview", decision=decision)
-                        if not valid():
-                            await self.finish_history(pending, "skipped", reason="moderation_cancelled" if pending.generation == self.moderation_generation else "Повод устарел.")
-                            self.event("skipped", reason="Реплика отменена до предпросмотра.")
+            with policy_scope(self.safety_store, pending.policy):
+                def current():
+                    self.refresh()
+                    return (self.safety_store.is_current(current_policy()) and pending.generation == self.generation and self.eligible(new_context=False)
+                            and (pending.local_snapshot is None or self.local_manager.is_current(pending.local_snapshot))
+                            and (pending.window is None or pending.window.remaining(self.clock(), self.monotonic_clock()) > 0)
+                            and self.clock() - pending.started_at <= self.settings.reply_ttl_seconds)
+                def cancellation_reason(fallback):
+                    if not self.safety_store.is_current(current_policy()):
+                        return 'policy_changed'
+                    if pending.generation == self.moderation_generation:
+                        return 'moderation_cancelled'
+                    return fallback
+                if not current():
+                    await self.finish_history(pending, "skipped", reason="policy_changed" if not self.safety_store.is_current(current_policy()) else "moderation_cancelled" if pending.generation == self.moderation_generation else "Результат отменён: настройки, очередь наград или срок актуальности изменились.")
+                    self.event("error" if self.quota_error else "skipped", reason=(
+                        "Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
+                        if self.quota_error else
+                        "Подготовленная реплика отменена: изменились настройки, контекст или очередь наград либо истёк срок ответа."))
+                else:
+                    try:
+                        stage = "autonomous_validation"
+                        result = pending.future.result()
+                        # Injected request implementations are checked by the same protocol.
+                        decision = parse_decision(json.dumps({key: getattr(result, key)
+                            for key in ("action", "text", "target", "basis", "reason")}), self.settings.max_chars)
+                        local_bundle = getattr(result, "local_bundle", None)
+                        creative_card_id = getattr(result, "creative_card_id", None)
+                        if creative_card_id is not None and (self.local_manager is None
+                                or not isinstance(local_bundle, LocalBundle)
+                                or creative_card_id not in local_bundle.candidate_ids):
+                            raise LocalResultError("Некорректная локальная отсылка.")
+                        check_basis(decision, pending.messages, pending.new_ids)
+                        if redact_secret(decision.reply, self.cfg.get("AI_API_KEY", "")) != decision.reply:
+                            raise ValueError("secret in reply")
+                        def valid():
+                            return (current() and not set(decision.basis).intersection(self.consumed_ids)
+                                    and (not isinstance(local_bundle, LocalBundle)
+                                         or self.local_manager.is_current(local_bundle.snapshot))
+                                    and (creative_card_id is None
+                                         or self.local_manager.is_allowed(local_bundle, creative_card_id))
+                                    and still_relevant(decision, pending.messages,
+                                        self.buffer.fresh(self.clock(), self.settings), pending.new_ids, self.clock(), self.settings))
+                        text = decision.reply
+                        approval = None
+                        if decision.action != "silent" and valid():
+                            addressed = next((row for row in pending.messages if row["sequence"] in decision.basis
+                                              and (not decision.target or row["author"] == decision.target)), {})
+                            target_id = addressed.get("user_id", "")
+                            if self.output_fragments.check(decision.text, target_id, "public-replies"):
+                                raise SafetyBlocked(SafetyReview("blocked", "", ("privacy_blocked",)))
+                            scene = "\n".join(row["text"] for row in pending.messages if row["sequence"] in decision.basis)
+                            approval = await asyncio.to_thread(review_candidate, self.cfg, pending.answer_model or self.cfg.get("AI_MODEL", ""), text,
+                                kind="autonomous", target=decision.target, context=scene, limit=min(self.settings.max_chars, 450),
+                                before_request=lambda: self.before_request(pending.generation, pending.cancel, pending.window, pending.local_snapshot),
+                                cancelled=lambda: not current())
+                            if pending.review_ref is not None:
+                                pending.review_ref[0] = approval
+                            if not self.safety_store.is_current(current_policy()):
+                                from dataclasses import replace
+                                approval = replace(approval, status='cancelled', text='', reasons=('policy_changed',))
+                                if pending.review_ref is not None:
+                                    pending.review_ref[0] = approval
+                            if not approval.allowed:
+                                raise SafetyBlocked(approval)
+                            validate_publication(text, approval, limit=min(self.settings.max_chars, 450), target=decision.target)
+                        previous = [row[1] for row in self.recent_candidates if self.clock() - row[0] < 3600]
+                        previous += [row["text"] for row in self.recent_replies if self.clock() - row["time"] < 3600]
+                        if self.last_text:
+                            previous.append(self.last_text)
+                        if decision.action == "silent":
+                            await self.finish_history(pending, "silent", decision=decision)
+                            self.event("silent", action=decision.action, reason=decision.reason)
+                        elif not valid():
+                            reason = cancellation_reason('Повод устарел или обсуждение сменилось.')
+                            await self.finish_history(pending, "skipped", decision=decision, reason=reason)
+                            self.event("skipped", reason=reason)
+                        elif repeats(text, previous):
+                            await self.finish_history(pending, "skipped", decision=decision, reason="Повтор недавней реплики или вопроса.")
+                            self.event("skipped", reason="Повтор недавней реплики или вопроса.")
+                        elif self.settings.mode == "preview":
+                            await self.finish_history(pending, "preview", decision=decision)
+                            if not valid():
+                                reason = cancellation_reason('Повод устарел.')
+                                await self.finish_history(pending, "skipped", reason=reason)
+                                self.event("skipped", reason=reason)
+                            else:
+                                with publication_guard(text, approval, limit=min(self.settings.max_chars, 450), target=decision.target):
+                                    self.reserve(text, decision.basis)
+                                self.event("preview", text, decision.reason,
+                                           reason=("Творческая карточка в предпросмотре: " + redact_secret(
+                                               creative_card_id, self.cfg.get("AI_API_KEY", ""))) if creative_card_id else "",
+                                           target=decision.target, basis=decision.basis)
                         else:
-                            self.reserve(text, decision.basis)
-                            self.event("preview", text, decision.reason,
-                                       reason=("Творческая карточка в предпросмотре: " + redact_secret(
-                                           creative_card_id, self.cfg.get("AI_API_KEY", ""))) if creative_card_id else "",
-                                       target=decision.target, basis=decision.basis)
-                    else:
-                        kwargs = {"local_bundle": local_bundle, "creative_card_id": creative_card_id} if creative_card_id is not None else {}
-                        kwargs["approval"] = approval
-                        stage = "autonomous_send"
-                        sent = await self.sender(text, valid, lambda: self.reserve(text, decision.basis), **kwargs)
-                        if (sent and pending.generation == self.generation and self.connected
-                                and (pending.cancel is None or not pending.cancel.is_set())):
-                            self.output_fragments.check(decision.text, target_id, "public-replies", remember=True)
-                            self.remember_reply(text, target=decision.target, basis=decision.basis,
-                                                user_id=target_id, source_rows=pending.messages)
-                        final_reason = ("moderation_cancelled" if pending.generation == self.moderation_generation else
-                                        "" if sent else "Реплика уступила приоритет или была отменена.")
-                        await self.finish_history(pending, "sent" if sent else "skipped", decision=decision,
-                            sent_text=text if sent else "", reason=final_reason)
-                        self.event("published" if sent else "skipped", text if sent else "", decision.reason,
-                                   final_reason,
-                                   target=decision.target if sent else "", basis=decision.basis if sent else ())
-                except (SafetyBlocked, PrivacyViolation) as exc:
-                    reason = ",".join(exc.review.reasons) if isinstance(exc, SafetyBlocked) else "privacy_blocked"
-                    await self.finish_history(pending, "rejected", reason=reason)
-                    self.event("skipped", reason=reason)
-                except RequestCancelled:
-                    await self.finish_history(pending, "cancelled", reason="Подготовка отменена: повод устарел или исчерпан лимит AI-запросов.")
-                    self.event("skipped", reason=("Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
-                        if self.quota_error else "Подготовка отменена: повод устарел, уже использован или исчерпан лимит AI-запросов."))
-                except Exception as exc:
-                    code = exc.code if isinstance(exc, ParticipationError) else "autonomous_timeout" if isinstance(exc, TimeoutError) else stage
-                    await self.finish_history(pending, "send_error" if code == "autonomous_send" else "error", reason=code)
-                    # Raw rejected provider payloads and credentials are never retained.
-                    self.event("error", reason=code)
-                    self.next_check = self.clock() + max(120, self.settings.check_max_seconds)
+                            kwargs = {"local_bundle": local_bundle, "creative_card_id": creative_card_id} if creative_card_id is not None else {}
+                            kwargs["approval"] = approval
+                            stage = "autonomous_send"
+                            sent = await self.sender(text, valid, lambda: self.reserve(text, decision.basis), **kwargs)
+                            if (sent and pending.generation == self.generation and self.connected
+                                    and (pending.cancel is None or not pending.cancel.is_set())):
+                                self.output_fragments.check(decision.text, target_id, "public-replies", remember=True)
+                                self.remember_reply(text, target=decision.target, basis=decision.basis,
+                                                    user_id=target_id, source_rows=pending.messages)
+                            final_reason = ('moderation_cancelled' if pending.generation == self.moderation_generation else
+                                            '' if sent else cancellation_reason('Реплика уступила приоритет или была отменена.'))
+                            await self.finish_history(pending, "sent" if sent else "skipped", decision=decision,
+                                sent_text=text if sent else "", reason=final_reason)
+                            self.event("published" if sent else "skipped", text if sent else "", decision.reason,
+                                       final_reason,
+                                       target=decision.target if sent else "", basis=decision.basis if sent else ())
+                    except (SafetyBlocked, PrivacyViolation) as exc:
+                        if pending.review_ref is not None:
+                            pending.review_ref[0] = exc.review if isinstance(exc, SafetyBlocked) else SafetyReview("blocked", "", ("privacy_blocked",))
+                        reason = ",".join(exc.review.reasons) if isinstance(exc, SafetyBlocked) else "privacy_blocked"
+                        await self.finish_history(pending, "rejected", reason=reason)
+                        self.event("skipped", reason=reason)
+                    except RequestCancelled:
+                        await self.finish_history(pending, "cancelled", reason="Подготовка отменена: повод устарел или исчерпан лимит AI-запросов.")
+                        self.event("skipped", reason=("Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
+                            if self.quota_error else "Подготовка отменена: повод устарел, уже использован или исчерпан лимит AI-запросов."))
+                    except Exception as exc:
+                        code = exc.code if isinstance(exc, ParticipationError) else "autonomous_timeout" if isinstance(exc, TimeoutError) else stage
+                        await self.finish_history(pending, "send_error" if code == "autonomous_send" else "error", reason=code)
+                        # Raw rejected provider payloads and credentials are never retained.
+                        self.event("error", reason=code)
+                        self.next_check = self.clock() + max(120, self.settings.check_max_seconds)
             self.reviewing = None
         if self.pending is not None or self.reviewing is not None or self.clock() < self.next_check:
             return
@@ -669,6 +703,16 @@ class Autonomous:
                 (now - self.last_message_at < self.settings.settle_seconds
                  and now - self.batch_started < self.settings.max_wait_seconds)):
             return
+        policy = self.safety_store.snapshot()
+        if policy.error:
+            if not getattr(self, '_safety_error_reported', False):
+                self._safety_error_reported = True
+                self.event('error', reason='settings_invalid')
+                if self.history_store is not None:
+                    await asyncio.to_thread(self.history_store.safety_event, 'autonomous',
+                        SafetyReview('error', '', ('settings_invalid',), policy_version=policy.version))
+            return
+        self._safety_error_reported = False
         rows = tuple(dict(row) for row in self.buffer.fresh(now, self.settings))
         new_ids = frozenset(row["sequence"] for row in rows if row["sequence"] > self.last_checked
                             and now - row["time"] <= self.settings.reply_ttl_seconds)
@@ -715,8 +759,10 @@ class Autonomous:
                 else:
                     history_ref[0] = self.history_store.add("autonomous", status, context=context, **fields)
             kwargs["on_result"] = generated
-        future = self.executor.submit(self.request, dict(self.cfg), rows, self.settings, **kwargs)
-        self.pending = Pending(future, generation, rows, new_ids, now, cancel, window, local_snapshot, history_ref)
+        from functools import partial
+        request = partial(run_with_policy, self.safety_store, policy, self.request)
+        future = self.executor.submit(request, dict(self.cfg), rows, self.settings, **kwargs)
+        self.pending = Pending(future, generation, rows, new_ids, now, cancel, window, local_snapshot, history_ref, policy, [None], self.cfg.get('AI_MODEL', ''))
         self.event("pending", reason="Выбираю один разговор; при уместном поводе подготовлю реплику.")
 
     @state_locked

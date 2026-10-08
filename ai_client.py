@@ -13,6 +13,7 @@ from memory import context_for
 from reply_rules import ANSWER_LENGTH_RULE, ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
 from privacy import PrivacyViolation, check_output, check_question, protected_messages, safe_history_text
 from safety import SafetyBlocked, check_candidate_source
+from safety_settings import link_prompt
 from recent_context import PERSONAL_REPLY_LIMIT
 
 AI_REQUEST_TIMEOUT_SECONDS = 20
@@ -222,6 +223,8 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
     if viewer_context:
         messages.append({"role": "system", "content": viewer_context})
     messages.append({"role": "system", "content": ANSWER_LENGTH_RULE})
+    if link_prompt():
+        messages.append({'role': 'system', 'content': link_prompt()})
     if usable_local_bundle(local_bundle):
         messages.append({"role": "system", "content": local_bundle.prompt})
         messages.append({"role": "system", "content": local_context_rules(local_bundle)})

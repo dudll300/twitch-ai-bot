@@ -104,7 +104,7 @@ def main() -> None:
             window = gui.MainWindow()
         window.show()
         app.processEvents()
-        assert window.pages.count() == 8
+        assert window.pages.count() == len(gui.PAGES)
         auto_page = window.autonomous_page
         standard_instructions = auto_page.saved.autonomous_prompt
         assert auto_page.autonomous_prompt.toPlainText() == standard_instructions

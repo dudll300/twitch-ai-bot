@@ -45,10 +45,10 @@ def main():
             window = new_window(root)
             page = window.local_context_page
             path = root / "local-context.json"
-            assert window.pages.count() == 8
+            assert window.pages.count() == len(gui.PAGES)
             assert not page.enabled.isChecked() and not page.rows and not page.dirty
             assert not path.exists(), "Opening the tab must not create a dictionary"
-            window._navigate(6)
+            window._navigate(gui.PAGE_LOCAL_CONTEXT)
             first = fill_card(page, "Тихие шаги", "Локальная отсылка к осторожному плану.")
             page.aliases.setPlainText("шаги в тишине\nТИХИЙ план")
             page.avoid.setPlainText("Не употреблять в серьёзном споре.")
@@ -67,7 +67,7 @@ def main():
             page.meaning.setPlainText("Черновик пояснения.")
             page.inputs["global_pause_seconds"].setValue(600)
             window._navigate(1)
-            window._navigate(6)
+            window._navigate(gui.PAGE_LOCAL_CONTEXT)
             assert page.name.text() == "Очень тихие шаги" and page.meaning.toPlainText() == "Черновик пояснения."
             assert window._save(), "General save remains available without Twitch"
             assert page.dirty, "General save must preserve separate local drafts"
@@ -116,7 +116,7 @@ def main():
             with patch.object(gui, "russian_question", return_value=QMessageBox.Save), \
                  patch.object(local_context_gui, "save_document", side_effect=OSError("private-save-failure")):
                 window.closeEvent(close)
-            assert not close.isAccepted() and page.dirty and window.pages.currentIndex() == 6
+            assert not close.isAccepted() and page.dirty and window.pages.currentIndex() == gui.PAGE_LOCAL_CONTEXT
             assert page.meaning.toPlainText() == "Закрываемый черновик."
             assert load_document(path).cards[0].meaning == "Черновик пояснения."
             close = QCloseEvent()

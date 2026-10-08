@@ -60,7 +60,7 @@ def main():
         window.show()
         app.processEvents()
         page = window.testing_page
-        window._navigate(5)
+        window._navigate(gui.PAGE_TESTING)
         app.processEvents()
         assert page.models.height() >= 360
         assert page.models.width() > page.width() * 0.75
@@ -73,10 +73,10 @@ def main():
         editor = window.profiles_editor
         editor.prompt.setPlainText("Несохранённая личная инструкция")
         window.test_prompt_button.click()
-        assert window.pages.currentIndex() == 5
+        assert window.pages.currentIndex() == gui.PAGE_TESTING
         assert page.sender.currentData() == "viewer"
         editor.test_button.click()
-        assert window.pages.currentIndex() == 5
+        assert window.pages.currentIndex() == gui.PAGE_TESTING
         assert page.sender.currentData() == "profile" and page.viewer.currentData() == 0
         assert window._dirty
         assert before == {path.name: path.read_bytes() for path in root.iterdir()}
@@ -163,8 +163,8 @@ def main():
         editor.enabled.setChecked(False)
         # Exercise the actual shared evaluator and existing result widgets.
         from safety import review_candidate
-        for verdict, expected in (({"allowed": False, "reasons": ["unsupported_personal_claim"]}, "unsupported_personal_claim"),
-                                  ("bad verdict", "review_unavailable"),
+        for verdict, expected in (({"allowed": False, "reasons": ["unsupported_personal_claim"]}, "Серьёзное личное обвинение"),
+                                  ("bad verdict", "AI-проверка не завершилась"),
                                   ({"allowed": True, "reasons": []}, "разрешено")):
             def safety_http(req, timeout):
                 payload = json.loads(req.data)

@@ -39,6 +39,11 @@ CREATE TABLE IF NOT EXISTS events (
     time REAL NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_record ON events(record_id, seq);
+CREATE TABLE IF NOT EXISTS safety_events (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT, time REAL NOT NULL, scenario TEXT NOT NULL,
+    record_id TEXT, status TEXT NOT NULL, stage TEXT NOT NULL, reasons TEXT NOT NULL,
+    ai_attempted INTEGER NOT NULL, model TEXT NOT NULL, seconds REAL, policy_version TEXT NOT NULL
+);
 """
 
 
@@ -101,6 +106,34 @@ class MessageHistory:
     @staticmethod
     def _search(values):
         return "\n".join(str(values.get(field, "")) for field in FIELDS).casefold()
+
+    def safety_event(self, scenario, review, *, record_id=None):
+        """Only enumerated metadata; never candidate text or evaluator output."""
+        from safety import REASON_NAMES
+        if scenario not in {'reward', 'autonomous', 'preview'}:
+            raise ValueError('Unknown safety scenario')
+        if review.status not in {'allowed', 'local_allowed', 'blocked', 'error', 'cancelled'}:
+            raise ValueError('Unknown safety status')
+        stage = review.stage if review.stage in {'question', 'answer', 'ai_review', 'publication'} else 'answer'
+        reasons = [code for code in review.reasons if code in REASON_NAMES]
+        model = self.redact(review.model[:200]) if review.ai_attempted else ''
+        def insert(connection):
+            connection.execute('INSERT INTO safety_events(time,scenario,record_id,status,stage,reasons,ai_attempted,model,seconds,policy_version) VALUES (?,?,?,?,?,?,?,?,?,?)',
+                (self.clock(), scenario, record_id, review.status, stage, json.dumps(reasons),
+                 int(review.ai_attempted), model, review.seconds, review.policy_version[:64]))
+            connection.execute('DELETE FROM safety_events WHERE seq NOT IN (SELECT seq FROM safety_events ORDER BY seq DESC LIMIT 200)')
+        return self._write(insert)
+
+    def safety_recent(self, limit=20):
+        def select(connection):
+            if connection is None or not connection.execute("SELECT 1 FROM sqlite_master WHERE name='safety_events'").fetchone():
+                return []
+            rows = [dict(row) for row in connection.execute('SELECT * FROM safety_events ORDER BY seq DESC LIMIT ?',
+                    (max(1, min(int(limit), 200)),))]
+            for row in rows:
+                row['reasons'] = tuple(json.loads(row['reasons']))
+            return rows
+        return self._read(select)
 
     def add(self, kind, status, *, context=None, **values):
         if kind not in {"reward", "autonomous"} or status not in STATUSES:

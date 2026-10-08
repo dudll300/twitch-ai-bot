@@ -149,7 +149,7 @@ def main():
         assert window.prompt.toPlainText() == "Правка общего во время запроса"
 
         builder.test_button.click()
-        assert window.pages.currentIndex() == 5
+        assert window.pages.currentIndex() == gui.PAGE_TESTING
         assert page.prompt_override == builder.preview.toPlainText()
         snapshot = window._test_snapshot(["exact/a"], "Вопрос?", "profile", "", 0,
                                          prompt_override=page.prompt_override)

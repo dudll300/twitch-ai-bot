@@ -173,8 +173,13 @@ def check_all_page_text_fields(app):
         checked, expanded = 0, set()
         for index in range(window.pages.count()):
             window._navigate(index)
+            if index == gui.PAGE_SAFETY:
+                window.safety_page.link_mode.setCurrentIndex(1)
             app.processEvents()
             for editor in window.pages.widget(index).findChildren(QPlainTextEdit):
+                if index == gui.PAGE_TESTING:
+                    window.testing_page.mode.setCurrentIndex(1 if window.testing_page.diagnostic.isAncestorOf(editor) else 0)
+                    app.processEvents()
                 assert isinstance(editor, ScrollPlainTextEdit), "A page uses an inconsistent text control"
                 outer = editor.parentWidget()
                 while outer is not None and not isinstance(outer, QScrollArea):
