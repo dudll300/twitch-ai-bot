@@ -182,8 +182,14 @@ def impersonates_recipient(text, roles, basis, selected=()):
     if not recipients or any(role.kind == "bot" for role in recipients):
         return False
     # General observer opinions ('согласна', 'думаю') remain available.
-    if re.search(r"^(?:терплю\b|подожду\b|разрешаю\b)", text.strip(), re.I):
-        return True
+    directed = {role.id for role in recipients if role.kind in {'owner', 'viewer'}}
+    for answer, request in ((r'терплю\b', r'потерпи(?:те)?\b'),
+                            (r'подожду\b', r'подожди(?:те)?\b'),
+                            (r'разрешаю\b', r'(?:разреши(?:те)?|можно)\b')):
+        if (re.search('^' + answer, text.strip(), re.I)
+                and any(row['sequence'] in directed and re.search(r'\b' + request, row['text'], re.I)
+                        for row in selected)):
+            return True
     joining = any(re.search(r"\b(?:с вами|к вам|можно (?:зайти|присоединиться))\b", row["text"], re.I)
                   for row in selected)
     return joining and bool(re.search(r"^(?:заходи(?:те)?\b|можно[,! ]+конечно\b)", text.strip(), re.I))

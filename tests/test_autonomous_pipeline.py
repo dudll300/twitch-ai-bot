@@ -157,7 +157,7 @@ class PipelineControllerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.controller.requests), 2)
         self.assertFalse(self.controller.quota)
         self.assertEqual(self.events[-1]["status"], "error")
-        self.assertEqual(self.events[-1]["reason"], "autonomous_timeout")
+        self.assertEqual(self.events[-1]["reason"], "autonomous_generation_timeout")
         self.assertNotIn("private body", str(self.events))
         self.assertNotIn("test-secret", str(self.events))
 
@@ -220,7 +220,8 @@ class PipelineControllerTests(unittest.IsolatedAsyncioTestCase):
         await self.controller.tick()
         self.assertFalse(calls)
         self.assertFalse(self.controller.quota)
-        self.assertEqual(len(self.controller.requests), 1)  # Reservation stays conservative after an expired attempt.
+        self.assertEqual(len(self.controller.requests), 0)  # No HTTP started; rollback precedes HTTP under the lock.
+        self.assertEqual(json.loads((self.root / 'autonomous-quota.json').read_text())['requests'], [])
 
     async def test_counter_write_failure_blocks_http_and_fails_closed(self):
         await self.start()

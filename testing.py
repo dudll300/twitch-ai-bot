@@ -19,7 +19,7 @@ from viewer_recognition import related_context
 from reply_rules import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
 from safety import SafetyBlocked, SafetyReview, review_candidate, describe_review, validate_publication
 from safety_settings import PolicyStore, current_policy, policy_scope, policy_binding
-from privacy import PrivacyViolation
+from privacy import PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError
 
 
 @dataclass(frozen=True)
@@ -209,9 +209,13 @@ def _test_model(snapshot: TestSnapshot, model: str, *, cancelled=lambda: False) 
         validate_publication(answer, review, limit=ANSWER_MAX_CHARS)
         return Result(model, time.monotonic() - started,
                       answer=redact_secret(answer, snapshot.auth.api_key), safety_status="allowed")
-    except (SafetyBlocked, PrivacyViolation) as exc:
+    except (SafetyBlocked, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError) as exc:
         reasons = exc.review.reasons if isinstance(exc, SafetyBlocked) else ("privacy_blocked",)
+        if isinstance(exc, (PrivacyAnalysisLimit, PrivacyCheckError)):
+            reasons = (exc.code,)
         review = exc.review if isinstance(exc, SafetyBlocked) else SafetyReview('blocked', '', reasons)
+        if isinstance(exc, (PrivacyAnalysisLimit, PrivacyCheckError)):
+            review = SafetyReview('error', '', reasons)
         return Result(model, time.monotonic() - started, error=describe_review(review),
                       safety_status=review.status, safety_reasons=reasons)
     except Exception as exc:

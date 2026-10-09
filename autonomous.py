@@ -4,7 +4,7 @@ import asyncio
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from functools import wraps
 import json
@@ -19,8 +19,8 @@ from threading import Event, RLock
 import urllib.request
 import uuid
 
-from ai_client import clean_text, redact_secret
-from privacy import FragmentGuard, PrivacyViolation, unsafe_question
+from ai_client import RequestTrace, clean_text, redact_secret
+from privacy import FragmentGuard, PrivacyAnalysisLimit, PrivacyCheckError, PrivacyViolation, unsafe_question
 from irc import moderation_event
 from safety_settings import PolicyStore, policy_scope, run_with_policy, current_policy
 from safety import SafetyBlocked, SafetyReview, review_candidate, validate_publication, publication_guard
@@ -188,7 +188,10 @@ class ChatBuffer:
         author = parts[0].lstrip(":").split("!", 1)[0].casefold()
         if not re.fullmatch(r"[a-z0-9_]{1,25}", author) or author == bot_name.casefold() or tags.get("custom-reward-id"):
             return False
-        if unsafe_question(text):
+        try:
+            if unsafe_question(text):
+                return False
+        except PrivacyAnalysisLimit:
             return False
         uid = tags.get("user-id", "")
         mid = tags.get("id", "")
@@ -249,6 +252,7 @@ class Pending:
     policy: object = None
     review_ref: object = None
     answer_model: str = ''
+    request_trace: object = field(default_factory=RequestTrace)
 
 
 @dataclass
@@ -484,22 +488,56 @@ class Autonomous:
                 _, revision = load_settings(self.root / "autonomous.json")
             except (OSError, ValueError, TypeError):
                 revision = "invalid"
-            if (cancel.is_set() or generation != self.generation or revision != self.revision
-                    or (local_snapshot is not None and not self.local_manager.is_current(local_snapshot))
-                    or remaining <= 0 or not self.eligible(new_context=False)):
-                raise RequestCancelled("Реплика отменена или повод устарел.")
+            if cancel.is_set() or generation != self.generation:
+                raise RequestCancelled(code='moderation_cancelled' if generation == self.moderation_generation else 'cancelled')
+            if revision != self.revision or (local_snapshot is not None and not self.local_manager.is_current(local_snapshot)):
+                raise RequestCancelled(code='settings_changed')
+            if self.paid_busy():
+                raise RequestCancelled(code='paid_priority')
+            if remaining <= 0:
+                raise RequestCancelled(code='ttl_expired')
+            if not self.eligible(new_context=False):
+                raise RequestCancelled()
             if len(self.requests) >= self.settings.request_hourly_limit:
-                raise RequestCancelled("Исчерпан часовой лимит AI-запросов.")
+                raise RequestCancelled(code='quota_exhausted')
+            remaining = window.remaining(self.clock(), self.monotonic_clock())
+            if remaining <= 0:
+                raise RequestCancelled(code='ttl_expired')
             requests = self.requests + [self.clock()]
             try:
                 self.write_quota(self.quota, requests, self.last_text)
             except OSError:
                 self.quota_error = True
-                raise RequestCancelled("Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены.") from None
+                raise RequestCancelled(code='quota_storage_error') from None
             self.requests = requests
             remaining = window.remaining(self.clock(), self.monotonic_clock())
-            if remaining <= 0:
-                raise RequestCancelled("Время на самостоятельную реплику истекло.")
+            # Storage itself can take longer than the remaining TTL. This is
+            # the sole rollback: under the same lock, before any HTTP starts.
+            # A network failure never enters this branch or refunds an attempt.
+            code = ('ttl_expired' if remaining <= 0 else
+                    'cancelled' if cancel.is_set() or generation != self.generation else
+                    'paid_priority' if self.paid_busy() else '')
+            if not code:
+                try:
+                    _, latest_revision = load_settings(self.root / 'autonomous.json')
+                except (OSError, ValueError, TypeError):
+                    latest_revision = 'invalid'
+                if latest_revision != self.revision or (local_snapshot is not None and not self.local_manager.is_current(local_snapshot)):
+                    code = 'settings_changed'
+                elif not self.safety_store.is_current(current_policy()):
+                    code = 'policy_changed'
+            remaining = window.remaining(self.clock(), self.monotonic_clock())
+            if not code and remaining <= 0:
+                code = 'ttl_expired'
+            if code:
+                previous = requests[:-1]
+                try:
+                    self.write_quota(self.quota, previous, self.last_text)
+                except OSError:
+                    self.quota_error = True
+                    raise RequestCancelled(code='quota_storage_error') from None
+                self.requests = previous
+                raise RequestCancelled(code=code)
             return min(20, remaining)
 
     def before_generation(self, plan, messages, new_ids, generation, cancel, window):
@@ -512,7 +550,7 @@ class Autonomous:
                     or set(plan.basis).intersection(self.consumed_ids)
                     or not still_relevant(decision, messages, self.buffer.fresh(self.clock(), self.settings),
                                           new_ids, self.clock(), self.settings)):
-                raise RequestCancelled("Выбранный повод уже использован или устарел.")
+                raise RequestCancelled(code='ttl_expired' if window.remaining(self.clock(), self.monotonic_clock()) <= 0 else 'cancelled')
 
     async def finish_history(self, pending, status, *, decision=None, reason="", sent_text=""):
         if self.history_store is None:
@@ -523,7 +561,7 @@ class Autonomous:
             # Injectable request implementations may omit the observer. Keep
             # only their explicit anchors, never attach the entire chat batch.
             context = None
-            if (status not in ("rejected", "skipped", "cancelled") and reason != "moderation_cancelled"
+            if (status not in ("rejected", "skipped", "cancelled", "error") and reason != "moderation_cancelled"
                     and decision is not None and decision.action != "silent"):
                 context = {"conversation": [dict(row) for row in pending.messages
                             if row["sequence"] in decision.basis], "basis": list(decision.basis)}
@@ -540,7 +578,7 @@ class Autonomous:
             # when its request was cancelled before the controller consumed it.
             detail_status = "silent" if decision is not None and decision.action == "silent" else status
             fields = {"sent_text": sent_text}
-            if status in ("rejected", "skipped", "cancelled"):
+            if status in ("rejected", "skipped", "cancelled", "error"):
                 fields["answer"] = ""
                 fields["context"] = None
             elif decision is not None and decision.action != "silent":
@@ -555,10 +593,14 @@ class Autonomous:
             await asyncio.to_thread(self.history_store.update, record_id, detail_status, **fields)
             review = pending.review_ref[0] if pending.review_ref else None
             if reason in ("moderation_cancelled", "policy_changed"):
-                from dataclasses import replace
                 review = replace(review or SafetyReview("cancelled", ""), status="cancelled", text="",
                                  reasons=(reason,), stage="publication")
+            if review is None:
+                review = SafetyReview('local_allowed' if status in {'silent', 'sent', 'preview'} else 'cancelled', '',
+                                     stage=pending.request_trace.stage)
             if review is not None:
+                review = replace(review, http_attempts=pending.request_trace.counts(),
+                                 twitch_attempted=pending.request_trace.twitch_attempted)
                 await asyncio.to_thread(self.history_store.safety_event,
                     "preview" if self.settings.mode == "preview" else "autonomous", review, record_id=record_id)
 
@@ -581,9 +623,18 @@ class Autonomous:
                         return 'policy_changed'
                     if pending.generation == self.moderation_generation:
                         return 'moderation_cancelled'
+                    if self.paid_busy():
+                        return 'paid_priority'
+                    if (pending.window is not None and pending.window.remaining(self.clock(), self.monotonic_clock()) <= 0
+                            or self.clock() - pending.started_at > self.settings.reply_ttl_seconds):
+                        return 'ttl_expired'
+                    if pending.local_snapshot is not None and not self.local_manager.is_current(pending.local_snapshot):
+                        return 'settings_changed'
+                    if pending.generation != self.generation or pending.cancel is not None and pending.cancel.is_set():
+                        return 'cancelled'
                     return fallback
                 if not current():
-                    await self.finish_history(pending, "skipped", reason="policy_changed" if not self.safety_store.is_current(current_policy()) else "moderation_cancelled" if pending.generation == self.moderation_generation else "Результат отменён: настройки, очередь наград или срок актуальности изменились.")
+                    await self.finish_history(pending, "skipped", reason=cancellation_reason('cancelled'))
                     self.event("error" if self.quota_error else "skipped", reason=(
                         "Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
                         if self.quota_error else
@@ -624,7 +675,8 @@ class Autonomous:
                             approval = await asyncio.to_thread(review_candidate, self.cfg, pending.answer_model or self.cfg.get("AI_MODEL", ""), text,
                                 kind="autonomous", target=decision.target, context=scene, limit=min(self.settings.max_chars, 450),
                                 before_request=lambda: self.before_request(pending.generation, pending.cancel, pending.window, pending.local_snapshot),
-                                cancelled=lambda: not current())
+                                cancelled=lambda: not current(), request_trace=pending.request_trace,
+                                cancellation_reason=lambda: cancellation_reason('cancelled'))
                             if pending.review_ref is not None:
                                 pending.review_ref[0] = approval
                             if not self.safety_store.is_current(current_policy()):
@@ -666,7 +718,10 @@ class Autonomous:
                             kwargs = {"local_bundle": local_bundle, "creative_card_id": creative_card_id} if creative_card_id is not None else {}
                             kwargs["approval"] = approval
                             stage = "autonomous_send"
-                            sent = await self.sender(text, valid, lambda: self.reserve(text, decision.basis), **kwargs)
+                            def reserve_send():
+                                self.reserve(text, decision.basis)
+                                pending.request_trace.twitch_attempted = True
+                            sent = await self.sender(text, valid, reserve_send, **kwargs)
                             if (sent and pending.generation == self.generation and self.connected
                                     and (pending.cancel is None or not pending.cancel.is_set())):
                                 self.output_fragments.check(decision.text, target_id, "public-replies", remember=True)
@@ -679,18 +734,25 @@ class Autonomous:
                             self.event("published" if sent else "skipped", text if sent else "", decision.reason,
                                        final_reason,
                                        target=decision.target if sent else "", basis=decision.basis if sent else ())
-                    except (SafetyBlocked, PrivacyViolation) as exc:
+                    except (SafetyBlocked, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError) as exc:
+                        review = (exc.review if isinstance(exc, SafetyBlocked) else
+                            SafetyReview('blocked' if isinstance(exc, PrivacyViolation) else 'error', '',
+                                ('privacy_blocked' if isinstance(exc, PrivacyViolation) else exc.code,),
+                                stage=getattr(exc, 'stage', pending.request_trace.stage)))
                         if pending.review_ref is not None:
-                            pending.review_ref[0] = exc.review if isinstance(exc, SafetyBlocked) else SafetyReview("blocked", "", ("privacy_blocked",))
-                        reason = ",".join(exc.review.reasons) if isinstance(exc, SafetyBlocked) else "privacy_blocked"
-                        await self.finish_history(pending, "rejected", reason=reason)
+                            pending.review_ref[0] = review
+                        reason = ','.join(review.reasons)
+                        await self.finish_history(pending, 'error' if review.status == 'error' else 'cancelled' if review.status == 'cancelled' else 'rejected', reason=reason)
                         self.event("skipped", reason=reason)
-                    except RequestCancelled:
-                        await self.finish_history(pending, "cancelled", reason="Подготовка отменена: повод устарел или исчерпан лимит AI-запросов.")
-                        self.event("skipped", reason=("Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
-                            if self.quota_error else "Подготовка отменена: повод устарел, уже использован или исчерпан лимит AI-запросов."))
+                    except RequestCancelled as exc:
+                        if pending.review_ref is not None:
+                            pending.review_ref[0] = SafetyReview('cancelled', '', (exc.code,), stage=pending.request_trace.stage)
+                        await self.finish_history(pending, 'cancelled', reason=exc.code)
+                        self.event('skipped', reason=exc.code)
                     except Exception as exc:
                         code = exc.code if isinstance(exc, ParticipationError) else "autonomous_timeout" if isinstance(exc, TimeoutError) else stage
+                        if pending.review_ref is not None:
+                            pending.review_ref[0] = SafetyReview('error', '', (code,), stage=pending.request_trace.stage)
                         await self.finish_history(pending, "send_error" if code == "autonomous_send" else "error", reason=code)
                         # Raw rejected provider payloads and credentials are never retained.
                         self.event("error", reason=code)
@@ -725,11 +787,13 @@ class Autonomous:
             self.executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="autonomous-ai")
         # Recognition and HTTP both run in the same background worker, never in IRC's event loop.
         generation, cancel = self.generation, Event()
+        request_trace = RequestTrace()
         deadline = min(now + self.settings.reply_ttl_seconds,
                        max(row["time"] for row in rows if row["sequence"] in new_ids) + self.settings.reply_ttl_seconds)
         window = RequestWindow(deadline, self.monotonic_clock() + max(0, deadline - now))
         local_snapshot = self.local_manager.snapshot() if self.local_manager is not None else None
         kwargs = {"profiles": deepcopy(self.profiles), "memory_data": deepcopy(self.memory_data), "new_ids": new_ids,
+                  "request_trace": request_trace,
                   "consumed_ids": tuple(self.consumed_ids),
                   "recent_replies": tuple(dict(row) for row in self.recent_replies if now - row["time"] < 3600),
                   "before_request": lambda: self.before_request(generation, cancel, window, local_snapshot),
@@ -762,7 +826,7 @@ class Autonomous:
         from functools import partial
         request = partial(run_with_policy, self.safety_store, policy, self.request)
         future = self.executor.submit(request, dict(self.cfg), rows, self.settings, **kwargs)
-        self.pending = Pending(future, generation, rows, new_ids, now, cancel, window, local_snapshot, history_ref, policy, [None], self.cfg.get('AI_MODEL', ''))
+        self.pending = Pending(future, generation, rows, new_ids, now, cancel, window, local_snapshot, history_ref, policy, [None], self.cfg.get('AI_MODEL', ''), request_trace)
         self.event("pending", reason="Выбираю один разговор; при уместном поводе подготовлю реплику.")
 
     @state_locked

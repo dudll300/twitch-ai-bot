@@ -1,6 +1,7 @@
 """Shared chat request construction and transport; no Twitch connection or writes."""
 
 import http.client
+from dataclasses import dataclass, field
 import json
 import math
 import re
@@ -11,12 +12,23 @@ from configuration import SYSTEM_PROMPT
 from local_context import LocalReply, LocalResultError
 from memory import context_for
 from reply_rules import ANSWER_LENGTH_RULE, ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
-from privacy import PrivacyViolation, check_output, check_question, protected_messages, safe_history_text
+from privacy import PrivacyAnalysisLimit, PrivacyCheckError, PrivacyViolation, check_output, check_question, protected_messages, safe_history_text
 from safety import SafetyBlocked, check_candidate_source
 from safety_settings import link_prompt
 from recent_context import PERSONAL_REPLY_LIMIT
 
 AI_REQUEST_TIMEOUT_SECONDS = 20
+
+
+@dataclass
+class RequestTrace:
+    """Safe phase/counters only; never retains request or response content."""
+    stage: str = "selector_request"
+    attempts: dict = field(default_factory=lambda: dict(selector=0, generator=0, review=0))
+    twitch_attempted: bool = False
+
+    def counts(self):
+        return tuple(self.attempts[name] for name in ("selector", "generator", "review"))
 
 
 def redact_secret(text: str, api_key: str) -> str:
@@ -155,7 +167,7 @@ def parse_local_reply(content, bundle, *, api_key="", max_chars=ANSWER_MAX_CHARS
             text = clean_text(text, max_chars)
             if not text:
                 raise ValueError("Пустая реплика")
-    except (SafetyBlocked, PrivacyViolation):
+    except (SafetyBlocked, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError):
         raise
     except (ValueError, TypeError, AttributeError, RecursionError):
         raise LocalResultError(error) from None
@@ -295,15 +307,23 @@ def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
 
 def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
                        max_tokens: int = 512, reject_truncated: bool = False,
-                       timeout_seconds: float = AI_REQUEST_TIMEOUT_SECONDS) -> str:
+                       timeout_seconds: float = AI_REQUEST_TIMEOUT_SECONDS,
+                       before_request=None, request_stage="request", trace=None,
+                       response_content=None) -> str:
     """One exact-model request; callers apply their own text/JSON constraints."""
     if (isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, (int, float))
             or not math.isfinite(timeout_seconds) or timeout_seconds <= 0):
         raise ValueError("Некорректное время ожидания AI API.")
     timeout_seconds = min(timeout_seconds, AI_REQUEST_TIMEOUT_SECONDS)
+    if trace is not None:
+        trace.stage = request_stage + "_request"
     messages = protected_messages(messages)
     for message in messages:
-        check_output(message["content"])
+        try:
+            check_output(message["content"])
+        except (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError) as exc:
+            exc.stage = request_stage + "_request"
+            raise
     payload = {
         "model": model,
         "messages": messages,
@@ -319,8 +339,20 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         },
         method="POST",
     )
+    # All local checks and serialization finish before the durable quota gate.
+    # A reservation immediately precedes urlopen, including failed connections.
+    if before_request is not None:
+        remaining = before_request()
+        if type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0:
+            from participation import RequestCancelled
+            raise RequestCancelled(code="ttl_expired")
+        timeout_seconds = min(timeout_seconds, remaining)
+    if trace is not None and request_stage in trace.attempts:
+        trace.attempts[request_stage] += 1
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            if trace is not None:
+                trace.stage = request_stage + "_response"
             data = json.load(response)
     except urllib.error.HTTPError as exc:
         message = f"AI API вернул HTTP {exc.code}{http_error_detail(exc, cfg['AI_API_KEY'])}"
@@ -347,9 +379,17 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         raise TemporaryAIError("AI API вернул некорректный ответ") from None
     if not isinstance(answer, str) or not answer.strip():
         raise TemporaryAIError("AI API вернул пустой ответ")
-    check_output(answer)
+    if trace is not None:
+        trace.stage = request_stage + "_response"
+    try:
+        check_output(response_content(answer) if response_content is not None else answer)
+    except (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError) as exc:
+        exc.stage = request_stage + "_response"
+        raise
     if redact_secret(answer, cfg["AI_API_KEY"]) != answer:
-        raise PrivacyViolation()
+        exc = PrivacyViolation()
+        exc.stage = request_stage + "_response"
+        raise exc
     if reject_truncated and choice.get("finish_reason") == "length":
         raise TruncatedAIError("AI API обрезал результат. Повторите генерацию с более короткими пожеланиями.")
     return answer

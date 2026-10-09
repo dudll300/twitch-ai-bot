@@ -80,10 +80,11 @@ class ContactTests(unittest.TestCase):
             self.assertNotIn("девять один", saved)
 
     def test_analysis_limits_fail_closed_and_history_hides_over_limit_values(self):
-        for value in ("x" * 200001, json.dumps([f"safe item {index}" for index in range(100)])):
-            with self.assertRaises(privacy.PrivacyViolation):
+        for value in ("x" * 200001, '[' * 20 + '0' + ']' * 20):
+            with self.assertRaises(privacy.PrivacyAnalysisLimit):
                 privacy.check_question(value)
             self.assertEqual(privacy.safe_history_text(value), privacy.HIDDEN_DATA)
+        privacy.check_question(json.dumps([f"safe item {index}" for index in range(100)]))
 
     def test_contact_fragments_are_scoped_bounded_ephemeral_and_clearable(self):
         now = [0]

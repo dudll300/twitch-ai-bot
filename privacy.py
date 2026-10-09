@@ -1,6 +1,7 @@
 """Mandatory privacy rules and conservative local checks; no network or writes."""
 
 import base64
+from dataclasses import dataclass
 from collections import OrderedDict, deque
 import json
 import re
@@ -27,6 +28,81 @@ PRIVACY_RULE = (
 class PrivacyViolation(ValueError):
     def __init__(self):
         super().__init__(PRIVACY_REFUSAL)
+
+
+class PrivacyAnalysisLimit(ValueError):
+    """An incomplete check is fail-closed, but is not evidence of private data."""
+    code = "privacy_analysis_limit"
+
+    def __init__(self):
+        super().__init__("Проверка приватности не завершена: превышен предел сложности.")
+
+
+class PrivacyCheckError(ValueError):
+    code = 'privacy_check_error'
+
+    def __init__(self):
+        super().__init__('Проверка приватности не завершена: техническая ошибка.')
+
+
+@dataclass(frozen=True)
+class ProtocolValue:
+    """Validated metadata supplied by an application builder, never parsed JSON."""
+    value: str
+
+
+def protocol_id(value, *, message=False):
+    pattern = r"[A-Za-z0-9_-]{1,128}" if message else r"[0-9]{1,30}"
+    return ProtocolValue(value) if isinstance(value, str) and re.fullmatch(pattern, value) else value
+
+
+class ApplicationContent(str):
+    """Wire JSON plus the complete set of untrusted leaves to inspect."""
+    def __new__(cls, wire, parts):
+        obj = super().__new__(cls, wire)
+        obj.parts = tuple(parts)
+        return obj
+
+    def replace(self, old, new, count=-1):
+        return ApplicationContent(super().replace(old, new, count),
+                                  (part.replace(old, new, count) for part in self.parts))
+
+
+def application_json(payload):
+    """Only explicit typed metadata is exempt; all keys and other values remain data."""
+    parts, stack = [], [(payload, 0)]
+    nodes = 0
+    while stack:
+        item, depth = stack.pop()
+        nodes += 1
+        if nodes > 16384 or depth > 16:
+            raise PrivacyAnalysisLimit()
+        if isinstance(item, ProtocolValue):
+            continue
+        if isinstance(item, dict):
+            stack.extend((part, depth + 1) for pair in item.items() for part in pair)
+        elif isinstance(item, (list, tuple)):
+            stack.extend((part, depth + 1) for part in item)
+        elif item is not None:
+            parts.append(str(item))
+    # Convert typed keys too; JSON's default hook only handles values.
+    def wire(item):
+        if isinstance(item, ProtocolValue):
+            return item.value
+        if isinstance(item, dict):
+            return {wire(key): wire(value) for key, value in item.items()}
+        if isinstance(item, (list, tuple)):
+            return [wire(value) for value in item]
+        return item
+    result = json.dumps(wire(payload), ensure_ascii=False, allow_nan=False)
+    if len(result) > 400000:
+        raise PrivacyAnalysisLimit()
+    return ApplicationContent(result, parts)
+
+
+def application_text(prefix, payload):
+    content = application_json(payload)
+    return ApplicationContent(prefix + content, (prefix, *content.parts))
 
 
 # Literal addresses cannot span words: "ответь @viewer. Это" is an IRC
@@ -80,49 +156,65 @@ _CONCEPT_DISCUSSION = re.compile(r"^[\s,;:—-]*(?:о|об|про|что\s+та�
 
 
 def analysis_variants(text):
-    """Bounded, non-executable decoding for checks only; never rewrite a reply."""
-    queue = deque([(str(text), 0)])
-    seen, total = set(), 0
-    while queue and len(seen) < 64:
-        raw, depth = queue.popleft()
+    """Structural leaves do not spend the separate budget for extra decoding.
+
+    Every untrusted JSON key, string and number is checked. Depth, nodes and
+    volume bound ordinary traversal; labelled codecs have their own small cap.
+    """
+    parts = text.parts if isinstance(text, ApplicationContent) else (str(text),)
+    queue = deque((part, 0, 0) for part in parts)
+    seen, total, nodes, transforms = set(), 0, 0, 0
+    if len(str(text)) > 400000 or len(queue) > 16384:
+        raise PrivacyAnalysisLimit()
+    while queue:
+        raw, nesting, depth = queue.popleft()
+        nodes += 1
+        if nodes > 16384 or nesting > 16:
+            raise PrivacyAnalysisLimit()
         value = _normalized(raw)
-        if value in seen:
+        key = (value, depth)
+        if key in seen:
             continue
         total += len(value)
         if total > 200000:
-            raise PrivacyViolation()
-        seen.add(value)
+            raise PrivacyAnalysisLimit()
+        seen.add(key)
         yield value
-        if depth >= 2:
-            continue
-        # Decode JSON strings and nested values, not arbitrary code or escapes.
+        # Parsing a JSON envelope is structural work, not another codec attempt.
         try:
-            decoded = json.loads(raw) if len(raw) <= 100000 else None
+            decoded = json.loads(raw) if raw.lstrip().startswith(('{', '[', '"')) else None
         except (ValueError, TypeError):
             decoded = None
         except RecursionError:
-            raise PrivacyViolation() from None
-        stack = [(decoded, 0)]
-        nodes = 0
+            raise PrivacyAnalysisLimit() from None
+        stack = [(decoded, nesting + 1)] if decoded is not None else []
         while stack:
-            item, nesting = stack.pop()
+            item, level = stack.pop()
             nodes += 1
-            if nodes > 512 or nesting > 16:
-                raise PrivacyViolation()
+            if nodes > 16384 or level > 16:
+                raise PrivacyAnalysisLimit()
             if isinstance(item, str):
-                queue.append((item, depth + 1))
+                if item != raw:
+                    queue.append((item, level, depth))
             elif isinstance(item, dict):
-                stack.extend((part, nesting + 1) for pair in item.items() for part in pair)
+                stack.extend((part, level + 1) for pair in item.items() for part in pair)
             elif isinstance(item, list):
-                stack.extend((part, nesting + 1) for part in item)
+                stack.extend((part, level + 1) for part in item)
+            elif type(item) in (int, float):
+                queue.append((str(item), level, depth))
+        extra = []
         escaped = re.sub(r"\\u([0-9a-fA-F]{4})", lambda match: chr(int(match[1], 16)), raw)
         if escaped != raw:
-            queue.append((escaped, depth + 1))
+            extra.append(escaped)
         if _TRANSFORM.search(value):
             # Only plausible, labelled encoding contexts. At most eight small
             # fragments and two decoding layers; arbitrary IDs are not decoded.
-            fragments = re.findall(r"(?<!\w)[A-Za-z0-9+/=_-]{12,2048}(?!\w)", value)[:8]
+            fragments = re.findall(r"(?<!\w)[A-Za-z0-9+/=_-]{12,}(?!\w)", value)
+            if len(fragments) > 8:
+                raise PrivacyAnalysisLimit()
             for fragment in fragments:
+                if len(fragment) > 2048:
+                    raise PrivacyAnalysisLimit()
                 for mode in ("hex", "base64"):
                     try:
                         if mode == "hex":
@@ -131,14 +223,22 @@ def analysis_variants(text):
                             payload = bytes.fromhex(fragment)
                         else:
                             payload = base64.b64decode(fragment + "=" * (-len(fragment) % 4), validate=True)
-                        if len(payload) <= 1024:
-                            result = payload.decode("utf-8")
-                            if result.isprintable():
-                                queue.append((result, depth + 1))
+                        if len(payload) > 1024:
+                            raise PrivacyAnalysisLimit()
+                        result = payload.decode("utf-8")
+                        if result.isprintable():
+                            extra.append(result)
+                    except PrivacyAnalysisLimit:
+                        raise
                     except (ValueError, UnicodeError):
                         pass
-    if queue:
-        raise PrivacyViolation()
+        for result in extra:
+            if (_normalized(result), depth + 1) in seen:
+                continue
+            transforms += 1
+            if transforms > 64 or depth >= 2:
+                raise PrivacyAnalysisLimit()
+            queue.append((result, nesting + 1, depth + 1))
 
 
 def _service_number(match, value):
@@ -277,7 +377,7 @@ def check_question(text):
 def safe_history_text(text):
     try:
         return HIDDEN_DATA if contains_private_data(text) else text
-    except PrivacyViolation:
+    except (PrivacyViolation, PrivacyAnalysisLimit):
         return HIDDEN_DATA
 
 
@@ -291,26 +391,13 @@ def protected_messages(messages):
 
 
 def check_output(text):
-    if contains_private_data(text):
-        raise PrivacyViolation()
-    # Structured completions can JSON-escape their text. Inspect decoded string
-    # values too, without interpreting or executing any generated content.
     try:
-        decoded = json.loads(text)
-    except (ValueError, TypeError):
-        return
-    except RecursionError:
-        raise PrivacyViolation() from None
-    stack = [decoded]
-    while stack:
-        value = stack.pop()
-        if isinstance(value, str) and contains_private_data(value):
+        if contains_private_data(text):
             raise PrivacyViolation()
-        if isinstance(value, dict):
-            stack.extend(value.keys())
-            stack.extend(value.values())
-        elif isinstance(value, list):
-            stack.extend(value)
+    except (PrivacyViolation, PrivacyAnalysisLimit):
+        raise
+    except Exception:
+        raise PrivacyCheckError() from None
 
 
 class FragmentGuard:

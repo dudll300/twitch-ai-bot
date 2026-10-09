@@ -12,12 +12,13 @@ from local_context import prepare_context
 from memory import context_for, viewer_for
 from profiles import profile_for
 from viewer_recognition import related_context
-from privacy import PrivacyViolation, protected_messages, unsafe_question
+from privacy import (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, application_json, protocol_id,
+                     protected_messages, unsafe_question)
 from safety import SafetyBlocked, check_candidate_source
 from safety_settings import link_prompt
 from conversation_roles import (ROLE_RULES, KINDS, SourceRole, grounded_roles, identity_context,
                                 impersonates_recipient, roles_data, source_hint)
-from ai_client import TimeoutAIError
+from ai_client import RequestTrace, TimeoutAIError, TruncatedAIError
 
 
 REPLY_REASONS = {"answer", "reaction", "joke", "question"}
@@ -43,6 +44,9 @@ DEFAULT_AUTONOMOUS_PROMPT = (
 
 class RequestCancelled(RuntimeError):
     """A controlled cancellation, not an API failure requiring a retry delay."""
+    def __init__(self, message="Проверка отменена.", *, code="cancelled"):
+        self.code = code
+        super().__init__(message)
 
 
 class ParticipationError(ValueError):
@@ -144,7 +148,14 @@ def _ids(values, limit):
 
 
 def parse_plan(content):
-    data = json.loads(content)
+    def unique(pairs):
+        data = {}
+        for key, value in pairs:
+            if key in data:
+                raise ValueError('Повторное поле плана.')
+            data[key] = value
+        return data
+    data = json.loads(content, object_pairs_hook=unique)
     fields = {"action", "conversation", "basis", "target", "reason", "intent"}
     if not isinstance(data, dict) or not fields <= set(data) or set(data) - fields - {"source_roles", "topic"}:
         raise ValueError("Ожидался план с полями action, conversation, basis, target, reason и intent.")
@@ -293,14 +304,29 @@ def _chat_context(cfg, messages):
     rows = []
     for row in messages:
         item = {"id": row["sequence"], "author": row["author"], "text": row["text"],
-                "user_id": row.get("user_id", ""),
+                "user_id": protocol_id(row.get("user_id", "")),
                 "role": "owner" if row["author"] == cfg.get("TWITCH_CHANNEL", "").casefold() else "viewer",
                 "time": datetime.fromtimestamp(row["time"], timezone.utc).isoformat()}
         for field in ("message_id", "reply_parent_id", "reply_parent_user_id", "reply_parent_login", "thread_id", "mentions"):
             if row.get(field):
-                item[field] = row[field]
+                item[field] = (protocol_id(row[field], message=field != "reply_parent_user_id")
+                               if field in {"message_id", "reply_parent_id", "reply_parent_user_id", "thread_id"}
+                               else row[field])
         rows.append(item)
     return rows
+
+
+def _identity_payload(identities):
+    return {**identities,
+            "people": [{**person, "user_id": protocol_id(person["user_id"])} for person in identities["people"]],
+            "message_authors": {protocol_id(key, message=True): {**person, "user_id": protocol_id(person["user_id"])}
+                                for key, person in identities["message_authors"].items()}}
+
+
+def _role_payload(roles):
+    # Only builder hints / locally grounded roles arrive here. Evidence, subject
+    # and relation remain ordinary untrusted text, including nested JSON.
+    return [{**role, "user_id": protocol_id(role["user_id"])} for role in roles_data(roles)]
 
 
 def _history(recent_replies):
@@ -337,7 +363,7 @@ def _viewer_messages(messages, profiles, memory_data, viewer_context):
 def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=(),
                      viewer_context="", profiles=(), memory_data=None, consumed_ids=(),
                      before_request=None, before_generation=None,
-                     local_manager=None, local_snapshot=None, on_result=None):
+                     local_manager=None, local_snapshot=None, on_result=None, request_trace=None):
     """One selector request; one generator request only for a valid fresh opportunity.
 
     before_request reserves one actual HTTP call and returns its timeout. The
@@ -347,7 +373,12 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
     """
     if not messages:
         raise ValueError("Для анализа нужен свежий фрагмент чата.")
-    messages = tuple(row for row in messages if not unsafe_question(row["text"]))
+    request_trace = request_trace or RequestTrace()
+    try:
+        messages = tuple(row for row in messages if not unsafe_question(row["text"]))
+    except PrivacyAnalysisLimit as exc:
+        exc.stage = "selector_request"
+        raise
     def observed(decision, context=None):
         if on_result is not None:
             on_result(decision, context if decision.action != "silent" else None)
@@ -368,18 +399,37 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
         # Strip accidental secret occurrences from context; Authorization remains
         # exclusively in the HTTP client. Invalid model output is rejected below.
         prompt = [{**row, "content": redact_secret(row["content"], cfg["AI_API_KEY"])} for row in prompt]
-        timeout = before_request() if before_request is not None else 20
-        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
-            raise RequestCancelled("Время на самостоятельную реплику истекло.")
+        phase = "selector" if stage == "autonomous_selection" else "generator"
+        previous_attempts = request_trace.attempts[phase]
+        def selector_content(raw):
+            # AI JSON is never trusted by field name. Only an exact valid plan,
+            # checked against this actual IRC scene, may reuse a verified ID.
+            try:
+                plan = parse_plan(raw)
+                check_plan(plan, messages, new_ids, consumed_ids)
+            except (ValueError, TypeError, KeyError, RecursionError):
+                return raw
+            grounded = {role.id: role for role in grounded_roles(plan, messages, identities)}
+            data = json.loads(raw)
+            for role in data.get('source_roles', ()):
+                actual = grounded[role['id']]
+                if actual.user_id and actual.user_id == role['user_id']:
+                    role['user_id'] = protocol_id(role['user_id'])
+            return application_json(data)
         try:
             result = request_completion(cfg, cfg["AI_MODEL"], prompt, max_tokens=max_tokens,
-                                        reject_truncated=True, timeout_seconds=min(timeout, 20))
+                                        reject_truncated=True, before_request=before_request,
+                                        request_stage=phase, trace=request_trace,
+                                        response_content=selector_content if phase == 'selector' else None)
         except (TimeoutError, TimeoutAIError):
-            raise ParticipationError("autonomous_timeout") from None
-        except (RequestCancelled, PrivacyViolation, SafetyBlocked):
+            raise ParticipationError(stage + "_timeout") from None
+        except TruncatedAIError:
+            raise ParticipationError(stage + "_truncated") from None
+        except (RequestCancelled, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, SafetyBlocked):
             raise
         except Exception:
-            raise ParticipationError(stage) from None
+            suffix = '_api' if request_trace.attempts[phase] > previous_attempts else '_preflight'
+            raise ParticipationError(stage + suffix) from None
         if redact_secret(result, cfg["AI_API_KEY"]) != result:
             raise ValueError("Ответ AI содержит секрет и отклонён.")
         return result
@@ -435,24 +485,28 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
             "не объединяет соседние разговоры и не отменяет решение промолчать."
         )})
     selector.extend([{"role": "system", "content": selector_rules},
-                {"role": "user", "content": json.dumps({
+                {"role": "user", "content": application_json({
                     "bot_login": cfg.get("TWITCH_BOT_NAME", ""), "channel_prompt": cfg.get("AI_PROMPT", ""),
-                    "identities": identities,
-                    "source_recipient_hints": roles_data(tuple(source_hint(row, identities) for row in messages)),
+                    "identities": _identity_payload(identities),
+                    "source_recipient_hints": _role_payload(tuple(source_hint(row, identities) for row in messages)),
                     "chat_context": _chat_context(cfg, messages),
                     "new_message_ids": sorted(new_ids), "answered_message_ids": sorted(consumed_ids),
-                    "recent_bot_replies": _history(recent_replies)}, ensure_ascii=False)}])
+                    "recent_bot_replies": _history(recent_replies)})}])
     selector = protected_messages(selector)
     content = complete(selector, 1600, "autonomous_selection")
     try:
         plan = parse_plan(content)
-        check_plan(plan, messages, new_ids, consumed_ids)
-    except RequestCancelled:
-        raise
+    except json.JSONDecodeError:
+        raise ParticipationError("autonomous_selection_json") from None
     except Exception:
-        raise ParticipationError("autonomous_selection") from None
+        raise ParticipationError("autonomous_selection_schema") from None
+    try:
+        check_plan(plan, messages, new_ids, consumed_ids)
+    except ValueError:
+        raise ParticipationError("autonomous_selection_roles") from None
     if plan.action == "silent":
         return observed(Decision("silent", reason=plan.reason))
+    request_trace.stage = 'generator_request'
     if before_generation is not None:
         before_generation(plan)
 
@@ -503,12 +557,13 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
         generator.append({'role': 'system', 'content': link_prompt()})
     relevant_history = [row for row in recent_replies if set(row.get("basis", ())) & set(plan.conversation)
                         or len(topic & words(row.get("question", "") + " " + row["text"])) >= 2]
-    generator.append({"role": "user", "content": json.dumps({
+    plan_payload = {**asdict(plan), "source_roles": _role_payload(plan.source_roles)}
+    generator.append({"role": "user", "content": application_json({
         "bot_login": cfg.get("TWITCH_BOT_NAME", ""),
-        "identities": identity_context(cfg, selected, profiles, memory_data),
-        "participation_plan": asdict(plan),
+        "identities": _identity_payload(identity_context(cfg, selected, profiles, memory_data)),
+        "participation_plan": plan_payload,
         "selected_conversation": _chat_context(cfg, selected),
-        "recent_bot_replies": _history(relevant_history)}, ensure_ascii=False)})
+        "recent_bot_replies": _history(relevant_history)})})
     generator = protected_messages(generator)
     content = complete(generator, 512, "autonomous_generation")
     try:
@@ -529,7 +584,7 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
         decision = parse_decision(json.dumps({"action": "reply", "text": text, "target": plan.target,
                                              "basis": list(plan.basis), "reason": plan.reason}), settings.max_chars)
         check_basis(decision, selected, new_ids)
-    except (PrivacyViolation, SafetyBlocked):
+    except (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, SafetyBlocked):
         raise
     except Exception:
         raise ParticipationError("autonomous_validation") from None

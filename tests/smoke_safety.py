@@ -133,6 +133,13 @@ def main():
         page.history_button.click()
         assert window.pages.currentIndex() == gui.PAGE_HISTORY
         assert window.history_page.kind.currentData() == 'reward'
+        journal.safety_event('autonomous', SafetyReview('error', '', ('privacy_analysis_limit',),
+            stage='generator_request', http_attempts=(1, 0, 0)))
+        page.refresh()
+        wait_for(lambda: not page._loading)
+        assert 'Запрос генератора' in page.decisions.item(0).text()
+        assert 'HTTP: выбор 1, генерация 0, проверка 0' in page.decisions.item(0).text()
+        assert 'Попытка Twitch: нет' in page.decisions.item(0).text()
         window._test_prompt()
         assert window.pages.currentIndex() == gui.PAGE_TESTING and window.testing_page.mode.currentIndex() == 0
         # A damaged file remains visible and repairable without credentials.

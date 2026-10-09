@@ -22,7 +22,7 @@ from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
 from recent_context import for_reward
 from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
-from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, check_question, safe_history_text, unsafe_question
+from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, check_question, safe_history_text, unsafe_question
 from irc import moderation_event
 from safety import (SAFETY_REFUSAL, SafetyBlocked, SafetyReview, check_candidate_source,
                     review_candidate, validate_publication, publication_guard)
@@ -257,8 +257,11 @@ class Bot:
         if reward_is_blocked(profiles, user, user_id):
             return REWARD_BLOCKED_REFUSAL, "Запросы через награду запрещены для зрителя."
         fragments = getattr(self, "fragments", None)
-        if unsafe_question(question) or (fragments is not None and fragments.check(question, user_id, "reward-input")):
-            return PRIVACY_REFUSAL, "Защита личных данных."
+        try:
+            if unsafe_question(question) or (fragments is not None and fragments.check(question, user_id, "reward-input")):
+                return PRIVACY_REFUSAL, "Защита личных данных."
+        except PrivacyAnalysisLimit:
+            return SAFETY_REFUSAL, 'privacy_analysis_limit'
         return None
 
     async def refuse(self, writer, user, user_id, question, notice, reason, record_id=None):
@@ -269,6 +272,9 @@ class Bot:
             await self.history_update(record_id, "rejected", answer=notice, action="refusal", reason=reason)
         if notice == PRIVACY_REFUSAL:
             await self.safety_decision(record_id, SafetyReview("blocked", "", ("privacy_blocked",), stage="question"))
+        elif reason == 'privacy_analysis_limit':
+            await self.safety_decision(record_id, SafetyReview('error', '', (reason,), stage='question'))
+            await self.history_update(record_id, 'error', answer='', context=None, reason=reason)
         text = clean_text(f"@{user} {notice}", CHAT_MAX_CHARS)
         try:
             await self.say(writer, text)
@@ -383,6 +389,11 @@ class Bot:
                 await self.safety_decision(record_id, SafetyReview("blocked", "", ("privacy_blocked",)))
                 await self.refuse(writer, user, user_id, question, PRIVACY_REFUSAL,
                                   "Запрос или ответ отклонён защитой личных данных.", record_id)
+            except (PrivacyAnalysisLimit, PrivacyCheckError) as exc:
+                await self.safety_decision(record_id, SafetyReview('error', '', (exc.code,),
+                                           stage=getattr(exc, 'stage', 'answer')))
+                await self.history_update(record_id, 'error', answer='', context=None, reason=exc.code)
+                print('Проверка приватности: ' + exc.code, flush=True)
             except SafetyBlocked as exc:
                 await self.safety_decision(record_id, exc.review)
                 reason = ",".join(exc.review.reasons)

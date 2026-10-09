@@ -9,7 +9,7 @@ import time
 from urllib.parse import urlsplit
 from safety_settings import current_policy, policy_binding, domain_name
 
-from privacy import PrivacyViolation, check_output, _normalized, safe_history_text
+from privacy import PrivacyAnalysisLimit, PrivacyCheckError, PrivacyViolation, check_output, _normalized, safe_history_text
 
 SAFETY_REFUSAL = "Не удалось безопасно подготовить ответ. Попробуй задать вопрос иначе."
 REVIEW_TIMEOUT = 8
@@ -46,6 +46,8 @@ class SafetyReview:
     model: str = ''
     seconds: float | None = None
     policy_version: str = field(default_factory=lambda: current_policy().version)
+    http_attempts: tuple[int, int, int] = (0, 0, 0)
+    twitch_attempted: bool = False
 
     @property
     def allowed(self):
@@ -69,7 +71,19 @@ REASON_NAMES = {
     'review_unavailable': 'AI-проверка не завершилась. Опасность ответа не установлена',
     'moderation_cancelled': 'Контекст удалён модератором', 'policy_changed': 'Настройки безопасности изменились',
     'settings_invalid': 'Ошибка загрузки настроек безопасности', 'cancelled': 'Проверка отменена',
+    'privacy_analysis_limit': 'Проверка приватности не завершена: превышен предел сложности',
+    'privacy_check_error': 'Техническая ошибка проверки приватности',
+    'quota_exhausted': 'Исчерпан часовой лимит AI-запросов',
+    'ttl_expired': 'Истёк срок актуальности ответа',
+    'settings_changed': 'Настройки или локальный контекст изменились',
+    'paid_priority': 'Приоритет запроса через награду',
+    'quota_storage_error': 'Не удалось сохранить счётчик AI-запросов',
 }
+for prefix, label in (('autonomous_selection', 'Выбор ситуации'), ('autonomous_generation', 'Генерация')):
+    for suffix, description in (('api', 'ошибка API'), ('timeout', 'таймаут'), ('truncated', 'обрезанный ответ'),
+                                ('json', 'некорректный JSON'), ('schema', 'нарушение схемы плана'),
+                                ('roles', 'нарушение связности или ролей'), ('preflight', 'ошибка локальной подготовки запроса')):
+        REASON_NAMES[prefix + '_' + suffix] = label + ': ' + description
 
 
 def describe_review(review):
@@ -160,6 +174,8 @@ def local_review(text, *, limit=450, target="", policy=None):
         check_output(text)
     except PrivacyViolation:
         return result("blocked", "", ("privacy_blocked",))
+    except (PrivacyAnalysisLimit, PrivacyCheckError) as exc:
+        return result("error", "", (exc.code,))
     if any(ord(char) < 32 or 127 <= ord(char) <= 159 for char in text):
         return result("blocked", "", ("invalid_text",))
     body = text
@@ -239,7 +255,8 @@ def parse_review(content, text):
 
 
 def review_candidate(cfg, model, text, *, kind="reward", target="", context="", limit=450,
-                     before_request=None, cancelled=lambda: False, policy=None, cancellation_reason='moderation_cancelled'):
+                     before_request=None, cancelled=lambda: False, policy=None, cancellation_reason='moderation_cancelled',
+                     request_trace=None):
     policy = policy or current_policy()
     model = policy.model_for(model)
     started = time.monotonic()
@@ -250,28 +267,39 @@ def review_candidate(cfg, model, text, *, kind="reward", target="", context="", 
     local = local_review(text, limit=limit, target=target, policy=policy)
     if local.status != "local_allowed":
         return result(local)
+    def cancel_reason():
+        return cancellation_reason() if callable(cancellation_reason) else cancellation_reason
     if cancelled():
-        return result(SafetyReview("cancelled", "", (cancellation_reason,)))
+        return result(SafetyReview("cancelled", "", (cancel_reason(),)))
     # Import at call time: transport only performs basic privacy checks, never
     # recursively invokes this evaluator on its own service JSON.
-    from ai_client import request_completion
+    from ai_client import RequestTrace, request_completion
+    from participation import RequestCancelled
+    trace = request_trace or RequestTrace()
     context = safe_history_text(str(context))[:REVIEW_CONTEXT_LIMIT]
     payload = {"candidate": text, "kind": kind, "target": target, "public_context": context}
-    attempted = False
+    initial_attempts = trace.attempts['review']
     try:
-        timeout = before_request() if before_request is not None else policy.settings.review_timeout_seconds
-        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
-            return result(SafetyReview("error", "", ("review_unavailable",)))
-        attempted = True
         content = request_completion(cfg, model, [
             {"role": "system", "content": REVIEW_RULE},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False)}],
-            max_tokens=160, reject_truncated=True, timeout_seconds=min(timeout, policy.settings.review_timeout_seconds))
+            max_tokens=160, reject_truncated=True, timeout_seconds=policy.settings.review_timeout_seconds,
+            before_request=before_request, request_stage='review', trace=trace)
+    except (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError) as exc:
+        return replace(result(SafetyReview('blocked' if isinstance(exc, PrivacyViolation) else 'error', '',
+            ('privacy_blocked' if isinstance(exc, PrivacyViolation) else exc.code,)),
+            trace.attempts['review'] > initial_attempts), stage=exc.stage)
+    except RequestCancelled as exc:
+        return replace(result(SafetyReview('cancelled', '', (exc.code,)), trace.attempts['review'] > initial_attempts),
+                       stage='review_request')
+    except SafetyBlocked as exc:
+        return result(exc.review, trace.attempts['review'] > initial_attempts)
     except Exception:
         return result(SafetyReview("cancelled" if cancelled() else "error", "",
-                            (cancellation_reason if cancelled() else "review_unavailable",)), attempted)
+                            (cancel_reason() if cancelled() else "review_unavailable",)), trace.attempts['review'] > initial_attempts)
+    attempted = trace.attempts['review'] > initial_attempts
     if cancelled():
-        return result(SafetyReview("cancelled", "", (cancellation_reason,)), attempted)
+        return result(SafetyReview("cancelled", "", (cancel_reason(),)), attempted)
     store, _ = policy_binding()
     if not store.is_current(policy):
         return result(SafetyReview('cancelled', '', ('policy_changed',)), attempted)

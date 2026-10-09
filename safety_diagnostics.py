@@ -1,7 +1,7 @@
 """Exact text diagnosis. No generation, journal, memory or Twitch access."""
 from safety import SafetyReview, local_review, review_candidate
 from safety_settings import policy_scope
-from privacy import contains_private_data, unsafe_question, PrivacyViolation
+from privacy import contains_private_data, unsafe_question, PrivacyViolation, PrivacyAnalysisLimit
 
 
 def diagnose(store, policy, text, kind, *, target='', ai=False, auth=None, answer_model='', cancelled=lambda: False):
@@ -18,6 +18,10 @@ def diagnose(store, policy, text, kind, *, target='', ai=False, auth=None, answe
                 unsafe = private or unsafe_question(text)
             except PrivacyViolation:
                 private, unsafe = True, True
+            except PrivacyAnalysisLimit:
+                return SafetyReview('error', '', ('privacy_analysis_limit',), stage='question')
+            except Exception:
+                return SafetyReview('error', '', ('privacy_check_error',), stage='question')
             return SafetyReview('blocked' if unsafe else 'local_allowed', '',
                 ('privacy_blocked' if private else 'disclosure_request',) if unsafe else (), stage='question')
         if kind != 'answer':

@@ -42,7 +42,8 @@ CREATE INDEX IF NOT EXISTS events_record ON events(record_id, seq);
 CREATE TABLE IF NOT EXISTS safety_events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, time REAL NOT NULL, scenario TEXT NOT NULL,
     record_id TEXT, status TEXT NOT NULL, stage TEXT NOT NULL, reasons TEXT NOT NULL,
-    ai_attempted INTEGER NOT NULL, model TEXT NOT NULL, seconds REAL, policy_version TEXT NOT NULL
+    ai_attempted INTEGER NOT NULL, model TEXT NOT NULL, seconds REAL, policy_version TEXT NOT NULL,
+    http_attempts TEXT, twitch_attempted INTEGER
 );
 """
 
@@ -87,6 +88,10 @@ class MessageHistory:
                     if not self._ready:
                         connection.execute("PRAGMA journal_mode=WAL")
                         connection.executescript(SCHEMA)
+                        columns = {row[1] for row in connection.execute('PRAGMA table_info(safety_events)')}
+                        for name, definition in (('http_attempts', "TEXT"), ('twitch_attempted', 'INTEGER')):
+                            if name not in columns:
+                                connection.execute(f'ALTER TABLE safety_events ADD COLUMN {name} {definition}')
                         self._ready = True
                     connection.execute("PRAGMA synchronous=FULL")
                     with connection:
@@ -107,6 +112,15 @@ class MessageHistory:
     def _search(values):
         return "\n".join(str(values.get(field, "")) for field in FIELDS).casefold()
 
+    def _fields(self, values):
+        redacted = self.redact(values)
+        # This column is supplied by verified IRC identity, not by parsing a
+        # viewer's JSON. Preserve it for ID-first reward history matching.
+        uid = values.get('viewer_id', '')
+        if isinstance(uid, str) and re.fullmatch(r'[0-9]{1,30}', uid):
+            redacted['viewer_id'] = uid
+        return redacted
+
     def safety_event(self, scenario, review, *, record_id=None):
         """Only enumerated metadata; never candidate text or evaluator output."""
         from safety import REASON_NAMES
@@ -114,13 +128,19 @@ class MessageHistory:
             raise ValueError('Unknown safety scenario')
         if review.status not in {'allowed', 'local_allowed', 'blocked', 'error', 'cancelled'}:
             raise ValueError('Unknown safety status')
-        stage = review.stage if review.stage in {'question', 'answer', 'ai_review', 'publication'} else 'answer'
+        stage = review.stage if review.stage in {'question', 'answer', 'ai_review', 'publication',
+            'selector_request', 'selector_response', 'generator_request', 'generator_response',
+            'review_request', 'review_response'} else 'answer'
         reasons = [code for code in review.reasons if code in REASON_NAMES]
         model = self.redact(review.model[:200]) if review.ai_attempted else ''
         def insert(connection):
-            connection.execute('INSERT INTO safety_events(time,scenario,record_id,status,stage,reasons,ai_attempted,model,seconds,policy_version) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            counts = tuple(review.http_attempts)
+            if len(counts) != 3 or any(type(n) is not int or not 0 <= n <= 3 for n in counts):
+                raise ValueError('Invalid HTTP counters')
+            connection.execute('INSERT INTO safety_events(time,scenario,record_id,status,stage,reasons,ai_attempted,model,seconds,policy_version,http_attempts,twitch_attempted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
                 (self.clock(), scenario, record_id, review.status, stage, json.dumps(reasons),
-                 int(review.ai_attempted), model, review.seconds, review.policy_version[:64]))
+                 int(review.ai_attempted), model, review.seconds, review.policy_version[:64],
+                 json.dumps(counts), int(review.twitch_attempted)))
             connection.execute('DELETE FROM safety_events WHERE seq NOT IN (SELECT seq FROM safety_events ORDER BY seq DESC LIMIT 200)')
         return self._write(insert)
 
@@ -132,6 +152,8 @@ class MessageHistory:
                     (max(1, min(int(limit), 200)),))]
             for row in rows:
                 row['reasons'] = tuple(json.loads(row['reasons']))
+                row['http_attempts'] = tuple(json.loads(row['http_attempts'])) if row.get('http_attempts') is not None else None
+                row['twitch_attempted'] = bool(row['twitch_attempted']) if row.get('twitch_attempted') is not None else None
             return rows
         return self._read(select)
 
@@ -139,7 +161,7 @@ class MessageHistory:
         if kind not in {"reward", "autonomous"} or status not in STATUSES:
             raise ValueError("Unknown history entry")
         record_id, now = uuid.uuid4().hex, self.clock()
-        values = self.redact({field: str(values.get(field, "")) for field in FIELDS})
+        values = self._fields({field: str(values.get(field, "")) for field in FIELDS})
         if status == "silent" or values["action"] == "silent":
             context = None
         def insert(connection):
@@ -160,7 +182,7 @@ class MessageHistory:
             return None
         if status not in STATUSES:
             raise ValueError("Unknown history status")
-        values = self.redact({key: str(value) for key, value in values.items() if key in FIELDS})
+        values = self._fields({key: str(value) for key, value in values.items() if key in FIELDS})
         now = self.clock()
 
         def update(connection):
@@ -177,7 +199,7 @@ class MessageHistory:
             stored_context = row["context"]
             if context is not None:
                 stored_context = json.dumps(self.redact(context), ensure_ascii=False, allow_nan=False)
-            if (new_status in ("silent", "rejected") or merged["action"] == "silent"
+            if (new_status in ("silent", "rejected", "error") or merged["action"] == "silent"
                     or values.get("reason") == "moderation_cancelled"):
                 stored_context = None
             connection.execute(

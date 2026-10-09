@@ -182,11 +182,11 @@ class SourceRoleTests(unittest.TestCase):
         self.assertEqual(self.hint("потерпи софа пж", reply_parent_login="other", reply_parent_user_id="456").kind, "owner")
 
     def test_safe_stage_codes_for_selection_generation_validation_and_timeout(self):
-        cases = [([RuntimeError("secret-test-key raw private")], "autonomous_selection"),
+        cases = [([RuntimeError("secret-test-key raw private")], "autonomous_selection_preflight"),
                  ([json.dumps(asdict(Plan("reply", (1,), (1,), "viewer", "reaction", "Реакция"))),
-                   RuntimeError("raw private")], "autonomous_generation"),
+                   RuntimeError("raw private")], "autonomous_generation_preflight"),
                  ([json.dumps(asdict(Plan("reply", (1,), (1,), "viewer", "reaction", "Реакция"))), "not-json"], "autonomous_validation"),
-                 ([TimeoutError("private")], "autonomous_timeout")]
+                 ([TimeoutError("private")], "autonomous_selection_timeout")]
         for responses, code in cases:
             with patch("participation.request_completion", side_effect=responses), self.assertRaises(ParticipationError) as caught:
                 request_decision(self.cfg, [message(1, "Победил босса")], AutoSettings())

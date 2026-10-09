@@ -2,6 +2,7 @@
 
 from dataclasses import asdict, replace
 import json
+import io
 import unittest
 from unittest.mock import Mock, patch
 
@@ -32,14 +33,15 @@ class ParticipationTests(unittest.TestCase):
                          decision.basis, decision.target, decision.reason,
                          "Поздравить с конкретной победой" if decision.action == "reply" else "")
         responses = [encoded(plan)] + ([json.dumps({"text": decision.text})] if decision.action == "reply" else [])
-        def complete(cfg, model, messages, **options):
-            self.assertEqual(model, "exact/primary")
-            self.assertEqual(options["timeout_seconds"], 20)
-            self.assertTrue(options["reject_truncated"])
+        def complete(request, timeout):
+            payload = json.loads(request.data)
+            messages = payload['messages']
+            self.assertEqual(payload['model'], "exact/primary")
+            self.assertEqual(timeout, 20)
             self.assertNotIn(self.cfg["AI_API_KEY"], str(messages))
             captured.append(messages)
-            return responses[len(captured) - 1]
-        with patch("participation.request_completion", side_effect=complete) as calls:
+            return io.BytesIO(json.dumps({'choices': [{'message': {'content': responses[len(captured) - 1]}}]}).encode())
+        with patch("urllib.request.urlopen", side_effect=complete) as calls:
             result = part.request_decision(self.cfg, self.rows, AutoSettings(), **kwargs)
         self.assertEqual(calls.call_count, 2 if decision.action == "reply" else 1)
         return result, captured
@@ -234,7 +236,7 @@ class ParticipationTests(unittest.TestCase):
             with self.assertRaises(ValueError) as error:
                 part.request_decision(self.cfg, rows, AutoSettings(), new_ids={3})
             self.assertEqual(calls.call_count, 1)
-            self.assertEqual(str(error.exception), "autonomous_selection")
+            self.assertEqual(str(error.exception), "autonomous_selection_roles")
             self.assertNotIn(private_id, str(error.exception))
         # A damaged parallel branch must not invalidate an unlinked valid scene.
         part.check_plan(replace(plan, conversation=(4,), basis=(4,)), rows, {4})
@@ -255,14 +257,16 @@ class ParticipationTests(unittest.TestCase):
         plan = part.Plan("reply", (1, 2), (1, 2), "viewer", "reaction", "Поздравить")
         gate = Mock(side_effect=[20, 6.5])
         generation_gate = Mock()
-        with patch("participation.request_completion", side_effect=[encoded(plan),
-                   json.dumps({"text": "Поздравляю!"})]) as calls:
+        def response(content):
+            return io.BytesIO(json.dumps({'choices': [{'message': {'content': content}}]}).encode())
+        with patch("urllib.request.urlopen", side_effect=[response(encoded(plan)),
+                   response(json.dumps({"text": "Поздравляю!"}))]) as calls:
             part.request_decision(self.cfg, self.rows, AutoSettings(), before_request=gate,
                                   before_generation=generation_gate)
         self.assertEqual(gate.call_count, 2)
         generation_gate.assert_called_once_with(plan)
-        self.assertEqual([call.kwargs["timeout_seconds"] for call in calls.call_args_list], [20, 6.5])
-        self.assertEqual([call.args[1] for call in calls.call_args_list], ["exact/primary"] * 2)
+        self.assertEqual([call.kwargs["timeout"] for call in calls.call_args_list], [20, 6.5])
+        self.assertEqual([json.loads(call.args[0].data)['model'] for call in calls.call_args_list], ["exact/primary"] * 2)
 
     def test_cancelled_deadline_or_reward_stops_before_second_paid_call(self):
         plan = part.Plan("reply", (1, 2), (1, 2), "viewer", "reaction", "Поздравить")
@@ -270,7 +274,8 @@ class ParticipationTests(unittest.TestCase):
                  dict(before_generation=Mock(side_effect=part.RequestCancelled("Повод устарел."))),
                  dict(before_request=Mock(side_effect=[20, part.RequestCancelled("Награда имеет приоритет.")]))]
         for options in gates:
-            with self.subTest(options=options), patch("participation.request_completion", return_value=encoded(plan)) as calls:
+            response = io.BytesIO(json.dumps({'choices': [{'message': {'content': encoded(plan)}}]}).encode())
+            with self.subTest(options=options), patch("urllib.request.urlopen", return_value=response) as calls:
                 with self.assertRaises(part.RequestCancelled):
                     part.request_decision(self.cfg, self.rows, AutoSettings(), **options)
                 self.assertEqual(calls.call_count, 1)

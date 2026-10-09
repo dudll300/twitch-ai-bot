@@ -154,7 +154,7 @@ class BackendResilienceTests(unittest.TestCase):
             from participation import ParticipationError
             with self.assertRaises(ParticipationError) as failure:
                 autonomous.request_decision(CFG, [{"author": "viewer", "text": "Привет", "sequence": 1, "time": 1}], autonomous.AutoSettings())
-            self.assertEqual(failure.exception.code, "autonomous_selection")
+        self.assertEqual(failure.exception.code, "autonomous_selection_api")
         self.assertEqual(len(calls), 1)
         self.assertEqual(calls[0]["model"], "primary")
         self.assertEqual(calls[0]["max_tokens"], 1600)

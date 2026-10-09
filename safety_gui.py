@@ -34,6 +34,9 @@ PROTECTIONS = (
 )
 SCENARIOS = {'reward': 'Награда', 'autonomous': 'Самостоятельная реплика', 'preview': 'Предпросмотр'}
 STAGES = {'question': 'Вопрос', 'answer': 'Ответ', 'ai_review': 'AI-оценка', 'publication': 'Публикация'}
+STAGES.update(selector_request='Запрос селектора', selector_response='Ответ селектора',
+              generator_request='Запрос генератора', generator_response='Ответ генератора',
+              review_request='Запрос проверки публикации', review_response='Ответ проверки публикации')
 
 
 class SafetyPage(QWidget):
@@ -226,6 +229,14 @@ class SafetyPage(QWidget):
         for row in self._rows:
             review = SafetyReview(row['status'], '', row['reasons'])
             ai = ('AI-оценка: ' + row['model']) if row['ai_attempted'] else 'AI-оценка не выполнялась'
+            if row['scenario'] in {'autonomous', 'preview'}:
+                if row['http_attempts'] is None:
+                    ai += ' · HTTP по стадиям: нет данных'
+                else:
+                    selection, generation, review_calls = row['http_attempts']
+                    ai += f' · HTTP: выбор {selection}, генерация {generation}, проверка {review_calls}'
+                ai += ' · Попытка Twitch: ' + ('нет данных' if row['twitch_attempted'] is None else
+                                              'да' if row['twitch_attempted'] else 'нет')
             self.decisions.addItem(datetime.fromtimestamp(row['time']).strftime('%H:%M:%S') + ' · ' + SCENARIOS[row['scenario']] + ' · ' + STAGES.get(row['stage'], 'Проверка') + '\n' + describe_review(review) + '\n' + ai)
         last = next((row for row in rows if row['ai_attempted']), None)
         if last:
