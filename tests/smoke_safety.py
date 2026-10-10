@@ -50,6 +50,7 @@ def main():
         assert window.nav_buttons[gui.PAGE_SAFETY].text() == 'Безопасность'
         assert 'ещё не выполнялась' in page.last_review.text()
         assert 'Локальные проверки: действуют' in page.state.text()
+        assert 'Награды: без AI-оценки' in page.state.text()
         with patch('urllib.request.urlopen') as network:
             for index in range(len(gui.PAGES)):
                 window._navigate(index)
@@ -133,6 +134,12 @@ def main():
         page.history_button.click()
         assert window.pages.currentIndex() == gui.PAGE_HISTORY
         assert window.history_page.kind.currentData() == 'reward'
+        journal.safety_event('reward', SafetyReview('local_allowed', '@viewer Ответ'), record_id=record_id)
+        page.refresh()
+        wait_for(lambda: not page._loading)
+        assert 'Локальные проверки пройдены' in page.decisions.item(0).text()
+        assert 'AI-оценка не выполнялась' in page.decisions.item(0).text()
+        assert 'ошибка' in page.last_review.text()  # A local reward is not an AI-review success.
         journal.safety_event('autonomous', SafetyReview('error', '', ('privacy_analysis_limit',),
             stage='generator_request', http_attempts=(1, 0, 0)))
         page.refresh()

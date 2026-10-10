@@ -311,23 +311,19 @@ class PublicationIntegrationTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    async def test_reward_block_cannot_fallback_regenerate_spend_card_or_store_candidate(self):
+    async def test_reward_local_block_cannot_fallback_regenerate_spend_card_or_store_candidate(self):
         bundle = self.bot.local_context.bundle(self.bot.local_context.snapshot(), "")
-        answer = LocalReply("У viewer серьёзная болезнь", bundle, "card")
-        for verdict in (SafetyReview("blocked", "", ("unsupported_personal_claim",)),
-                        SafetyReview("error", "", ("review_unavailable",))):
-            self.writer.reset_mock()
-            self.bot.last_sent = 0
-            with patch("bot.call_ai", return_value=answer) as generator, patch("bot.review_candidate", return_value=verdict) as reviewer:
-                await self.worker()
-            self.assertEqual(generator.call_count, 1)
-            self.assertEqual(reviewer.call_count, 1)
-            published = self.writer.write.call_args[0][0].decode()
-            self.assertIn(SAFETY_REFUSAL, published)
-            self.assertNotIn("болезнь", published)
-            self.assertFalse(self.bot.histories)
-            self.assertFalse(self.bot.local_context.usage_path.exists())
-            self.assertNotIn("болезнь", json.dumps(self.bot.history.page(), ensure_ascii=False))
+        answer = LocalReply("Запрещённая ссылка https://example.com", bundle, "card")
+        with patch("bot.call_ai", return_value=answer) as generator, patch("safety.review_candidate") as reviewer:
+            await self.worker()
+        self.assertEqual(generator.call_count, 1)
+        reviewer.assert_not_called()
+        published = self.writer.write.call_args[0][0].decode()
+        self.assertIn(SAFETY_REFUSAL, published)
+        self.assertNotIn("example.com", published)
+        self.assertFalse(self.bot.histories)
+        self.assertFalse(self.bot.local_context.usage_path.exists())
+        self.assertNotIn("example.com", json.dumps(self.bot.history.page(), ensure_ascii=False))
 
     async def test_final_text_change_missing_review_and_unsafe_source_never_write(self):
         for text, approval in [("Изменённый текст", SafetyReview("allowed", "Другой текст")),

@@ -9,6 +9,7 @@ import time
 # Kept as a shared module reference for existing network test hooks.
 import urllib.request
 from collections import deque
+from dataclasses import replace
 
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
@@ -21,12 +22,11 @@ from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
 from recent_context import for_reward
-from reward_context import capture_reward_context
 from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
 from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, check_question, safe_history_text, unsafe_question
 from irc import moderation_event
 from safety import (SAFETY_REFUSAL, SafetyBlocked, SafetyReview, check_candidate_source,
-                    review_candidate, validate_publication, publication_guard)
+                    local_review, validate_publication, publication_guard)
 from safety_settings import PolicyStore, policy_scope, current_policy, policy_binding
 from viewer_recognition import related_context
 from paths import data_dir
@@ -347,8 +347,6 @@ class Bot:
                     self.cfg.get("TWITCH_CHANNEL", ""), user, user_id, time.time())
                 origins = tuple(getattr(self, 'history_recipients', {}).get(key, ()))
                 history_recipients = ('',) * max(0, len(history) - len(origins)) + origins[-len(history):] if history else ()
-                public_context = capture_reward_context(self.cfg, user, user_id, question,
-                    history, history_times, recent, history_recipients)
                 fragments = getattr(self, "fragments", None)
                 if fragments is not None:
                     fragments.check(question, user_id, "reward-input", remember=True)
@@ -360,14 +358,15 @@ class Bot:
                         raise SafetyBlocked(SafetyReview("blocked", "", ("privacy_blocked",)))
                     model = getattr(self.ai_router, "last_model", "")
                     model = model if isinstance(model, str) and model else self.cfg.get("AI_MODEL", "")
-                    review = await asyncio.to_thread(review_candidate, self.cfg, model, text,
-                        target=user, context=public_context, limit=CHAT_MAX_CHARS)
+                    review = local_review(text, target=user, limit=CHAT_MAX_CHARS)
                     await self.safety_decision(record_id, review)
                     recorded_review = review
-                    if not review.allowed:
+                    if review.status != "local_allowed":
                         raise SafetyBlocked(review)
                     await self.history_update(record_id, "generated", answer=str(answer), model=model)
-                    return text, review
+                    # Only reward replies can publish after local checks alone.
+                    # Keep the journal verdict local and bind approval to this text/policy.
+                    return text, replace(review, status="allowed")
                 answer = await ask()
                 try:
                     text, approval = await approve(answer)

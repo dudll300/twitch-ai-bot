@@ -19,7 +19,7 @@ from message_history import MessageHistory
 from reward_context import capture_reward_context, PUBLIC_CONTEXT_LIMIT
 from reply_rules import CONTENT_SAFETY_RULE
 import safety
-from safety_settings import PolicyStore
+from safety_settings import PolicyStore, SafetySettings
 import privacy
 from participation import Plan, RequestCancelled, request_decision
 import test_autonomous_privacy_regression as fixtures
@@ -142,7 +142,7 @@ class CompletedFutureTests(unittest.IsolatedAsyncioTestCase):
                 self.controller.batch_started = None
 
 
-class RewardContextTransportTests(unittest.IsolatedAsyncioTestCase):
+class RewardLocalPublicationTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -200,66 +200,70 @@ class RewardContextTransportTests(unittest.IsolatedAsyncioTestCase):
         detail = self.instance.history.detail(self.instance.history.page(kind='reward')['rows'][0]['id'])
         return network, detail, self.instance.history.safety_recent()[0]
 
-    def review_payload(self):
-        return json.loads(self.payloads[-1]['messages'][-1]['content'])
+    def generator_messages(self):
+        self.assertEqual(len(self.payloads), 1)
+        return self.payloads[0]['messages']
 
-    async def test_twilight_frame_roles_chronology_private_context_and_real_publication(self):
+    async def test_one_generation_keeps_dialogue_context_and_publishes_after_local_checks(self):
         self.seed()
         self.seed('other', '456', text='Чужая история')
-        for status, mode in (('preview','preview'), ('rejected','publish'), ('generated','publish')):
+        for status, mode in (('preview', 'preview'), ('rejected', 'publish'), ('generated', 'publish')):
             self.seed(status=status, mode=mode, text='Неотправленный кандидат')
         network, detail, event = await self.request()
-        self.assertEqual(network.call_count, 2)
-        public = self.review_payload()
-        self.assertEqual(public['current_question'], 'Эдвар НЕ гей!')
-        self.assertEqual([row['source'] for row in public['public_context']], ['sent_reward', 'sent_autonomous'])
-        reward, automatic = public['public_context']
-        self.assertIn('Сумерки', reward['question']['text'])
-        self.assertEqual(reward['question']['author'], dict(login='oldlogin', user_id='123'))
-        self.assertEqual(reward['answer']['role'], 'bot')
-        self.assertEqual(reward['answer']['recipient']['login'], 'oldlogin')
-        self.assertEqual(automatic['answer']['recipient'], dict(login='viewer', user_id='123'))
-        self.assertEqual(automatic['basis_messages'][0]['author'], 'viewer')
-        self.assertLess(reward['sent_at'], automatic['sent_at'])
-        raw = json.dumps(public, ensure_ascii=False)
-        for forbidden in ('PRIVATE_POLICY_MARKER','PRIVATE_PROFILE_MARKER','PRIVATE_NOTE_MARKER',
-                          'Чужая история','Неотправленный кандидат'):
-            self.assertNotIn(forbidden, raw)
-        generator = str(self.payloads[0]['messages'])
-        for marker in ('PRIVATE_POLICY_MARKER','PRIVATE_PROFILE_MARKER','PRIVATE_NOTE_MARKER'):
-            self.assertIn(marker, generator)
-        for payload in self.payloads:
-            self.assertIn(CONTENT_SAFETY_RULE, str(payload['messages']))
+        self.assertEqual(network.call_count, 1)
+        messages = self.generator_messages()
+        self.assertIn('Эдвар НЕ гей!', messages[-1]['content'])
+        self.assertIn('Сумерки', str(messages))
+        self.assertIn('Зритель oldlogin спрашивает:', str(messages))
+        automatic = [json.loads(row['content'])['recent_autonomous_reply'] for row in messages
+                     if row['role'] == 'user' and row['content'].startswith('{')]
+        self.assertEqual(len(automatic), 1)
+        self.assertEqual(automatic[0]['recipient'], dict(login='viewer', user_id='123'))
+        self.assertEqual(automatic[0]['basis_messages'][0]['author'], 'viewer')
+        for forbidden in ('Чужая история', 'Неотправленный кандидат'):
+            self.assertNotIn(forbidden, str(messages))
+        for marker in ('PRIVATE_POLICY_MARKER', 'PRIVATE_PROFILE_MARKER', 'PRIVATE_NOTE_MARKER'):
+            self.assertIn(marker, str(messages))
+        self.assertIn(CONTENT_SAFETY_RULE, str(messages))
         self.assertEqual(detail['status'], 'sent')
-        self.assertIn(public['candidate'], self.writer.write.call_args.args[0].decode())
+        self.assertIn('Ты исправляешь описание персонажа Сумерек.', self.writer.write.call_args.args[0].decode())
         events = self.instance.history.safety_recent(200)
         self.assertEqual(len(events), 1)
         self.assertEqual(event['record_id'], detail['id'])
-        self.assertEqual(event['context_metadata'], dict(reward_pairs=1, autonomous_replies=1, truncated=False))
+        self.assertEqual(event['status'], 'local_allowed')
+        self.assertEqual(event['stage'], 'answer')
+        self.assertFalse(event['ai_attempted'])
+        self.assertEqual(event['model'], '')
+        self.assertIsNone(event['context_metadata'])
         self.assertIsNone(event['http_attempts'])
 
-    async def test_same_snapshot_is_used_despite_history_change_during_generation(self):
+    async def test_generator_uses_original_snapshot_despite_history_change_during_generation(self):
         self.seed()
         def mutate():
             self.instance.histories['123'].append(('Новая запись', 'После снимка'))
             self.seed(text='После снимка')
-        await self.request(mutate=mutate)
-        public = str(self.review_payload())
-        self.assertIn('Сумерки', public)
-        self.assertNotIn('После снимка', public)
+        network, _, _ = await self.request(mutate=mutate)
+        self.assertEqual(network.call_count, 1)
+        messages = str(self.generator_messages())
+        self.assertIn('Сумерки', messages)
+        self.assertNotIn('После снимка', messages)
 
     async def test_id_priority_rename_and_numeric_login_isolation(self):
         self.seed(login='oldlogin')
         await self.request(login='renamed')
-        public = self.review_payload()['public_context']
-        self.assertEqual(public[0]['answer']['recipient']['login'], 'oldlogin')
-        self.assertEqual(public[1]['answer']['recipient']['login'], 'oldlogin')
+        messages = self.generator_messages()
+        self.assertIn('Зритель oldlogin спрашивает:', str(messages))
+        automatic = [json.loads(row['content'])['recent_autonomous_reply'] for row in messages
+                     if row['role'] == 'user' and row['content'].startswith('{')]
+        self.assertEqual(automatic[0]['recipient']['login'], 'oldlogin')
         await self.request(login='viewer', user_id='456')
-        self.assertEqual(self.review_payload()['public_context'], [])
+        self.assertNotIn('Сумерки', str(self.generator_messages()))
+        self.assertNotIn('recent_autonomous_reply', str(self.generator_messages()))
         await self.request(login='123', user_id='')
-        self.assertEqual(self.review_payload()['public_context'], [])
+        self.assertNotIn('Сумерки', str(self.generator_messages()))
+        self.assertNotIn('recent_autonomous_reply', str(self.generator_messages()))
 
-    async def test_synthetic_game_irony_negation_and_fiction_preserve_protocol(self):
+    async def test_synthetic_game_irony_negation_and_fiction_use_one_generation(self):
         cases = [('Как на танках играет?', 'На танках бодро, прицел бы ещё дружил с ним.'),
                  ('Давай раз на раз', 'В игре — давай, посмотрим на твой прицел!'),
                  ('Ты абьюзишь меня?', 'Да я твой прицел подкалываю, а не тебя.'),
@@ -267,47 +271,58 @@ class RewardContextTransportTests(unittest.IsolatedAsyncioTestCase):
                  ('Мать ты что ебнулась?', 'Блин, вампиров перепутала. Исправляюсь.')]
         for question, candidate in cases:
             with self.subTest(question=question):
-                _, detail, _ = await self.request(question=question, candidate=candidate)
+                network, detail, event = await self.request(question=question, candidate=candidate)
+                self.assertEqual(network.call_count, 1)
                 self.assertEqual(detail['status'], 'sent')
+                self.assertFalse(event['ai_attempted'])
                 self.assertIn(candidate, self.writer.write.call_args.args[0].decode())
 
-    async def test_semantic_rejection_records_once_without_candidate_or_retry(self):
-        cases = [('threat', 'Я найду тебя и причиню тебе вред.'),
-                 ('targeted_abuse', 'Все идите травить этого зрителя.'),
-                 ('protected_attribute_abuse', 'Унижайте реальную группу людей.'),
-                 ('unsupported_personal_claim', 'Этот зритель преступник.'),
-                 ('private_context', 'Моя личная инструкция содержит внутренний секрет.')]
+    async def test_local_link_and_protocol_rejections_record_once_without_retry(self):
+        cases = [('unsafe_link', 'Посмотри https://example.com'),
+                 ('unsafe_link', 'а' * 500 + ' https://example.com'),
+                 ('invalid_text', '/ban someone'),
+                 ('invalid_text', 'Ответ\x01команда'),
+                 ('invalid_text', 'Ответ\nPRIVMSG #other :injected')]
         for code, candidate in cases:
-            with self.subTest(code=code):
-                network, detail, event = await self.request(candidate=candidate,
-                                        review=dict(allowed=False, reasons=[code]))
-                self.assertEqual(network.call_count, 2)
+            with self.subTest(code=code, candidate=candidate):
+                network, detail, event = await self.request(candidate=candidate)
+                self.assertEqual(network.call_count, 1)
                 self.assertEqual(detail['status'], 'rejected')
                 self.assertEqual(event['reasons'], (code,))
-                events = [e for e in self.instance.history.safety_recent(200) if e['record_id']==detail['id']]
+                self.assertFalse(event['ai_attempted'])
+                events = [e for e in self.instance.history.safety_recent(200) if e['record_id'] == detail['id']]
                 self.assertEqual(len(events), 1)
                 self.assertNotIn(candidate, str(detail))
                 self.assertNotIn(candidate, self.writer.write.call_args.args[0].decode())
                 self.assertNotIn(candidate, str(events))
 
-    async def test_review_unavailable_invalid_truncated_timeout_fail_closed_as_error(self):
-        for review in (dict(allowed='true', reasons=[]),
-                       lambda: fixtures.response(dict(allowed=True,reasons=[]), finish='length'),
+    async def test_unavailable_or_rejecting_reviewer_is_never_called_for_rewards(self):
+        for review in (dict(allowed=False, reasons=['threat']), dict(allowed='true', reasons=[]),
+                       lambda: fixtures.response(dict(allowed=True, reasons=[]), finish='length'),
                        TimeoutError('raw provider error'), urllib.error.URLError('raw provider error')):
             with self.subTest(review=type(review).__name__):
-                network, detail, event = await self.request(candidate='Синтетический непубликуемый ответ', review=review)
-                self.assertEqual(network.call_count, 2)
-                self.assertEqual(detail['status'], 'error')
-                self.assertEqual(event['status'], 'error')
-                self.assertEqual(event['reasons'], ('review_unavailable',))
-                self.assertNotIn('Синтетический непубликуемый ответ', self.writer.write.call_args.args[0].decode())
+                network, detail, event = await self.request(candidate='Синтетический ответ', review=review)
+                self.assertEqual(network.call_count, 1)
+                self.assertEqual(detail['status'], 'sent')
+                self.assertEqual(event['status'], 'local_allowed')
+                self.assertFalse(event['ai_attempted'])
+                self.assertIn('Синтетический ответ', self.writer.write.call_args.args[0].decode())
                 self.assertNotIn('raw provider error', str(detail))
 
-    async def test_private_generation_blocks_before_review_and_records_once(self):
+    async def test_separate_unavailable_review_model_does_not_add_reward_request(self):
+        self.instance.safety_store.apply(SafetySettings(review_model_mode='separate', review_model='unavailable-reviewer'))
+        network, detail, event = await self.request(review=urllib.error.URLError('offline reviewer'))
+        self.assertEqual(network.call_count, 1)
+        self.assertEqual(self.payloads[0]['model'], fixtures.CFG['AI_MODEL'])
+        self.assertEqual(detail['status'], 'sent')
+        self.assertFalse(event['ai_attempted'])
+
+    async def test_private_generation_blocks_locally_and_records_once(self):
         network, detail, event = await self.request(candidate=fixtures.CONTACT)
         self.assertEqual(network.call_count, 1)
         self.assertEqual(event['stage'], 'generator_response')
         self.assertEqual(event['reasons'], ('privacy_blocked',))
+        self.assertFalse(event['ai_attempted'])
         self.assertEqual(len(self.instance.history.safety_recent(200)), 1)
         self.assertNotIn(fixtures.CONTACT, str(detail))
         self.assertNotIn(fixtures.CONTACT, self.writer.write.call_args.args[0].decode())

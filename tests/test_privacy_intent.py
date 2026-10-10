@@ -189,30 +189,27 @@ class RewardIntentTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    async def test_safe_questions_review_and_publish_exact_text_through_real_worker(self):
+    async def test_safe_questions_publish_exact_text_with_only_generation(self):
         for question in CONFIRMED:
             self.instance.last_sent = 0
             self.writer.reset_mock()
             with self.subTest(question=question):
-                with patch("urllib.request.urlopen", side_effect=[
-                        response("Заебись, разберёмся!"), response({"allowed": True, "reasons": []})]) as network:
+                with patch("urllib.request.urlopen", return_value=response("Заебись, разберёмся!")) as network:
                     await self.reward(question)
-                self.assertEqual(network.call_count, 2)
+                self.assertEqual(network.call_count, 1)
                 published = self.writer.write.call_args.args[0].decode()
                 self.assertEqual(published, "PRIVMSG #channel :@viewer Заебись, разберёмся!\r\n")
                 self.assertIn((question, "Заебись, разберёмся!"), self.instance.histories["1"])
+                self.assertFalse(self.instance.history.safety_recent()[0]['ai_attempted'])
 
-    async def test_safe_question_never_allows_unsafe_candidate_or_fallback(self):
-        cases = [("alex @ example . invalid", None), ("example[.]com", None),
-                 ("У viewer тяжёлая болезнь", {"allowed": False, "reasons": ["unsupported_personal_claim"]})]
-        for candidate, verdict in cases:
+    async def test_safe_question_never_allows_locally_unsafe_candidate_or_fallback(self):
+        for candidate in ("alex @ example . invalid", "example[.]com", "Ответ\x01команда"):
             self.instance.last_sent = 0
             self.writer.reset_mock()
-            calls = [response(candidate)] + ([response(verdict)] if verdict is not None else [])
             with self.subTest(candidate=candidate):
-                with patch("urllib.request.urlopen", side_effect=calls) as network:
+                with patch("urllib.request.urlopen", return_value=response(candidate)) as network:
                     await self.reward(CONFIRMED[0])
-                self.assertEqual(network.call_count, 2 if verdict is not None else 1)
+                self.assertEqual(network.call_count, 1)
                 self.assertTrue(all(json.loads(call.args[0].data)["model"] == "chosen" for call in network.call_args_list))
                 self.assertNotIn(candidate, self.writer.write.call_args.args[0].decode())
                 self.assertFalse(self.instance.histories)

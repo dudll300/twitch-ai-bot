@@ -291,7 +291,7 @@ class RuntimePolicyTests(unittest.IsolatedAsyncioTestCase):
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
-    async def test_live_apply_allowlist_reward_and_real_fallback_reviewer(self):
+    async def test_live_apply_allowlist_reward_and_real_fallback_without_reviewer(self):
         self.store.apply(SafetySettings(link_mode='allow_domains', allowed_domains=('twitch.tv',)))
         calls = []
         def http(req, timeout):
@@ -302,9 +302,11 @@ class RuntimePolicyTests(unittest.IsolatedAsyncioTestCase):
             return response({'allowed': True, 'reasons': []} if payload['max_tokens'] == 160 else 'https://twitch.tv')
         with patch('urllib.request.urlopen', side_effect=http):
             await self.reward()
-        self.assertEqual(calls, ['answer', 'backup', 'backup'])
+        self.assertEqual(calls, ['answer', 'backup'])
         self.assertIn('https://twitch.tv', self.writer.write.call_args.args[0].decode())
-        self.assertEqual(self.instance.history.safety_recent()[0]['model'], 'backup')
+        self.assertEqual(self.instance.history.page()['rows'][0]['model'], 'backup')
+        self.assertFalse(self.instance.history.safety_recent()[0]['ai_attempted'])
+        self.assertEqual(self.instance.history.safety_recent()[0]['status'], 'local_allowed')
         self.instance.last_sent = 0
         self.instance.histories.clear()
         self.store.apply(SafetySettings())
@@ -337,12 +339,9 @@ class RuntimePolicyTests(unittest.IsolatedAsyncioTestCase):
             reserve.assert_not_called()
         self.writer.write.assert_not_called()
 
-    async def test_policy_change_during_reward_review_refuses_and_no_memory(self):
+    async def test_policy_change_during_reward_generation_refuses_and_no_memory(self):
         def http(req, timeout):
-            payload = json.loads(req.data)
-            if payload['max_tokens'] == 160:
-                self.store.apply(SafetySettings())
-                return response({'allowed': True, 'reasons': []})
+            self.store.apply(SafetySettings())
             return response('Неопубликованный кандидат')
         with patch('urllib.request.urlopen', side_effect=http):
             await self.reward()
@@ -391,7 +390,7 @@ class AutonomousPolicyTests(unittest.IsolatedAsyncioTestCase):
         await self.controller.tick()
         return self.controller.pending
 
-    async def generate(self):
+    async def generate(self, review=None):
         await self.start()
         models = []
         def http(req, timeout):
@@ -401,7 +400,7 @@ class AutonomousPolicyTests(unittest.IsolatedAsyncioTestCase):
                 return response(dict(action='reply', conversation=[1], basis=[1], target='viewer', reason='answer', intent='Ссылка на канал'))
             if len(models) == 2:
                 return response({'text': 'https://twitch.tv'})
-            return response({'allowed': True, 'reasons': []})
+            return response(review or {'allowed': True, 'reasons': []})
         with patch('urllib.request.urlopen', side_effect=http):
             result = await asyncio.to_thread(self.executor.callback, *self.executor.args, **self.executor.kwargs)
             self.executor.future.set_result(result)
@@ -415,6 +414,16 @@ class AutonomousPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.sender.assert_awaited_once()
         self.assertEqual(self.sender.call_args.args[0], '@viewer https://twitch.tv')
         self.assertEqual(self.journal.safety_recent()[0]['model'], 'reviewer')
+
+    async def test_autonomous_semantic_rejection_still_uses_reviewer_and_does_not_publish(self):
+        models = await self.generate({'allowed': False, 'reasons': ['threat']})
+        self.assertEqual(models, ['answer', 'answer', 'reviewer'])
+        self.assertEqual(len(self.controller.requests), 3)
+        self.sender.assert_not_called()
+        self.assertFalse(self.controller.quota)
+        event = self.journal.safety_recent()[0]
+        self.assertTrue(event['ai_attempted'])
+        self.assertEqual(event['reasons'], ('threat',))
 
     async def test_preview_uses_same_allowlist_review_and_no_card_publication(self):
         self.controller.settings = replace(self.controller.settings, mode='preview')

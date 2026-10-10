@@ -12,7 +12,7 @@ def approved(cfg, model, text, **options):
 
 
 def stub_reviews(test):
-    for target in ("bot.review_candidate", "autonomous.review_candidate", "testing.review_candidate"):
+    for target in ("autonomous.review_candidate", "testing.review_candidate"):
         mock = patch(target, side_effect=approved)
         mock.start()
         test.addCleanup(mock.stop)
