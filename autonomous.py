@@ -592,12 +592,13 @@ class Autonomous:
                 fields["reason"] = reason
             await asyncio.to_thread(self.history_store.update, record_id, detail_status, **fields)
             review = pending.review_ref[0] if pending.review_ref else None
-            if reason in ("moderation_cancelled", "policy_changed"):
+            if reason in ("moderation_cancelled", "policy_changed") and (review is None or reason not in review.reasons):
                 review = replace(review or SafetyReview("cancelled", ""), status="cancelled", text="",
                                  reasons=(reason,), stage="publication")
             if review is None:
-                review = SafetyReview('local_allowed' if status in {'silent', 'sent', 'preview'} else 'cancelled', '',
-                                     stage=pending.request_trace.stage)
+                review = SafetyReview('local_allowed' if status in {'silent', 'sent', 'preview'} else
+                                      'error' if status in {'error', 'send_error'} else 'cancelled', '',
+                                      (reason,) if reason else (), stage=pending.request_trace.stage)
             if review is not None:
                 review = replace(review, http_attempts=pending.request_trace.counts(),
                                  twitch_attempted=pending.request_trace.twitch_attempted)
@@ -633,7 +634,14 @@ class Autonomous:
                     if pending.generation != self.generation or pending.cancel is not None and pending.cancel.is_set():
                         return 'cancelled'
                     return fallback
-                if not current():
+                # Consume completion even if publication has become ineligible.
+                # Its failure code is evidence; a successful stale result still cannot publish.
+                completion_error = None
+                try:
+                    result = pending.future.result()
+                except Exception as exc:
+                    completion_error = exc
+                if completion_error is None and not current():
                     await self.finish_history(pending, "skipped", reason=cancellation_reason('cancelled'))
                     self.event("error" if self.quota_error else "skipped", reason=(
                         "Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены."
@@ -642,7 +650,8 @@ class Autonomous:
                 else:
                     try:
                         stage = "autonomous_validation"
-                        result = pending.future.result()
+                        if completion_error is not None:
+                            raise completion_error
                         # Injected request implementations are checked by the same protocol.
                         decision = parse_decision(json.dumps({key: getattr(result, key)
                             for key in ("action", "text", "target", "basis", "reason")}), self.settings.max_chars)
@@ -745,10 +754,13 @@ class Autonomous:
                         await self.finish_history(pending, 'error' if review.status == 'error' else 'cancelled' if review.status == 'cancelled' else 'rejected', reason=reason)
                         self.event("skipped", reason=reason)
                     except RequestCancelled as exc:
+                        status = 'error' if exc.code == 'quota_storage_error' else 'cancelled'
                         if pending.review_ref is not None:
-                            pending.review_ref[0] = SafetyReview('cancelled', '', (exc.code,), stage=pending.request_trace.stage)
-                        await self.finish_history(pending, 'cancelled', reason=exc.code)
-                        self.event('skipped', reason=exc.code)
+                            pending.review_ref[0] = SafetyReview(status, '', (exc.code,), stage=pending.request_trace.stage)
+                        await self.finish_history(pending, status, reason=exc.code)
+                        self.event('error' if status == 'error' else 'skipped', reason=(
+                            'Не удалось сохранить счётчик AI-запросов. Самостоятельные запросы остановлены.'
+                            if status == 'error' else exc.code))
                     except Exception as exc:
                         code = exc.code if isinstance(exc, ParticipationError) else "autonomous_timeout" if isinstance(exc, TimeoutError) else stage
                         if pending.review_ref is not None:

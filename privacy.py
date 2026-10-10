@@ -68,6 +68,18 @@ class ApplicationContent(str):
                                   (part.replace(old, new, count) for part in self.parts))
 
 
+
+def application_content(wire, parts):
+    """Preserve document-wide codec labels without scanning exempt metadata."""
+    parts = tuple(parts)
+    if any(_TRANSFORM.search(_normalized(_unicode_unescape(raw))) for raw in parts):
+        # Ordinary structure is checked independently; labelled variants add
+        # codec work only when the document actually carries an encoding label.
+        labelled = ('base64 hex ' + raw for raw in parts if not raw.startswith('base64 hex '))
+        parts = tuple(dict.fromkeys((*parts, *labelled)))
+    return ApplicationContent(wire, parts)
+
+
 def application_json(payload):
     """Only explicit typed metadata is exempt; all keys and other values remain data."""
     parts, stack = [], [(payload, 0)]
@@ -84,7 +96,8 @@ def application_json(payload):
         elif isinstance(item, (list, tuple)):
             stack.extend((part, depth + 1) for part in item)
         elif item is not None:
-            parts.append(str(item))
+            raw = str(item)
+            parts.append(raw)
     # Convert typed keys too; JSON's default hook only handles values.
     def wire(item):
         if isinstance(item, ProtocolValue):
@@ -97,12 +110,12 @@ def application_json(payload):
     result = json.dumps(wire(payload), ensure_ascii=False, allow_nan=False)
     if len(result) > 400000:
         raise PrivacyAnalysisLimit()
-    return ApplicationContent(result, parts)
+    return application_content(result, parts)
 
 
 def application_text(prefix, payload):
     content = application_json(payload)
-    return ApplicationContent(prefix + content, (prefix, *content.parts))
+    return application_content(prefix + content, (prefix, *content.parts))
 
 
 # Literal addresses cannot span words: "ответь @viewer. Это" is an IRC
@@ -155,6 +168,10 @@ _CONTACT_PREPOSITION = re.compile(r"^\s*(?:в|на|из|через|для|с|с�
 _CONCEPT_DISCUSSION = re.compile(r"^[\s,;:—-]*(?:о|об|про|что\s+такое)\b", re.I)
 
 
+def _unicode_unescape(raw):
+    return re.sub(r"\\u([0-9a-fA-F]{4})", lambda match: chr(int(match[1], 16)), raw)
+
+
 def analysis_variants(text):
     """Structural leaves do not spend the separate budget for extra decoding.
 
@@ -163,7 +180,8 @@ def analysis_variants(text):
     """
     parts = text.parts if isinstance(text, ApplicationContent) else (str(text),)
     queue = deque((part, 0, 0) for part in parts)
-    seen, total, nodes, transforms = set(), 0, 0, 0
+    seen_raw, seen_values = set(), set()
+    total, nodes, transforms = 0, 0, 0
     if len(str(text)) > 400000 or len(queue) > 16384:
         raise PrivacyAnalysisLimit()
     while queue:
@@ -171,15 +189,20 @@ def analysis_variants(text):
         nodes += 1
         if nodes > 16384 or nesting > 16:
             raise PrivacyAnalysisLimit()
-        value = _normalized(raw)
-        key = (value, depth)
-        if key in seen:
+        # Normalization is a literal-check optimization, never a parsing key:
+        # two different raw strings can normalize alike but parse differently.
+        raw_key = (raw, depth)
+        if raw_key in seen_raw:
             continue
-        total += len(value)
+        seen_raw.add(raw_key)
+        total += len(raw)
         if total > 200000:
             raise PrivacyAnalysisLimit()
-        seen.add(key)
-        yield value
+        value = _normalized(raw)
+        key = (value, depth)
+        if key not in seen_values:
+            seen_values.add(key)
+            yield value
         # Parsing a JSON envelope is structural work, not another codec attempt.
         try:
             decoded = json.loads(raw) if raw.lstrip().startswith(('{', '[', '"')) else None
@@ -203,7 +226,7 @@ def analysis_variants(text):
             elif type(item) in (int, float):
                 queue.append((str(item), level, depth))
         extra = []
-        escaped = re.sub(r"\\u([0-9a-fA-F]{4})", lambda match: chr(int(match[1], 16)), raw)
+        escaped = _unicode_unescape(raw)
         if escaped != raw:
             extra.append(escaped)
         if _TRANSFORM.search(value):
@@ -233,7 +256,7 @@ def analysis_variants(text):
                     except (ValueError, UnicodeError):
                         pass
         for result in extra:
-            if (_normalized(result), depth + 1) in seen:
+            if (result, depth + 1) in seen_raw:
                 continue
             transforms += 1
             if transforms > 64 or depth >= 2:

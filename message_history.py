@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS safety_events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, time REAL NOT NULL, scenario TEXT NOT NULL,
     record_id TEXT, status TEXT NOT NULL, stage TEXT NOT NULL, reasons TEXT NOT NULL,
     ai_attempted INTEGER NOT NULL, model TEXT NOT NULL, seconds REAL, policy_version TEXT NOT NULL,
-    http_attempts TEXT, twitch_attempted INTEGER
+    http_attempts TEXT, twitch_attempted INTEGER, context_metadata TEXT
 );
 """
 
@@ -89,7 +89,7 @@ class MessageHistory:
                         connection.execute("PRAGMA journal_mode=WAL")
                         connection.executescript(SCHEMA)
                         columns = {row[1] for row in connection.execute('PRAGMA table_info(safety_events)')}
-                        for name, definition in (('http_attempts', "TEXT"), ('twitch_attempted', 'INTEGER')):
+                        for name, definition in (('http_attempts', "TEXT"), ('twitch_attempted', 'INTEGER'), ('context_metadata', 'TEXT')):
                             if name not in columns:
                                 connection.execute(f'ALTER TABLE safety_events ADD COLUMN {name} {definition}')
                         self._ready = True
@@ -134,13 +134,18 @@ class MessageHistory:
         reasons = [code for code in review.reasons if code in REASON_NAMES]
         model = self.redact(review.model[:200]) if review.ai_attempted else ''
         def insert(connection):
-            counts = tuple(review.http_attempts)
-            if len(counts) != 3 or any(type(n) is not int or not 0 <= n <= 3 for n in counts):
+            counts = tuple(review.http_attempts) if review.http_attempts is not None else None
+            if counts is not None and (len(counts) != 3 or any(type(n) is not int or not 0 <= n <= 3 for n in counts)):
                 raise ValueError('Invalid HTTP counters')
-            connection.execute('INSERT INTO safety_events(time,scenario,record_id,status,stage,reasons,ai_attempted,model,seconds,policy_version,http_attempts,twitch_attempted) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+            metadata = {key: value for key, value in review.context_metadata
+                        if key in {'reward_pairs', 'autonomous_replies', 'truncated'}
+                        and type(value) in (int, bool) and 0 <= value <= 10}
+            connection.execute('INSERT INTO safety_events(time,scenario,record_id,status,stage,reasons,ai_attempted,model,seconds,policy_version,http_attempts,twitch_attempted,context_metadata) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
                 (self.clock(), scenario, record_id, review.status, stage, json.dumps(reasons),
                  int(review.ai_attempted), model, review.seconds, review.policy_version[:64],
-                 json.dumps(counts), int(review.twitch_attempted)))
+                 json.dumps(counts) if counts is not None else None,
+                  int(review.twitch_attempted) if review.twitch_attempted is not None else None,
+                  json.dumps(metadata) if metadata else None))
             connection.execute('DELETE FROM safety_events WHERE seq NOT IN (SELECT seq FROM safety_events ORDER BY seq DESC LIMIT 200)')
         return self._write(insert)
 
@@ -152,8 +157,14 @@ class MessageHistory:
                     (max(1, min(int(limit), 200)),))]
             for row in rows:
                 row['reasons'] = tuple(json.loads(row['reasons']))
+                row['context_metadata'] = json.loads(row['context_metadata']) if row.get('context_metadata') is not None else None
                 row['http_attempts'] = tuple(json.loads(row['http_attempts'])) if row.get('http_attempts') is not None else None
                 row['twitch_attempted'] = bool(row['twitch_attempted']) if row.get('twitch_attempted') is not None else None
+                # Older reward events wrote default zeros without a transport trace.
+                # Correct the read view, preserving the database bytes unchanged.
+                if row['scenario'] == 'reward' and row['http_attempts'] == (0, 0, 0) and row['context_metadata'] is None:
+                    row['http_attempts'] = None
+                    row['twitch_attempted'] = None
             return rows
         return self._read(select)
 

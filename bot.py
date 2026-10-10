@@ -21,6 +21,7 @@ from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
 from recent_context import for_reward
+from reward_context import capture_reward_context
 from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
 from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, check_question, safe_history_text, unsafe_question
 from irc import moderation_event
@@ -75,7 +76,7 @@ class AIModelRouter:
     def ask(self, cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             history: tuple[tuple[str, str], ...] = (), *, allow_creative=True, on_answer=None,
-            recent_context=(), history_times=()) -> str:
+            recent_context=(), history_times=(), history_recipients=()) -> str:
         check_question(question)
         self.last_model = ""
         bundle = None
@@ -85,7 +86,7 @@ class AIModelRouter:
         try:
             answer = self._ask_models(cfg, user, question, memory_data, user_id, history, bundle,
                                       reject_local_service=not allow_creative,
-                                      recent_context=recent_context, history_times=history_times)
+                                      recent_context=recent_context, history_times=history_times, history_recipients=history_recipients)
             if not allow_creative and is_local_service_output(answer):
                 raise LocalResultError("Некорректный обычный ответ после отмены локальной отсылки.")
             if on_answer is not None:
@@ -97,10 +98,10 @@ class AIModelRouter:
             print("Локальный контекст: некорректный результат; повторяю ответ без творческой отсылки.", flush=True)
             return self.ask(cfg, user, question, memory_data, user_id, history,
                             allow_creative=False, on_answer=on_answer,
-                            recent_context=recent_context, history_times=history_times)
+                            recent_context=recent_context, history_times=history_times, history_recipients=history_recipients)
 
     def _ask_models(self, cfg, user, question, memory_data, user_id, history, local_bundle,
-                    *, reject_local_service=False, recent_context=(), history_times=()):
+                    *, reject_local_service=False, recent_context=(), history_times=(), history_recipients=()):
         primary = cfg["AI_MODEL"]
         backups = tuple(dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",")
                                       if name.strip() and name.strip() != primary))
@@ -115,7 +116,11 @@ class AIModelRouter:
             try:
                 kwargs = {"model": model, "history": history}
                 if recent_context:
-                    kwargs.update(recent_context=recent_context, history_times=history_times)
+                    kwargs["recent_context"] = recent_context
+                if history_times:
+                    kwargs["history_times"] = history_times
+                if history_recipients:
+                    kwargs['history_recipients'] = history_recipients
                 if personal_prompt:
                     kwargs["personal_prompt"] = personal_prompt
                 if context.prompt:
@@ -159,6 +164,7 @@ class Bot:
         self.ai_router = AIModelRouter(load_profiles(ROOT / "profiles.json"), self.local_context)
         self.histories: dict[str, deque[tuple[str, str]]] = {}
         self.history_times: dict[str, deque[float]] = {}
+        self.history_recipients: dict[str, deque[str]] = {}
         self.fragments = FragmentGuard()
         self.history = MessageHistory(ROOT, secrets=(cfg.get("AI_API_KEY", ""),))
         self._paid_busy = False
@@ -264,21 +270,24 @@ class Bot:
             return SAFETY_REFUSAL, 'privacy_analysis_limit'
         return None
 
-    async def refuse(self, writer, user, user_id, question, notice, reason, record_id=None):
+    async def refuse(self, writer, user, user_id, question, notice, reason, record_id=None, *, record_safety=True, status="rejected"):
+        if reason == 'privacy_analysis_limit':
+            status = 'error'
         if record_id is None:
-            record_id = await self.history_add("rejected", viewer=user, viewer_id=user_id,
+            record_id = await self.history_add(status, viewer=user, viewer_id=user_id,
                 question=safe_history_text(question), answer=notice, action="refusal", reason=reason)
         else:
-            await self.history_update(record_id, "rejected", answer=notice, action="refusal", reason=reason)
-        if notice == PRIVACY_REFUSAL:
+            await self.history_update(record_id, status, answer=notice, action="refusal", reason=reason)
+        if notice == PRIVACY_REFUSAL and record_safety:
             await self.safety_decision(record_id, SafetyReview("blocked", "", ("privacy_blocked",), stage="question"))
-        elif reason == 'privacy_analysis_limit':
+        elif reason == 'privacy_analysis_limit' and record_safety:
+            status = 'error'
             await self.safety_decision(record_id, SafetyReview('error', '', (reason,), stage='question'))
             await self.history_update(record_id, 'error', answer='', context=None, reason=reason)
         text = clean_text(f"@{user} {notice}", CHAT_MAX_CHARS)
         try:
             await self.say(writer, text)
-            await self.history_update(record_id, "rejected", sent_text=text)
+            await self.history_update(record_id, status, sent_text=text)
         except asyncio.CancelledError:
             await self.history_update(record_id, "cancelled", reason="Отправка отказа отменена.")
             raise
@@ -291,6 +300,7 @@ class Bot:
             user, user_id, question, redemption_id = await queue.get()
             self._paid_busy = True
             record_id = None
+            recorded_review = None
             scope = policy_scope(getattr(self, "safety_store", PolicyStore(ROOT)))
             scope.__enter__()
             try:
@@ -313,15 +323,20 @@ class Bot:
                     kwargs = {} if allow_creative else {"allow_creative": False}
                     if getattr(self, "history", None) is not None and isinstance(self.ai_router, AIModelRouter):
                         kwargs["on_answer"] = generated
-                    if isinstance(self.ai_router, AIModelRouter) and recent:
-                        kwargs.update(recent_context=recent, history_times=history_times)
+                    if isinstance(self.ai_router, AIModelRouter):
+                        if recent:
+                            kwargs['recent_context'] = recent
+                        if history_times:
+                            kwargs['history_times'] = history_times
+                        if history_recipients:
+                            kwargs['history_recipients'] = history_recipients
                     result = await asyncio.to_thread(
                         self.ai_router.ask, self.cfg, user, question, self.memory, user_id, history, **kwargs)
                     if not observed:
                         await self.history_update(record_id, "generated",
                             model=getattr(self.ai_router, "last_model", "") or self.cfg.get("AI_MODEL", ""))
                     return result
-                key = user_id or user.casefold()
+                key = user_id or "login:" + user.casefold()
                 history = tuple(self.histories.get(key, ()))
                 if not hasattr(self, "history_times"):
                     self.history_times = {}
@@ -330,10 +345,15 @@ class Bot:
                 rows = autonomous.reward_reply_snapshot() if isinstance(autonomous, Autonomous) else ()
                 recent = await asyncio.to_thread(for_reward, getattr(self, "history", None), rows,
                     self.cfg.get("TWITCH_CHANNEL", ""), user, user_id, time.time())
+                origins = tuple(getattr(self, 'history_recipients', {}).get(key, ()))
+                history_recipients = ('',) * max(0, len(history) - len(origins)) + origins[-len(history):] if history else ()
+                public_context = capture_reward_context(self.cfg, user, user_id, question,
+                    history, history_times, recent, history_recipients)
                 fragments = getattr(self, "fragments", None)
                 if fragments is not None:
                     fragments.check(question, user_id, "reward-input", remember=True)
                 async def approve(answer):
+                    nonlocal recorded_review
                     check_candidate_source(str(answer))
                     text = clean_text(f"@{user} {str(answer)}", CHAT_MAX_CHARS)
                     if fragments is not None and fragments.check(str(answer), user_id, "public-replies"):
@@ -341,8 +361,9 @@ class Bot:
                     model = getattr(self.ai_router, "last_model", "")
                     model = model if isinstance(model, str) and model else self.cfg.get("AI_MODEL", "")
                     review = await asyncio.to_thread(review_candidate, self.cfg, model, text,
-                        target=user, context=question, limit=CHAT_MAX_CHARS)
+                        target=user, context=public_context, limit=CHAT_MAX_CHARS)
                     await self.safety_decision(record_id, review)
+                    recorded_review = review
                     if not review.allowed:
                         raise SafetyBlocked(review)
                     await self.history_update(record_id, "generated", answer=str(answer), model=model)
@@ -376,30 +397,39 @@ class Bot:
                 times = self.history_times.pop(key, deque(maxlen=10))
                 times.append(time.time())
                 self.history_times[key] = times
+                if not hasattr(self, 'history_recipients'):
+                    self.history_recipients = {}
+                recipients = self.history_recipients.setdefault(key, deque(history_recipients, maxlen=10))
+                recipients.append(user)
                 if len(self.histories) > MAX_HISTORY_VIEWERS:
                     oldest = next(iter(self.histories))
                     del self.histories[oldest]
                     self.history_times.pop(oldest, None)
+                    self.history_recipients.pop(oldest, None)
                 print(f"Ответ отправлен для {user}", flush=True)
             except asyncio.CancelledError:
                 await self.history_update(record_id, "cancelled", reason="Ответ прерван при остановке или разрыве соединения.")
                 print(f"Награда {redemption_id} от {user}: ответ прерван; проверьте возврат баллов вручную.", flush=True)
                 raise
-            except PrivacyViolation:
-                await self.safety_decision(record_id, SafetyReview("blocked", "", ("privacy_blocked",)))
+            except PrivacyViolation as exc:
+                await self.safety_decision(record_id, SafetyReview("blocked", "", ("privacy_blocked",),
+                    stage=getattr(exc, "stage", "answer")))
                 await self.refuse(writer, user, user_id, question, PRIVACY_REFUSAL,
-                                  "Запрос или ответ отклонён защитой личных данных.", record_id)
+                                  "Запрос или ответ отклонён защитой личных данных.", record_id, record_safety=False)
             except (PrivacyAnalysisLimit, PrivacyCheckError) as exc:
                 await self.safety_decision(record_id, SafetyReview('error', '', (exc.code,),
                                            stage=getattr(exc, 'stage', 'answer')))
                 await self.history_update(record_id, 'error', answer='', context=None, reason=exc.code)
                 print('Проверка приватности: ' + exc.code, flush=True)
             except SafetyBlocked as exc:
-                await self.safety_decision(record_id, exc.review)
+                if exc.review is not recorded_review:
+                    await self.safety_decision(record_id, exc.review)
                 reason = ",".join(exc.review.reasons)
-                await self.history_update(record_id, "rejected", answer="", context=None, reason=reason)
+                status = "error" if exc.review.status == "error" else "cancelled" if exc.review.status == "cancelled" else "rejected"
+                await self.history_update(record_id, status, answer="", context=None, reason=reason)
                 print("Проверка безопасности: " + reason, flush=True)
-                await self.refuse(writer, user, user_id, question, SAFETY_REFUSAL, reason, record_id)
+                await self.refuse(writer, user, user_id, question, SAFETY_REFUSAL, reason, record_id,
+                    status=status)
             except Exception as exc:
                 await self.history_update(record_id, "error", reason=str(exc))
                 safe_error = redact_secret(str(exc), self.cfg.get("AI_API_KEY", ""))
@@ -489,9 +519,12 @@ class Bot:
                             if event.kind == "all":
                                 self.histories.clear()
                                 self.history_times.clear()
+                                self.history_recipients.clear()
                             elif event.kind == "user":
-                                self.histories.pop(event.user_id or event.login, None)
-                                self.history_times.pop(event.user_id or event.login, None)
+                                key = event.user_id or 'login:' + event.login.casefold()
+                                self.histories.pop(key, None)
+                                self.history_times.pop(key, None)
+                                self.history_recipients.pop(key, None)
                     elif command == "NOTICE":
                         print("Twitch: " + line.split(" :", 1)[-1], flush=True)
 
@@ -504,6 +537,7 @@ class Bot:
             self.fragments.clear()
             self.histories.clear()
             self.history_times.clear()
+            self.history_recipients.clear()
             if autonomous_task is not None:
                 autonomous_task.cancel()
             worker.cancel()

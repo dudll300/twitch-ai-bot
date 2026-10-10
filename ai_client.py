@@ -11,7 +11,7 @@ import urllib.request
 from configuration import SYSTEM_PROMPT
 from local_context import LocalReply, LocalResultError
 from memory import context_for
-from reply_rules import ANSWER_LENGTH_RULE, ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
+from reply_rules import CONTENT_SAFETY_RULE, ANSWER_LENGTH_RULE, ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
 from privacy import PrivacyAnalysisLimit, PrivacyCheckError, PrivacyViolation, check_output, check_question, protected_messages, safe_history_text
 from safety import SafetyBlocked, check_candidate_source
 from safety_settings import link_prompt
@@ -215,7 +215,7 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             history: tuple[tuple[str, str], ...] = (),
             personal_prompt: str = "", sender_role: str | None = None,
-            viewer_context: str = "", local_bundle=None, recent_context=(), history_times=()) -> list[dict]:
+            viewer_context: str = "", local_bundle=None, recent_context=(), history_times=(), history_recipients=()) -> list[dict]:
     check_question(question)
     messages = []
     prompt = upgrade_generated_prompt(cfg.get("AI_PROMPT", SYSTEM_PROMPT).strip())
@@ -234,7 +234,7 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
     author = "Владелец канала" if is_streamer else "Зритель"
     if viewer_context:
         messages.append({"role": "system", "content": viewer_context})
-    messages.append({"role": "system", "content": ANSWER_LENGTH_RULE})
+    messages.append({"role": "system", "content": ANSWER_LENGTH_RULE + " " + CONTENT_SAFETY_RULE})
     if link_prompt():
         messages.append({'role': 'system', 'content': link_prompt()})
     if usable_local_bundle(local_bundle):
@@ -244,7 +244,9 @@ def build_messages(cfg: dict[str, str], user: str, question: str,
     pairs = history[-10:]
     for index, (previous_question, previous_answer) in enumerate(pairs):
         timestamp = history_times[-len(pairs):][index] if len(history_times) >= len(pairs) else float("-inf")
-        turns.append((timestamp, [{"role": "user", "content": f"{author} {user} спрашивает: {previous_question}"},
+        origin = history_recipients[-len(pairs):][index] if len(history_recipients) >= len(pairs) else user
+        origin = origin or user
+        turns.append((timestamp, [{"role": "user", "content": f"{author} {origin} спрашивает: {previous_question}"},
                                   {"role": "assistant", "content": previous_answer}]))
     if recent_context:
         messages.append({"role": "system", "content": (
@@ -276,28 +278,29 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
             history: tuple[tuple[str, str], ...] = (),
             personal_prompt: str = "", sender_role: str | None = None,
             viewer_context: str = "", local_bundle=None,
-            reject_local_service: bool = False, recent_context=(), history_times=()) -> str:
+            reject_local_service: bool = False, recent_context=(), history_times=(), history_recipients=()) -> str:
     messages = build_messages(cfg, user, question, memory_data, user_id,
                               history=history, personal_prompt=personal_prompt,
                               sender_role=sender_role, viewer_context=viewer_context,
-                              local_bundle=local_bundle, recent_context=recent_context, history_times=history_times)
+                              local_bundle=local_bundle, recent_context=recent_context, history_times=history_times,
+                               history_recipients=history_recipients)
     exact_model = model or cfg["AI_MODEL"]
     if not usable_local_bundle(local_bundle):
         if reject_local_service:
-            return _plain_local_reply(request_completion(cfg, exact_model, messages), cfg["AI_API_KEY"])
+            return _plain_local_reply(request_completion(cfg, exact_model, messages, request_stage="generator"), cfg["AI_API_KEY"])
         return send_messages(cfg, exact_model, messages)
     if not local_bundle.candidate_ids:
-        content = request_completion(cfg, exact_model, messages)
+        content = request_completion(cfg, exact_model, messages, request_stage="generator")
         return _plain_local_reply(content, cfg["AI_API_KEY"], local_bundle)
     try:
-        content = request_completion(cfg, exact_model, messages, reject_truncated=True)
+        content = request_completion(cfg, exact_model, messages, reject_truncated=True, request_stage="generator")
     except TruncatedAIError:
         raise LocalResultError("AI API обрезал ответ с локальным контекстом; результат отклонён.") from None
     return parse_local_reply(content, local_bundle, api_key=cfg["AI_API_KEY"])
 
 
 def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
-    content = request_completion(cfg, model, messages)
+    content = request_completion(cfg, model, messages, request_stage="generator")
     check_candidate_source(content)
     answer = clean_text(redact_secret(content, cfg["AI_API_KEY"]), ANSWER_MAX_CHARS)
     if not answer:

@@ -16,6 +16,7 @@ from privacy import (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, 
                      protected_messages, unsafe_question)
 from safety import SafetyBlocked, check_candidate_source
 from safety_settings import link_prompt
+from reply_rules import CONTENT_SAFETY_RULE
 from conversation_roles import (ROLE_RULES, KINDS, SourceRole, grounded_roles, identity_context,
                                 impersonates_recipient, roles_data, source_hint)
 from ai_client import RequestTrace, TimeoutAIError, TruncatedAIError
@@ -545,7 +546,7 @@ def request_decision(cfg, messages, settings, *, new_ids=None, recent_replies=()
         "Общий промпт задаёт характер, личные инструкции применяются только к соответствующему человеку, "
         "дополнительный промпт — участие в разговоре. Эти правила задают обязательный формат и предел ответа "
         "и имеют приоритет над другими указаниями о длине, Markdown, стиле вывода или количестве реплик. "
-        + output_format +
+        + CONTENT_SAFETY_RULE + " " + output_format +
         f"Вместе с добавляемым приложением @логином максимум {limit} символов. "
         "Не добавляй обращение @логин в начало: его добавляет приложение. Без команд чата. Ссылки допустимы только по политике приложения. "
         "Конкретный ответ, поздравление или реакция предпочтительнее натянутой шутки. Не повторяй недавний ответ бота. "
