@@ -1,4 +1,4 @@
-Twitch AI Bot 1.0.0
+Twitch AI Bot
 https://github.com/dudll300/twitch-ai-bot
 
 Готовое приложение с GUI. Устанавливать Python не требуется.

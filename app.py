@@ -16,6 +16,20 @@ def main() -> int:
             raise RuntimeError("Bundled application icon is missing")
         window.show()
         app.processEvents()
+        if getattr(sys, "frozen", False):
+            # Exercise the same executable through Qt's process launcher,
+            # including PyInstaller's inherited environment and log routing.
+            from PySide6.QtCore import QProcess
+            log_path = window._root / "self-test-worker.log"
+            window.process.start(sys.executable, ["--bot", str(log_path), "--self-test"])
+            if not window.process.waitForFinished(30000):
+                window.process.kill()
+                window.process.waitForFinished(5000)
+                raise RuntimeError("GUI could not launch its packaged worker")
+            if window.process.exitStatus() != QProcess.NormalExit or window.process.exitCode() != 0:
+                raise RuntimeError("Packaged GUI worker failed")
+            if "WORKER_READY" not in log_path.read_text(encoding="utf-8"):
+                raise RuntimeError("Packaged GUI worker did not become ready")
         window.close()
         app.quit()
         return 0
