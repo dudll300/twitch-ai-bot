@@ -11,6 +11,9 @@ at 16, 24, 32, 48, 64, 128 and 256 pixels, each resized directly from the
 original artwork with smooth scaling. The Windows executable, application
 window and sidebar brand all use `app.ico`.
 
+`app.icns` contains PNG frames at 128, 256, 512 and 1024 pixels, generated
+from the same approved artwork for the macOS application bundle.
+
 To regenerate the exported assets with the application's PySide6 environment:
 
 ```powershell

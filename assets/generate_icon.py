@@ -1,4 +1,4 @@
-"""Export the approved Studio liquid-glass artwork to PNG and Windows ICO.
+"""Export the approved Studio artwork to PNG, Windows ICO and macOS ICNS.
 
 Run with the application's PySide6 environment:
     python assets/generate_icon.py
@@ -60,7 +60,12 @@ def main() -> None:
     (args.output_dir / "app.png").write_bytes(render_png(source, 512))
     write_ico([(size, render_png(source, size)) for size in ICON_SIZES],
               args.output_dir / "app.ico")
-    print(f"Generated 512px PNG and ICO frames {ICON_SIZES} in {args.output_dir}")
+    chunks = bytearray()
+    for kind, size in ((b"ic07", 128), (b"ic08", 256), (b"ic09", 512), (b"ic10", 1024)):
+        data = render_png(source, size)
+        chunks.extend(kind + struct.pack(">I", len(data) + 8) + data)
+    (args.output_dir / "app.icns").write_bytes(b"icns" + struct.pack(">I", len(chunks) + 8) + chunks)
+    print(f"Generated PNG, ICO and ICNS in {args.output_dir}")
     # Keep the application alive until all Qt-backed render objects are gone.
     _ = application
 
