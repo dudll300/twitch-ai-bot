@@ -31,6 +31,14 @@ def response(value):
     return io.BytesIO(json.dumps({'choices': [{'message': {'content': json.dumps(value)}}]}).encode())
 
 
+def refresh_page(page):
+    # A timer may already be reading the previous journal snapshot. Finish
+    # that read before requesting the snapshot containing our new event.
+    wait_for(lambda: not page._loading)
+    page.refresh()
+    wait_for(lambda: not page._loading)
+
+
 def main():
     app = QApplication([])
     for filename in ('segoeui.ttf', 'seguisb.ttf'):
@@ -125,8 +133,7 @@ def main():
         journal = MessageHistory(root)
         record_id = journal.add('reward', 'rejected', question='Привет')
         journal.safety_event('reward', SafetyReview('error', '', ('review_unavailable',), ai_attempted=True, model='review/manual'), record_id=record_id)
-        page.refresh()
-        wait_for(lambda: not page._loading)
+        refresh_page(page)
         assert page.decisions.count() == 1
         assert 'Опасность ответа не установлена' in page.decisions.item(0).text()
         assert 'ошибка' in page.last_review.text()
@@ -135,15 +142,13 @@ def main():
         assert window.pages.currentIndex() == gui.PAGE_HISTORY
         assert window.history_page.kind.currentData() == 'reward'
         journal.safety_event('reward', SafetyReview('local_allowed', '@viewer Ответ'), record_id=record_id)
-        page.refresh()
-        wait_for(lambda: not page._loading)
+        refresh_page(page)
         assert 'Локальные проверки пройдены' in page.decisions.item(0).text()
         assert 'AI-оценка не выполнялась' in page.decisions.item(0).text()
         assert 'ошибка' in page.last_review.text()  # A local reward is not an AI-review success.
         journal.safety_event('autonomous', SafetyReview('error', '', ('privacy_analysis_limit',),
             stage='generator_request', http_attempts=(1, 0, 0)))
-        page.refresh()
-        wait_for(lambda: not page._loading)
+        refresh_page(page)
         assert 'Запрос генератора' in page.decisions.item(0).text()
         assert 'HTTP: выбор 1, генерация 0, проверка 0' in page.decisions.item(0).text()
         assert 'Попытка Twitch: нет' in page.decisions.item(0).text()
