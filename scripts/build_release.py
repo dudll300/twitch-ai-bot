@@ -64,7 +64,9 @@ def main():
     # The publishing job combines the per-package hashes into SHA256SUMS.txt.
     with target.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    target.with_name(target.name + ".sha256").write_text(f"{digest}  {target.name}\n", encoding="utf-8")
+    target.with_name(target.name + ".sha256").write_text(
+        f"{digest}  {target.name}\n", encoding="utf-8", newline="\n",
+    )
     print(f"Release package: {target}")
 
 

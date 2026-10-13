@@ -93,7 +93,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
           cd release
-          cat *.sha256 > SHA256SUMS.txt
+          python -c 'from pathlib import Path; files = sorted(Path(".").glob("*.sha256")); assert len(files) == 4; Path("SHA256SUMS.txt").write_text("".join(p.read_text(encoding="utf-8") for p in files), encoding="utf-8", newline="\n")'
           test "$(wc -l < SHA256SUMS.txt)" -eq 4
           sha256sum --check SHA256SUMS.txt
           gh release create "$RELEASE_TAG" --verify-tag --draft --title "Twitch AI Bot $RELEASE_TAG" --notes-file ../docs/release-notes.md
