@@ -15,9 +15,9 @@ from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, card, field, label
 
 def generation_worker(snapshot, output, cancel):
     try:
-        result = (snapshot.auth, generate_prompt(snapshot), "")
+        result = (snapshot.auth.identity, generate_prompt(snapshot), "")
     except Exception as exc:
-        result = (snapshot.auth, "", redact_secret(str(exc), snapshot.auth.api_key))
+        result = (snapshot.auth.identity, "", redact_secret(str(exc), snapshot.auth.api_key))
     if not cancel.is_set():
         output.put(result)
 
@@ -211,10 +211,10 @@ class PromptBuilder(QWidget):
                 current = self.get_credentials()
             except (OSError, ValueError):
                 current = None
-            if current != auth:
+            if current is None or current.identity != auth:
                 self.status.setText("Параметры AI API изменились. Результат отброшен; повторите генерацию.")
             elif error:
-                self.status.setText(clean_error(error, auth.api_key))
+                self.status.setText(clean_error(error, current.api_key))
             else:
                 self._show_draft(prompt)
                 self.status.setText("Вариант готов. Проверьте ответы, затем примените промпт, если результат устраивает.")

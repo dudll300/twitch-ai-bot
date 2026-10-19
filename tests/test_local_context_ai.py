@@ -1,5 +1,6 @@
 """Optional dictionary enrichment with fake completions, no Twitch or paid calls."""
 
+import ai_connection
 from dataclasses import asdict, replace
 import json
 import io
@@ -105,12 +106,12 @@ class LocalContextAITests(unittest.TestCase):
 
     def test_truncated_structured_completion_requests_ordinary_recovery(self):
         response = {"choices": [{"message": {"content": '{"text":"Неоконченный ответ'}, "finish_reason": "length"}]}
-        with patch("urllib.request.urlopen", return_value=io.BytesIO(encoded(response).encode("utf-8"))):
+        with patch("ai_connection.urlopen", return_value=io.BytesIO(encoded(response).encode("utf-8"))):
             with self.assertRaises(LocalResultError):
                 ai.call_ai(self.cfg, "viewer", "Вопрос", local_bundle=self.bundle)
         # Existing prompt generation/autonomous callers still catch the common
         # temporary-error base while preserving the precise truncation reason.
-        with patch("urllib.request.urlopen", return_value=io.BytesIO(encoded(response).encode("utf-8"))):
+        with patch("ai_connection.urlopen", return_value=io.BytesIO(encoded(response).encode("utf-8"))):
             with self.assertRaises(ai.TemporaryAIError) as error:
                 ai.request_completion(self.cfg, "exact-primary", [], reject_truncated=True)
         self.assertIsInstance(error.exception, ai.TruncatedAIError)

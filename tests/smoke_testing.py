@@ -19,6 +19,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import ai_client
+import ai_connection
 import gui
 import testing
 from configuration import env_content
@@ -87,7 +88,7 @@ def main():
             assert req.get_header("Authorization") == "Bearer entered-secret-key"
             return response({"data": [{"id": "exact/a"}, {"id": "exact/b"},
                                       {"id": "not-allowed", "available": False}, {"id": "extra/c"}]})
-        with patch.object(testing.urllib.request, "urlopen", side_effect=catalog):
+        with patch.object(ai_connection, "urlopen", side_effect=catalog):
             page.refresh_button.click()
             assert page._catalog_busy and not page.run_button.isEnabled()
             wait_for(lambda: not page._catalog_busy)
@@ -126,7 +127,7 @@ def main():
                 raise urllib.error.HTTPError(req.full_url, 503, "error", {}, response({
                     "error": {"message": "Unavailable entered-secret-key"}}))
             return response({"choices": [{"message": {"content": "Ответ второй модели"}}]})
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=ask), patch.object(
+        with patch.object(ai_connection, "urlopen", side_effect=ask), patch.object(
                 window.process, "start") as start, patch.object(gui, "save_settings") as save:
             try:
                 page.run_button.click()
@@ -170,7 +171,7 @@ def main():
                 payload = json.loads(req.data)
                 content = (json.dumps(verdict) if isinstance(verdict, dict) else verdict) if payload["max_tokens"] == 160 else "Заебись, ещё одна катка!"
                 return response({"choices": [{"message": {"content": content}}]})
-            with patch("testing.review_candidate", side_effect=review_candidate), patch("urllib.request.urlopen", side_effect=safety_http):
+            with patch("testing.review_candidate", side_effect=review_candidate), patch("ai_connection.urlopen", side_effect=safety_http):
                 page.run_button.click()
                 wait_for(lambda: not page._testing_busy)
             for widget in page._result_widgets.values():
@@ -184,7 +185,7 @@ def main():
                 payload = json.loads(req.data)
                 content = json.dumps({"allowed": True, "reasons": []}) if payload["max_tokens"] == 160 else answer
                 return response({"choices": [{"message": {"content": content}}]})
-            with patch("testing.review_candidate", side_effect=review_candidate), patch("urllib.request.urlopen", side_effect=intent_http) as http, patch.object(QMessageBox, "warning") as warning:
+            with patch("testing.review_candidate", side_effect=review_candidate), patch("ai_connection.urlopen", side_effect=intent_http) as http, patch.object(QMessageBox, "warning") as warning:
                 page.run_button.click()
                 wait_for(lambda: not page._testing_busy)
                 warning.assert_not_called()
@@ -198,7 +199,7 @@ def main():
         page.sender.setCurrentIndex(page.sender.findData("owner"))
         page.login.setText("this is not a valid Twitch login")
         # Hidden probe login must not block the owner simulation.
-        with patch.object(ai_client.urllib.request, "urlopen", return_value=response(
+        with patch.object(ai_connection, "urlopen", return_value=response(
                 {"choices": [{"message": {"content": "Ответ владелице"}}]})):
             page.run_button.click()
             wait_for(lambda: not page._testing_busy)
@@ -223,7 +224,7 @@ def main():
                 mentioned_payloads.append(json.loads(req.data))
             assert mention_release.wait(4)
             return response({"choices": [{"message": {"content": "Ответ про Лопотика"}}]})
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=mention_request), patch.object(
+        with patch.object(ai_connection, "urlopen", side_effect=mention_request), patch.object(
                 window.process, "start") as start, patch.object(gui, "save_settings") as save:
             try:
                 page.run_button.click()
@@ -260,7 +261,7 @@ def main():
         assert "Изменён после нажатия" not in str(ambiguous.messages)
         editor.list.setCurrentRow(0)
 
-        with patch.object(testing.urllib.request, "urlopen", side_effect=TimeoutError()):
+        with patch.object(ai_connection, "urlopen", side_effect=TimeoutError()):
             page.refresh_button.click()
             wait_for(lambda: not page._catalog_busy)
         assert "таймаут" in page.catalog_status.text()
@@ -277,7 +278,7 @@ def main():
             entered.set()
             assert catalog_release.wait(4)
             return response({"data": [{"id": "old-key-only"}]})
-        with patch.object(testing.urllib.request, "urlopen", side_effect=old_catalog):
+        with patch.object(ai_connection, "urlopen", side_effect=old_catalog):
             try:
                 page.refresh_button.click()
                 wait_for(entered.is_set)
@@ -298,7 +299,7 @@ def main():
             assert finish_request.wait(4)
             worker_finished.set()
             return response({"choices": [{"message": {"content": "Late answer"}}]})
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=slow):
+        with patch.object(ai_connection, "urlopen", side_effect=slow):
             try:
                 page.run_button.click()
                 wait_for(request_started.is_set)
@@ -327,7 +328,7 @@ def main():
             assert catalog_finish.wait(4)
             catalog_done.set()
             return response({"data": [{"id": "late/model"}]})
-        with patch.object(testing.urllib.request, "urlopen", side_effect=slow_catalog):
+        with patch.object(ai_connection, "urlopen", side_effect=slow_catalog):
             try:
                 second_page.refresh_catalog()
                 wait_for(catalog_started.is_set)

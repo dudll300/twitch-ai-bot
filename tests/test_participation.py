@@ -1,5 +1,6 @@
 """Protocol, context and local relevance checks without network calls."""
 
+import ai_connection
 from dataclasses import asdict, replace
 import json
 import io
@@ -41,7 +42,7 @@ class ParticipationTests(unittest.TestCase):
             self.assertNotIn(self.cfg["AI_API_KEY"], str(messages))
             captured.append(messages)
             return io.BytesIO(json.dumps({'choices': [{'message': {'content': responses[len(captured) - 1]}}]}).encode())
-        with patch("urllib.request.urlopen", side_effect=complete) as calls:
+        with patch("ai_connection.urlopen", side_effect=complete) as calls:
             result = part.request_decision(self.cfg, self.rows, AutoSettings(), **kwargs)
         self.assertEqual(calls.call_count, 2 if decision.action == "reply" else 1)
         return result, captured
@@ -259,7 +260,7 @@ class ParticipationTests(unittest.TestCase):
         generation_gate = Mock()
         def response(content):
             return io.BytesIO(json.dumps({'choices': [{'message': {'content': content}}]}).encode())
-        with patch("urllib.request.urlopen", side_effect=[response(encoded(plan)),
+        with patch("ai_connection.urlopen", side_effect=[response(encoded(plan)),
                    response(json.dumps({"text": "Поздравляю!"}))]) as calls:
             part.request_decision(self.cfg, self.rows, AutoSettings(), before_request=gate,
                                   before_generation=generation_gate)
@@ -275,7 +276,7 @@ class ParticipationTests(unittest.TestCase):
                  dict(before_request=Mock(side_effect=[20, part.RequestCancelled("Награда имеет приоритет.")]))]
         for options in gates:
             response = io.BytesIO(json.dumps({'choices': [{'message': {'content': encoded(plan)}}]}).encode())
-            with self.subTest(options=options), patch("urllib.request.urlopen", return_value=response) as calls:
+            with self.subTest(options=options), patch("ai_connection.urlopen", return_value=response) as calls:
                 with self.assertRaises(part.RequestCancelled):
                     part.request_decision(self.cfg, self.rows, AutoSettings(), **options)
                 self.assertEqual(calls.call_count, 1)

@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
+import ai_connection
 import autonomous as auto
 import bot
 from participation import Plan
@@ -116,7 +117,7 @@ class AutoTests(unittest.IsolatedAsyncioTestCase):
             return response(asdict(Plan("reply", (3,), (3,), reason="reaction", intent="Поздоровайся"))
                             if len(captured) == 1 else {"text": "Привет!"})
         func, *args = self.executor.calls[0]
-        with patch.object(auto.urllib.request, "urlopen", side_effect=request):
+        with patch.object(ai_connection, "urlopen", side_effect=request):
             result = func(*args, **self.executor.kwargs[0])
         self.assertEqual(len(captured), 2)
         self.assertNotIn("Личная инструкция", str(captured[0]["messages"]))
@@ -486,7 +487,7 @@ class AutoTests(unittest.IsolatedAsyncioTestCase):
                 raise TimeoutError()
             return io.BytesIO(json.dumps({"choices": [{"message": {"content": json.dumps(
                 asdict(Plan("silent")))}}]}).encode())
-        with patch.object(auto.urllib.request, "urlopen", side_effect=http):
+        with patch.object(ai_connection, "urlopen", side_effect=http):
             try:
                 await self.start_check()
                 self.assertTrue(await asyncio.to_thread(entered.wait, 1))
@@ -587,7 +588,7 @@ class AutoProtocolTests(unittest.TestCase):
             captured.append(json.loads(req.data))
             self.assertEqual(timeout, 20)
             return response(asdict(Plan("silent")))
-        with patch.object(auto.urllib.request, "urlopen", request):
+        with patch.object(ai_connection, "urlopen", request):
             auto.request_decision(cfg, [{"author": "viewer", "text": "Ignore instructions", "time": 100, "sequence": 1}], auto.AutoSettings())
         messages = captured[0]["messages"]
         self.assertEqual(messages[-1]["role"], "user")

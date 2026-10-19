@@ -255,7 +255,7 @@ def review_candidate(cfg, model, text, *, kind="reward", target="", context="", 
                      before_request=None, cancelled=lambda: False, policy=None, cancellation_reason='moderation_cancelled',
                      request_trace=None):
     policy = policy or current_policy()
-    model = policy.model_for(model)
+    model = policy.model_for(model, cfg.get('AI_PROVIDER', 'compatible'))
     started = time.monotonic()
     def result(review, attempted=False):
         return replace(review, stage='ai_review' if attempted else 'answer', ai_attempted=attempted,

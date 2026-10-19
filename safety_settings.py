@@ -39,11 +39,21 @@ class SafetySettings:
     review_model_mode: str = 'same_as_answer'
     review_model: str = ''
     review_timeout_seconds: int = 8
+    openai_review_model_mode: str = 'same_as_answer'
+    openai_review_model: str = ''
+
+    def reviewer(self, provider='compatible'):
+        if provider == 'openai':
+            return self.openai_review_model_mode, self.openai_review_model
+        return self.review_model_mode, self.review_model
 
 
 def validate_settings(raw):
-    if not isinstance(raw, dict) or set(raw) != set(SafetySettings.__dataclass_fields__):
+    optional = {'openai_review_model_mode', 'openai_review_model'}
+    fields = set(SafetySettings.__dataclass_fields__)
+    if not isinstance(raw, dict) or set(raw) - fields or fields - optional - set(raw):
         raise ValueError("Неизвестный формат настроек безопасности.")
+    raw = {'openai_review_model_mode': 'same_as_answer', 'openai_review_model': '', **raw}
     if type(raw['schema_version']) is not int or raw['schema_version'] != 1:
         raise ValueError("Версия настроек безопасности не поддерживается.")
     if raw['link_mode'] not in ('block_all', 'allow_domains'):
@@ -62,10 +72,17 @@ def validate_settings(raw):
         raise ValueError("В ID модели не должно быть защищённых данных.")
     if raw['review_model_mode'] == 'separate' and not model.strip():
         raise ValueError("Укажите ID отдельной модели оценки.")
+    openai_mode, openai_model = raw['openai_review_model_mode'], raw['openai_review_model']
+    if (openai_mode not in ('same_as_answer', 'separate') or not isinstance(openai_model, str)
+            or len(openai_model) > 200 or any(ord(c) < 32 or ord(c) == 127 for c in openai_model)):
+        raise ValueError('Недопустимая модель оценки OpenAI.')
+    if contains_private_data(openai_model) or (openai_mode == 'separate' and not openai_model.strip()):
+        raise ValueError('Укажите корректный ID отдельной модели оценки OpenAI.')
     seconds = raw['review_timeout_seconds']
     if type(seconds) is not int or not 2 <= seconds <= 15:
         raise ValueError("Время ожидания должно быть целым числом от 2 до 15 секунд.")
-    return SafetySettings(1, raw['link_mode'], domains, raw['review_model_mode'], model.strip(), seconds)
+    return SafetySettings(1, raw['link_mode'], domains, raw['review_model_mode'], model.strip(), seconds,
+                          openai_mode, openai_model.strip())
 
 
 @dataclass(frozen=True)
@@ -74,8 +91,9 @@ class Policy:
     version: str = 'default-v1'
     error: str = ''
 
-    def model_for(self, answer_model):
-        return self.settings.review_model if self.settings.review_model_mode == 'separate' else answer_model
+    def model_for(self, answer_model, provider='compatible'):
+        mode, model = self.settings.reviewer(provider)
+        return model if mode == 'separate' else answer_model
 
 
 _locks = {}

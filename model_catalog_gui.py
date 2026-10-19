@@ -14,9 +14,9 @@ from ui_widgets import NoWheelComboBox, label
 
 def catalog_worker(auth, output, cancel):
     try:
-        result = ("catalog", auth, fetch_models(auth), "")
+        result = ("catalog", auth.identity, fetch_models(auth), "")
     except Exception as exc:
-        result = ("catalog", auth, (), redact_secret(str(exc), auth.api_key))
+        result = ("catalog", auth.identity, (), redact_secret(str(exc), auth.api_key))
     if not cancel.is_set():
         output.put(result)
 
@@ -34,7 +34,8 @@ class ModelCatalogControl(QWidget):
         self.combo.setEditable(True)
         self.combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.combo.setAccessibleName("Основная модель")
-        self.combo.addItems(AI_FALLBACK_MODELS)
+        if selected:
+            self.combo.addItem(selected)
         self.combo.setCurrentText(selected)
         self.combo.setToolTip("Раскройте список стрелкой справа или введите точный ID модели")
         layout.addWidget(self.combo)
@@ -64,11 +65,11 @@ class ModelCatalogControl(QWidget):
         try:
             self.combo.clear()
             for model in models:
-                denied = model.available is False
-                caption = model.id + (" · недоступна для ключа" if denied else "")
+                denied = model.available is False or bool(model.chat_error)
+                caption = model.id + (' · не подходит для текстового чата' if model.chat_error else " · недоступна для ключа" if denied else "")
                 self.combo.addItem(caption, model.id)
                 index = self.combo.count() - 1
-                self.combo.setItemData(index, caption, Qt.ToolTipRole)
+                self.combo.setItemData(index, model.chat_error or caption, Qt.ToolTipRole)
                 self.combo.model().item(index).setEnabled(not denied)
             self.combo.setCurrentIndex(-1)
             self.combo.setEditText(current)
@@ -79,7 +80,11 @@ class ModelCatalogControl(QWidget):
         if self._closed:
             return
         # Keep the manual selection, but discard access flags from another key.
-        self._replace_models(tuple(Model(model) for model in AI_FALLBACK_MODELS))
+        self._cancel.set()
+        self._cancel, self._events = Event(), Queue()
+        self._busy = False
+        self._button_state()
+        self._replace_models(())
         self.status.setText("Параметры API изменились. Загрузите каталог по кнопке или введите ID вручную.")
 
     def refresh(self):
@@ -109,13 +114,13 @@ class ModelCatalogControl(QWidget):
                 current = self.get_credentials()
             except (OSError, ValueError):
                 current = None
-            if current != auth:
+            if current is None or current.identity != auth:
                 self.invalidate()
             elif error:
                 self.status.setText(error + " Можно ввести ID вручную.")
             else:
                 self._replace_models(models)
-                self.status.setText(f"Моделей в каталоге: {len(models)}. Недоступные для ключа отмечены в списке.")
+                self.status.setText(f"Моделей в каталоге: {len(models)}. Каталог не гарантирует поддержку текстового Chat Completions; ID можно ввести вручную.")
 
     def shutdown(self):
         self._closed = True

@@ -1,4 +1,5 @@
 """Disclosure intent is separate from subjects and literal data; fake HTTP only."""
+import ai_connection
 import asyncio
 import base64
 import io
@@ -97,7 +98,7 @@ class IntentTests(unittest.TestCase):
 
     def test_both_safe_questions_build_the_shared_request_and_testing_snapshot(self):
         for question in CONFIRMED:
-            with self.subTest(question=question), patch("urllib.request.urlopen") as network:
+            with self.subTest(question=question), patch("ai_connection.urlopen") as network:
                 messages = ai_client.build_messages(CFG, "viewer", question)
                 draft = snapshot(question)
                 self.assertTrue(messages[-1]["content"].endswith(question))
@@ -106,7 +107,7 @@ class IntentTests(unittest.TestCase):
 
     def test_forbidden_questions_never_reach_provider(self):
         for question in FORBIDDEN:
-            with self.subTest(question=question), patch("urllib.request.urlopen") as network:
+            with self.subTest(question=question), patch("ai_connection.urlopen") as network:
                 with self.assertRaises(privacy.PrivacyViolation):
                     ai_client.call_ai(CFG, "viewer", question)
                 with self.assertRaises(privacy.PrivacyViolation):
@@ -124,7 +125,7 @@ class IntentTests(unittest.TestCase):
     def test_greeting_is_an_allowed_input_independent_of_model_output(self):
         question = "Привет.Как дела?"
         privacy.check_question(question)
-        with patch("urllib.request.urlopen", side_effect=[response("Привет! Всё нормально."),
+        with patch("ai_connection.urlopen", side_effect=[response("Привет! Всё нормально."),
                   response({"allowed": True, "reasons": []})]) as network:
             result = testing.test_model(snapshot(question), "chosen")
         self.assertEqual(result.safety_status, "allowed")
@@ -135,7 +136,7 @@ class IntentTests(unittest.TestCase):
         text = "Привет.Как дела?"
         self.assertFalse(safety.has_link(text))
         self.assertEqual(safety.local_review(text).status, "local_allowed")
-        with patch("urllib.request.urlopen", side_effect=[response(text), response({"allowed": True, "reasons": []})]) as network:
+        with patch("ai_connection.urlopen", side_effect=[response(text), response({"allowed": True, "reasons": []})]) as network:
             result = testing.test_model(snapshot(text), "chosen")
         self.assertEqual(result.answer, text)
         self.assertEqual(result.safety_status, "allowed")
@@ -144,7 +145,7 @@ class IntentTests(unittest.TestCase):
     def test_safe_questions_keep_real_semantic_review_in_testing(self):
         for question in CONFIRMED:
             with self.subTest(question=question):
-                with patch("urllib.request.urlopen", side_effect=[
+                with patch("ai_connection.urlopen", side_effect=[
                         response("Заебись, разберёмся!"), response({"allowed": True, "reasons": []})]) as network:
                     result = testing.test_model(snapshot(question), "chosen")
                 self.assertEqual(result.safety_status, "allowed")
@@ -160,7 +161,7 @@ class IntentTests(unittest.TestCase):
                      "example[.]com", "example [.] com", "hxxps://example.com", "[ссылка](example.com)",
                      "пример.рф", "пример.РФ", "xn--e1afmkfd.xn--p1ai", "пример.онлайн", "пример.рус",
                      "example.com.evil.invalid", "https://example.com@evil.invalid"):
-            with self.subTest(text=text), patch("urllib.request.urlopen") as network:
+            with self.subTest(text=text), patch("ai_connection.urlopen") as network:
                 self.assertTrue(safety.has_link(text))
                 self.assertEqual(safety.local_review(text).status, "blocked")
                 network.assert_not_called()
@@ -194,7 +195,7 @@ class RewardIntentTests(unittest.IsolatedAsyncioTestCase):
             self.instance.last_sent = 0
             self.writer.reset_mock()
             with self.subTest(question=question):
-                with patch("urllib.request.urlopen", return_value=response("Заебись, разберёмся!")) as network:
+                with patch("ai_connection.urlopen", return_value=response("Заебись, разберёмся!")) as network:
                     await self.reward(question)
                 self.assertEqual(network.call_count, 1)
                 published = self.writer.write.call_args.args[0].decode()
@@ -207,7 +208,7 @@ class RewardIntentTests(unittest.IsolatedAsyncioTestCase):
             self.instance.last_sent = 0
             self.writer.reset_mock()
             with self.subTest(candidate=candidate):
-                with patch("urllib.request.urlopen", return_value=response(candidate)) as network:
+                with patch("ai_connection.urlopen", return_value=response(candidate)) as network:
                     await self.reward(CONFIRMED[0])
                 self.assertEqual(network.call_count, 1)
                 self.assertTrue(all(json.loads(call.args[0].data)["model"] == "chosen" for call in network.call_args_list))

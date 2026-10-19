@@ -1,3 +1,4 @@
+import ai_connection
 from safety_fakes import stub_reviews
 """Failure-path checks without Twitch accounts or paid API calls."""
 
@@ -41,7 +42,7 @@ class BackendResilienceTests(unittest.TestCase):
                         raise failure
                     return response("OK")
                 log = io.StringIO()
-                with patch.object(ai_client.urllib.request, "urlopen", side_effect=request), redirect_stdout(log):
+                with patch.object(ai_connection, "urlopen", side_effect=request), redirect_stdout(log):
                     self.assertEqual(bot.AIModelRouter().ask(CFG, "viewer", "Question"), "OK")
                 self.assertEqual(requests, ["primary", "backup"])
                 self.assertNotIn(CFG["AI_API_KEY"], log.getvalue())
@@ -51,7 +52,7 @@ class BackendResilienceTests(unittest.TestCase):
             def read(self, *args):
                 raise http.client.IncompleteRead(b"sk-private-test", 20)
         failure = urllib.error.HTTPError(CFG["AI_CHAT_URL"], 503, "error", {}, BrokenBody())
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=failure):
+        with patch.object(ai_connection, "urlopen", side_effect=failure):
             with self.assertRaisesRegex(ai_client.TemporaryAIError, "HTTP 503") as error:
                 ai_client.call_ai(CFG, "viewer", "Question")
         self.assertNotIn(CFG["AI_API_KEY"], str(error.exception))
@@ -59,8 +60,7 @@ class BackendResilienceTests(unittest.TestCase):
     def test_catalog_interruption_has_understandable_safe_error(self):
         for failure in (http.client.IncompleteRead(b"sk-private-test", 20),
                         ConnectionResetError("sk-private-test")):
-            with self.subTest(failure=type(failure).__name__), patch.object(
-                    testing.urllib.request, "urlopen", side_effect=failure):
+            with self.subTest(failure=type(failure).__name__), patch.object(ai_connection, "urlopen", side_effect=failure):
                 with self.assertRaisesRegex(RuntimeError, "Каталог недоступен") as error:
                     testing.fetch_models(testing.credentials("https://example.com/v1", CFG["AI_API_KEY"]))
                 self.assertNotIn(CFG["AI_API_KEY"], str(error.exception))
@@ -75,7 +75,7 @@ class BackendResilienceTests(unittest.TestCase):
             if payload["model"] == "primary":
                 raise http.client.IncompleteRead(b"sk-private-test", 20)
             return response("OK")
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=request):
+        with patch.object(ai_connection, "urlopen", side_effect=request):
             results = [testing.test_model(snapshot, model) for model in snapshot.models]
         self.assertTrue(results[0].error)
         self.assertEqual(results[1].answer, "OK")
@@ -86,7 +86,7 @@ class BackendResilienceTests(unittest.TestCase):
     def test_control_characters_cannot_escape_into_chat_or_questions(self):
         dirty = "Hello\x01ACTION\x00world\x7f\x9b\r\nfriend"
         self.assertEqual(ai_client.clean_question(dirty), "Hello ACTION world friend")
-        with patch.object(ai_client.urllib.request, "urlopen", return_value=response(dirty)):
+        with patch.object(ai_connection, "urlopen", return_value=response(dirty)):
             from safety import SafetyBlocked
             with self.assertRaises(SafetyBlocked):
                 ai_client.call_ai(CFG, "viewer", "Question")
@@ -139,7 +139,7 @@ class BackendResilienceTests(unittest.TestCase):
         plan = json.dumps({"action": "reply", "conversation": [1], "basis": [1], "target": "viewer",
                            "reason": "reaction", "intent": "Поздороваться"})
         content = json.dumps({"text": "Hello " + cfg["AI_API_KEY"]})
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=[response(plan), response(content)]):
+        with patch.object(ai_connection, "urlopen", side_effect=[response(plan), response(content)]):
             with self.assertRaises(ValueError) as error:
                 autonomous.request_decision(cfg, [{"author": "viewer", "text": "Привет",
                     "sequence": 1, "time": 1}], autonomous.AutoSettings())
@@ -150,7 +150,7 @@ class BackendResilienceTests(unittest.TestCase):
         def request(req, timeout):
             calls.append(json.loads(req.data))
             raise http.client.IncompleteRead(b"sk-private-test", 20)
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=request):
+        with patch.object(ai_connection, "urlopen", side_effect=request):
             from participation import ParticipationError
             with self.assertRaises(ParticipationError) as failure:
                 autonomous.request_decision(CFG, [{"author": "viewer", "text": "Привет", "sequence": 1, "time": 1}], autonomous.AutoSettings())

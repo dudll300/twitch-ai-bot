@@ -1,3 +1,4 @@
+import ai_connection
 from safety_fakes import stub_reviews
 import asyncio
 import io
@@ -94,7 +95,7 @@ class RegressionTests(unittest.TestCase):
     def test_answer_that_cleans_to_empty_is_rejected(self):
         response = io.BytesIO(json.dumps({"choices": [{"message": {"content": "\u0000"}}]}).encode())
         cfg = {**self.values(), "AI_CHAT_URL": "https://example.com/chat/completions"}
-        with patch.object(bot.urllib.request, "urlopen", return_value=response):
+        with patch.object(ai_connection, "urlopen", return_value=response):
             from safety import SafetyBlocked
             with self.assertRaises(SafetyBlocked):
                 bot.call_ai(cfg, "viewer", "question")

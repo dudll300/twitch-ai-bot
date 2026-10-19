@@ -14,6 +14,7 @@ from PySide6.QtCore import QProcess, QSize
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QApplication, QMessageBox
 
+import ai_connection
 import gui
 import local_context_gui
 from local_context import load_document
@@ -39,7 +40,7 @@ def main():
     app.setStyle("Fusion")
     app.setStyleSheet(gui.STYLE)
     with patch.object(gui, "available_screen_size", return_value=QSize(1920, 1080)), \
-         patch("urllib.request.urlopen", side_effect=AssertionError("GUI smoke must not call API")):
+         patch("ai_connection.urlopen", side_effect=AssertionError("GUI smoke must not call API")):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             window = new_window(root)

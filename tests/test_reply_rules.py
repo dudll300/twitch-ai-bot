@@ -1,3 +1,4 @@
+import ai_connection
 import asyncio
 import io
 import json
@@ -91,7 +92,7 @@ class ReplyRulesTests(unittest.TestCase):
         async def scenario():
             raw = "Я" * 500
             response = io.BytesIO(json.dumps({"choices": [{"message": {"content": raw}}]}).encode())
-            with patch.object(ai_client.urllib.request, "urlopen", return_value=response):
+            with patch.object(ai_connection, "urlopen", return_value=response):
                 answer = ai_client.call_ai(
                     {"AI_API_KEY": "test-key", "AI_CHAT_URL": "https://example.com/v1/chat/completions", "AI_MODEL": "model"},
                     "a" * 25, "Вопрос?",
@@ -118,12 +119,12 @@ class ReplyRulesTests(unittest.TestCase):
         cfg = {"AI_API_KEY": "secret-test-key", "AI_CHAT_URL": "https://example.com/v1/chat/completions"}
         for raw, expected in (("Кратко.\nПо делу.", "Кратко. По делу."), ("x" * 700, "x" * 400)):
             response = io.BytesIO(json.dumps({"choices": [{"message": {"content": raw}}]}).encode())
-            with patch.object(ai_client.urllib.request, "urlopen", return_value=response):
+            with patch.object(ai_connection, "urlopen", return_value=response):
                 answer = ai_client.send_messages(cfg, "model", [])
             self.assertEqual(answer, expected)
             self.assertNotIn(cfg["AI_API_KEY"], answer)
         response = io.BytesIO(json.dumps({"choices": [{"message": {"content": "x" * 500 + cfg["AI_API_KEY"]}}]}).encode())
-        with patch.object(ai_client.urllib.request, "urlopen", return_value=response), self.assertRaises(ai_client.PrivacyViolation):
+        with patch.object(ai_connection, "urlopen", return_value=response), self.assertRaises(ai_client.PrivacyViolation):
             ai_client.send_messages(cfg, "model", [])
 
 

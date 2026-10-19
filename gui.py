@@ -26,6 +26,8 @@ from profiles_gui import ProfilesEditor
 from prompt_builder_gui import PromptBuilder
 from reply_rules import ANSWER_MAX_CHARS, upgrade_generated_prompt
 from settings import load_settings, save_settings
+from ai_connection import selected_values
+from ai_connection_gui import ConnectionEditor
 from studio_icons import studio_icon
 from testing import credentials, make_snapshot, read_test_memory
 from testing_gui import TestingPage
@@ -218,7 +220,7 @@ class MainWindow(QMainWindow):
         self.pages.addWidget(self.profiles_editor)
         self.autonomous_page = AutonomousPage(self._root)
         self.pages.addWidget(self.autonomous_page)
-        self.safety_page = SafetyPage(self._root, self._test_credentials, lambda: self.model.currentText())
+        self.safety_page = SafetyPage(self._root, self._test_credentials, lambda: self.model.currentText(), get_provider=lambda: self.provider.currentData())
         self.pages.addWidget(self.safety_page)
         self.pages.addWidget(self._build_activity())
         self.testing_page = TestingPage(self._test_credentials, self._test_snapshot,
@@ -265,12 +267,11 @@ class MainWindow(QMainWindow):
         self.prompt.textChanged.connect(self._update_prompt_count)
         self.profiles_editor.changed.connect(self._mark_dirty)
         self.profiles_editor.changed.connect(self.testing_page.refresh_profiles)
-        self.api_key.textChanged.connect(self.testing_page.invalidate_catalog)
-        self.base_url.textChanged.connect(self.testing_page.invalidate_catalog)
-        self.api_key.textChanged.connect(self.model_catalog.invalidate)
-        self.base_url.textChanged.connect(self.model_catalog.invalidate)
-        self.api_key.textChanged.connect(self.prompt_builder.model_catalog.invalidate)
-        self.base_url.textChanged.connect(self.prompt_builder.model_catalog.invalidate)
+        self.connection_editor.changed.connect(self._mark_dirty)
+        self.connection_editor.connection_changed.connect(self._connection_changed)
+        self.prompt_builder.model_catalog.combo.setCurrentText(self.connection_editor.prompt_model)
+        self.prompt_builder.model_catalog.combo.currentTextChanged.connect(self.connection_editor.set_prompt_model)
+
         self.prompt_builder.test_requested.connect(self._test_prompt_draft)
         self.prompt_builder.connection_requested.connect(lambda: self._navigate(PAGE_CONNECTION))
         self.local_context_page.changed.connect(self._local_context_changed)
@@ -316,9 +317,15 @@ class MainWindow(QMainWindow):
         self.page_description.setText(PAGES[index][1])
         self._refresh_workspace()
 
+    def _connection_changed(self):
+        self.testing_page.invalidate_catalog()
+        self.prompt_builder.model_catalog.invalidate()
+        self.prompt_builder.model_catalog.combo.setCurrentText(self.connection_editor.prompt_model)
+        self.safety_page.connection_changed()
+        self.testing_page.diagnostic.invalidate()
+
     def _test_credentials(self):
-        saved_key = read_config(self._root / ".env").get("AI_API_KEY", "") if not self.api_key.text().strip() else ""
-        return credentials(self.base_url.text(), self.api_key.text(), saved_key)
+        return self.connection_editor.credentials()
 
     def _test_snapshot(self, models, question, sender, login, profile_index, *, prompt_override=None):
         # Only the key may come from saved settings. All drafts come from widgets.
@@ -387,21 +394,14 @@ class MainWindow(QMainWindow):
         docs.setWordWrap(True)
         twitch_layout.addWidget(docs)
         grid.addWidget(twitch, 0, 0)
-        ai, ai_layout = card("Нейросеть", "API, совместимый с Chat Completions")
-        self.base_url = QLineEdit(values.get("AI_BASE_URL", "https://ai.starimg.ru/v1"))
-        self.api_key = QLineEdit()
-        self.api_key.setEchoMode(QLineEdit.Password)
-        self.api_key.setPlaceholderText("Ключ сохранён" if self._has_saved_key else "Ключ вашего AI-сервиса")
-        self.model_catalog = ModelCatalogControl(values.get("AI_MODEL", AI_FALLBACK_MODELS[0]), self._test_credentials)
-        self.model = self.model_catalog.combo
-        self.fallback_models = QLineEdit(values.get("AI_FALLBACK_MODELS", ""))
-        self.fallback_models.setPlaceholderText("model-a, model-b")
-        for caption, widget in (("Base URL", self.base_url), ("API-ключ", self.api_key),
-                                ("Основная модель", self.model_catalog), ("Запасные модели · необязательно", self.fallback_models)):
-            ai_layout.addWidget(field(caption, widget))
-        ai_layout.addWidget(label("Запасные модели вызываются по порядку при сбоях основной.", "muted", True))
+        ai, ai_layout = card("Нейросеть", "Подключение по стандарту OpenAI Chat Completions")
+        self.connection_editor = ConnectionEditor(values, lambda: read_config(self._root / '.env'))
+        self.provider = self.connection_editor.provider
+        self.base_url, self.api_key = self.connection_editor.base_url, self.connection_editor.api_key
+        self.model_catalog, self.model = self.connection_editor.model_catalog, self.connection_editor.model
+        self.fallback_models = self.connection_editor.fallback_models
+        ai_layout.addWidget(self.connection_editor)
         ai_layout.addStretch()
-        ai_layout.addWidget(label("Ключ хранится только на этом компьютере.", "muted", True))
         grid.addWidget(ai, 0, 1)
         grid.setRowStretch(1, 1)
         return scroll_page(page)
@@ -581,10 +581,9 @@ class MainWindow(QMainWindow):
                 raise
             fields = self._fields()
             previous = read_config(self._root / ".env")
+            fields.update({key: value for key, value in selected_values(fields, previous, allow_incomplete=True).items() if key.startswith('AI_')})
             for name, _ in FIELDS:
                 value = fields[name]
-                if name == "AI_API_KEY" and not value.strip():
-                    value = previous.get(name, "")
                 if for_start or value.strip():
                     try:
                         normalize(name, value)
@@ -602,8 +601,7 @@ class MainWindow(QMainWindow):
                 self.prompt.setPlainText(prompt)
             self.profiles_editor.saved(rows)
             self._has_saved_key = bool(read_config(self._root / ".env").get("AI_API_KEY"))
-            self.api_key.clear()
-            self.api_key.setPlaceholderText("Ключ сохранён" if self._has_saved_key else "Ключ вашего AI-сервиса")
+            self.connection_editor.saved(load_settings(self._root)[0])
             self._dirty = False
             self._local_context_changed()
             return True
@@ -621,7 +619,7 @@ class MainWindow(QMainWindow):
     def _field_widgets(self):
         return {"TWITCH_CHANNEL": self.channel, "TWITCH_BOT_NAME": self.bot_name,
                 "TWITCH_CLIENT_ID": self.client_id, "TWITCH_REWARD_TITLE": self.reward_title,
-                "AI_BASE_URL": self.base_url, "AI_API_KEY": self.api_key,
+                "AI_PROVIDER": self.provider, "AI_BASE_URL": self.base_url, "AI_API_KEY": self.api_key,
                 "AI_MODEL": self.model, "AI_FALLBACK_MODELS": self.fallback_models}
 
     def _set_running(self, running):
@@ -643,16 +641,9 @@ class MainWindow(QMainWindow):
         self._refresh_workspace()
 
     def _fields(self) -> dict[str, str]:
-        return {
-            "TWITCH_CHANNEL": self.channel.text(),
-            "TWITCH_BOT_NAME": self.bot_name.text(),
-            "TWITCH_CLIENT_ID": self.client_id.text(),
-            "AI_BASE_URL": self.base_url.text(),
-            "AI_API_KEY": self.api_key.text(),
-            "AI_MODEL": self.model.currentText(),
-            "AI_FALLBACK_MODELS": self.fallback_models.text(),
-            "TWITCH_REWARD_TITLE": self.reward_title.text(),
-        }
+        return {**self.connection_editor.values(),
+            "TWITCH_CHANNEL": self.channel.text(), "TWITCH_BOT_NAME": self.bot_name.text(),
+            "TWITCH_CLIENT_ID": self.client_id.text(), "TWITCH_REWARD_TITLE": self.reward_title.text()}
 
     def _start(self) -> None:
         if self.process.state() != QProcess.NotRunning or not self._save(for_start=True):

@@ -19,6 +19,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 import ai_client
+import ai_connection
 import gui
 from configuration import env_content
 from prompt_builder import CORE_RULES, DEFAULT_TOPICS, TEMPERAMENTS, TEST_CASES
@@ -43,7 +44,7 @@ def main():
     main_thread = get_ident()
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
-        with patch.object(gui, "data_dir", return_value=root), patch.object(ai_client.urllib.request, "urlopen") as http:
+        with patch.object(gui, "data_dir", return_value=root), patch.object(ai_connection, "urlopen") as http:
             window = gui.MainWindow()
             builder = window.prompt_builder
             builder.wishes.setPlainText("Будь язвительным")
@@ -115,7 +116,7 @@ def main():
             entered.set()
             assert release.wait(4)
             return response({"choices": [{"message": {"content": json.dumps({"style": "Отвечай по существу, используй язвительный юмор и мат изредка."})}, "finish_reason": "stop"}]})
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=generate), patch.object(
+        with patch.object(ai_connection, "urlopen", side_effect=generate), patch.object(
                 window.process, "start") as start, patch.object(gui, "save_settings") as save:
             builder.improve_button.click()
             wait_for(entered.is_set)
@@ -138,7 +139,7 @@ def main():
             save.assert_not_called()
 
         # Creation uses its own wishes/temperament and never the current general prompt.
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=generate):
+        with patch.object(ai_connection, "urlopen", side_effect=generate):
             builder.generate_button.click()
             wait_for(lambda: not builder._busy)
         created = json.loads(captured[-1]["messages"][-1]["content"])
@@ -168,7 +169,7 @@ def main():
             payload = json.loads(request.data)
             comparisons.append(payload)
             return response({"choices": [{"message": {"content": "Давай вернёмся к играм и чату."}}]})
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=compare):
+        with patch.object(ai_connection, "urlopen", side_effect=compare):
             page.run_button.click()
             wait_for(lambda: not page._testing_busy)
         assert len(comparisons) == 2
@@ -193,14 +194,14 @@ def main():
         def failure(request, timeout):
             raise urllib.error.HTTPError(request.full_url, 503, "Error", {},
                                          response({"error": {"message": "Error entered-builder-key"}}))
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=failure):
+        with patch.object(ai_connection, "urlopen", side_effect=failure):
             builder.start_generation()
             wait_for(lambda: not builder._busy)
         assert "503" in builder.status.text() and "entered-builder-key" not in builder.status.text()
         assert builder.preview.toPlainText() == previous
         entered.clear()
         release.clear()
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=generate):
+        with patch.object(ai_connection, "urlopen", side_effect=generate):
             builder.start_generation()
             wait_for(entered.is_set)
             window.api_key.setText("changed-builder-key")
@@ -214,7 +215,7 @@ def main():
         # Closing drops an outstanding result without touching Qt from the worker.
         entered.clear()
         release.clear()
-        with patch.object(ai_client.urllib.request, "urlopen", side_effect=generate):
+        with patch.object(ai_connection, "urlopen", side_effect=generate):
             builder.start_generation()
             wait_for(entered.is_set)
             with patch.object(gui, "russian_question", return_value=QMessageBox.Discard):
