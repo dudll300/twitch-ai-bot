@@ -15,6 +15,8 @@ from viewer_recognition import russian_name
 from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page, Disclosure, MasterDetail
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class ProfilesEditor(QWidget):
     changed = Signal()
     test_requested = Signal(int)

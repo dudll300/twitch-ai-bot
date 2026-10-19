@@ -3,12 +3,14 @@ from queue import Queue, Empty
 from threading import Event, Thread
 from datetime import datetime
 
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QTimer, Signal, Qt
 from PySide6.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QGridLayout
 
 from message_history import MessageHistory, HistoryReadError
 from ui_widgets import card, label, scroll_page, ScrollPlainTextEdit, Disclosure, ResponsiveColumns
 
+
+from ui_widgets import StudioButton as QPushButton
 
 class Dashboard(QWidget):
     history_requested = Signal()
@@ -51,7 +53,6 @@ class Dashboard(QWidget):
         self.auth_hint = label("", "caption", True)
         self.auth_hint.hide()
         box.addWidget(self.auth_hint)
-        layout.addWidget(states)
         stats, box = card()
         metrics = QHBoxLayout()
         self.metrics = {}
@@ -60,7 +61,7 @@ class Dashboard(QWidget):
             value = label("0", "statValue")
             self.metrics[key] = value
             group.addWidget(value)
-            group.addWidget(label(title, "muted"))
+            group.addWidget(label(title, "muted", True))
             metrics.addLayout(group)
         box.addLayout(metrics)
         self.processing = label("Новых вопросов пока нет", "muted", True)
@@ -74,12 +75,19 @@ class Dashboard(QWidget):
         self.feed = ScrollPlainTextEdit()
         self.feed.setReadOnly(True)
         self.feed.setAccessibleName("Ответы текущей сессии")
-        self.feed.setMinimumHeight(150)
+        self.feed.setMinimumHeight(260)
         self.feed.setPlaceholderText("Запустите бота — здесь появятся ответы и решения.")
         box.addWidget(self.feed)
         button = QPushButton("Открыть историю")
         button.clicked.connect(self.history_requested.emit)
         box.addWidget(button)
+        reply, reply_box = card("Последняя реплика", "Опубликованный ответ бота")
+        self.last_reply = label("Пока без реплик. Первый ответ появится здесь после отправки в чат.", "reply", True)
+        self.last_reply.setTextFormat(Qt.PlainText)
+        self.last_reply.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        reply_box.addWidget(self.last_reply)
+        self.reply_meta = label("", "muted", True)
+        reply_box.addWidget(self.reply_meta)
         inspector, box = card("Сохранённые настройки")
         self.inspector_title = box.itemAt(0).widget()
         self.inspector_values = {}
@@ -94,7 +102,15 @@ class Dashboard(QWidget):
             button = QPushButton(text)
             button.clicked.connect(signal.emit)
             box.addWidget(button)
-        layout.addWidget(ResponsiveColumns(feed, inspector, threshold=900, ratios=(2, 1)))
+        right = QWidget()
+        right_box = QVBoxLayout(right)
+        right_box.setContentsMargins(0, 0, 0, 0)
+        right_box.setSpacing(16)
+        right_box.addWidget(reply)
+        right_box.addWidget(states)
+        right_box.addWidget(Disclosure("Настройки текущей сессии", inspector))
+        right_box.addStretch()
+        layout.addWidget(ResponsiveColumns(feed, right, threshold=900, ratios=(3, 2)))
         self.log = ScrollPlainTextEdit()
         self.log.setObjectName("activityLog")
         self.log.setReadOnly(True)
@@ -116,6 +132,8 @@ class Dashboard(QWidget):
         if state.session != self.session:
             self._signature = None
             self.feed.clear()
+            self.last_reply.setText("Пока без реплик. Первый ответ появится здесь после отправки в чат.")
+            self.reply_meta.clear()
         self.session = state.session
         captions = {"unknown": "Ещё не проверено", "connecting": "Подключение…", "ready": "Подключено", "disconnected": "Связь прервана", "error": "Ошибка"}
         for key in ("chat", "eventsub"):
@@ -162,6 +180,10 @@ class Dashboard(QWidget):
             return
         names = {"sent": "Отправлено", "preview": "Предпросмотр", "generating": "Готовится", "generated": "Подготовлено", "silent": "Промолчал", "skipped": "Пропущено", "cancelled": "Отменено", "error": "Ошибка", "send_error": "Ошибка отправки", "rejected": "Отклонено"}
         text = error or "\n\n".join(names.get(row["status"], row["status"]) + (" · @" + row["viewer"] if row["viewer"] else "") + "\n" + (row["sent_text"] or row["answer"] or row["reason"] or "Ожидание результата…") for row in rows)
+        sent = next((row for row in rows if row["status"] == "sent" and row["sent_text"]), None)
+        if sent:
+            self.last_reply.setText(sent["sent_text"])
+            self.reply_meta.setText("В чат Twitch" + (" · @" + sent["viewer"] if sent["viewer"] else ""))
         if text != self._signature:
             bar = self.feed.verticalScrollBar()
             position = bar.value()

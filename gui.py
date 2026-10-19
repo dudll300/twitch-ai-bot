@@ -7,7 +7,7 @@ import sys
 from copy import deepcopy
 
 from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
-from PySide6.QtGui import QCloseEvent, QDesktopServices, QFont, QIcon, QKeySequence, QShortcut
+from PySide6.QtGui import QCloseEvent, QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QGraphicsOpacityEffect,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
@@ -28,6 +28,7 @@ from reply_rules import ANSWER_MAX_CHARS, upgrade_generated_prompt
 from settings import load_settings, save_settings
 from studio_shell import StudioShell
 from studio_dashboard import Dashboard
+from studio_artwork import OrbitHeader
 from runtime_events import RuntimeState, PREFIX, activation_url
 from ui_state import load_ui_state
 from gui_theme import apply_theme
@@ -56,6 +57,9 @@ PAGE_CONNECTION, PAGE_BEHAVIOR, PAGE_VIEWERS, PAGE_AUTONOMOUS, PAGE_SAFETY, PAGE
 def available_screen_size():
     return QApplication.primaryScreen().availableGeometry().size()
 
+
+from ui_widgets import StudioButton as QPushButton
+from ui_widgets import StudioLinkLabel
 
 class MainWindow(StudioShell, QMainWindow):
     def __init__(self):
@@ -107,20 +111,22 @@ class MainWindow(StudioShell, QMainWindow):
 
         body = QWidget()
         body.setObjectName("workspace")
-        shell = QHBoxLayout(body)
+        outer_shell = QVBoxLayout(body)
+        outer_shell.setContentsMargins(0, 0, 0, 0)
+        outer_shell.setSpacing(0)
+        workspace_row = QWidget()
+        shell = QHBoxLayout(workspace_row)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
-        self.sidebar = SlidingSidebar(224)
+        self.sidebar = SlidingSidebar(74)
         side_contents = QWidget()
         panel_layout = QVBoxLayout(self.sidebar.panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.addWidget(scroll_page(side_contents))
         side = QVBoxLayout(side_contents)
         self._side_layout = side
-        side.setContentsMargins(16, 24, 16, 20)
+        side.setContentsMargins(8, 20, 8, 16)
         side.setSpacing(6)
-        brand = QHBoxLayout()
-        brand.setSpacing(10)
         mark = QFrame()
         mark.setObjectName("brandMark")
         mark.setFixedSize(38, 38)
@@ -132,15 +138,8 @@ class MainWindow(StudioShell, QMainWindow):
         glyph.setPixmap(QIcon(str(resource_path("assets/app.ico"))).pixmap(36, 36))
         glyph.setAccessibleName("Twitch AI Bot")
         mark_layout.addWidget(glyph)
-        brand.addWidget(mark)
-        brand_name = QVBoxLayout()
-        brand_name.setSpacing(0)
-        self._brand_labels = [label("Twitch AI", "brand"), label("Студия бота", "muted")]
-        for brand_label in self._brand_labels:
-            brand_name.addWidget(brand_label)
-        brand.addLayout(brand_name, 1)
-        side.addLayout(brand)
-        side.addSpacing(28)
+        # The approved Orbit brand belongs to the full-width top bar.
+        self._brand_labels = []
 
         side.addSpacing(6)
         self.nav_group = QButtonGroup(self)
@@ -161,7 +160,7 @@ class MainWindow(StudioShell, QMainWindow):
         for heading, indices in (("РАБОТА", (5, 8)), ("НАСТРОЙКА БОТА", (1, 2, 3, 7)), ("ИНСТРУМЕНТЫ", (6, 4, 0))):
             group_label = label(heading, "eyebrow")
             self._sidebar_aux.append(group_label)
-            side.addWidget(group_label)
+            group_label.hide()
             for index in indices:
                 side.addWidget(self.nav_buttons[index])
         self.nav_buttons[9].hide()
@@ -185,6 +184,7 @@ class MainWindow(StudioShell, QMainWindow):
         profile_layout.addWidget(self.sidebar_hint)
         self._sidebar_profile = profile
         side.addWidget(profile)
+        profile.hide()
         side.addSpacing(12)
         folder = QPushButton("Папка с данными")
         folder.setProperty("variant", "quiet")
@@ -211,18 +211,26 @@ class MainWindow(StudioShell, QMainWindow):
         self.menu_button.setFixedSize(40, 40)
         self.menu_button.setCheckable(True)
         self.menu_button.clicked.connect(self._toggle_sidebar)
-        header.addWidget(self.menu_button)
+        self.menu_button.hide()
+        header.addWidget(mark)
+        wordmark = QHBoxLayout()
+        wordmark.setSpacing(7)
+        wordmark.addWidget(label("orbit", "brand"))
+        wordmark.addWidget(label("studio", "muted"))
+        header.addLayout(wordmark)
+        header.addStretch(1)
         workspace_heading = QVBoxLayout()
         workspace_heading.setSpacing(2)
         self.workspace_channel = label("Ваш канал", "channel", True)
+        self.workspace_channel.setMaximumWidth(200)
+        self.workspace_channel.setMinimumWidth(0)
         workspace_heading.addWidget(self.workspace_channel)
-        workspace_heading.addWidget(label("TWITCH AI / СТУДИЯ", "eyebrow"))
-        header.addLayout(workspace_heading, 1)
+        header.addLayout(workspace_heading)
         self.status.setMaximumWidth(190)
         header.addWidget(self.status, 0, Qt.AlignVCenter)
         self.start_button = QPushButton("Запустить бота")
         self.start_button.setObjectName("primary")
-        self.start_button.setIcon(studio_icon("play", "#FFFFFF", 16))
+        self.start_button.setIcon(studio_icon("play", "#112B48", 16))
         self.start_button.clicked.connect(self._start)
         header.addWidget(self.start_button)
         self.restart_button = QPushButton("Перезапустить")
@@ -237,18 +245,15 @@ class MainWindow(StudioShell, QMainWindow):
         self.stop_button.clicked.connect(self._stop)
         self.stop_button.hide()
         header.addWidget(self.stop_button)
-        main.addWidget(topbar)
+        outer_shell.addWidget(topbar)
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(28, 24, 28, 24)
         content_layout.setSpacing(22)
         self.page_title = label("", "title")
         self.page_description = label("", "muted", True)
-        heading = QVBoxLayout()
-        heading.setSpacing(6)
-        heading.addWidget(self.page_title)
-        heading.addWidget(self.page_description)
-        content_layout.addLayout(heading)
+        self.orbit_header = OrbitHeader(self.page_title, self.page_description)
+        content_layout.addWidget(self.orbit_header)
         self.notice = label("", "error", True)
         self.notice.hide()
         content_layout.addWidget(self.notice)
@@ -283,7 +288,7 @@ class MainWindow(StudioShell, QMainWindow):
         self.pages.setGraphicsEffect(self._page_effect)
         self._page_effect.setOpacity(1.0)
         self._page_animation = QPropertyAnimation(self._page_effect, b"opacity", self)
-        self._page_animation.setDuration(150)
+        self._page_animation.setDuration(280)
         self._page_animation.setEasingCurve(QEasingCurve.OutCubic)
         content_layout.addWidget(self.pages, 1)
         main.addWidget(content, 1)
@@ -303,6 +308,7 @@ class MainWindow(StudioShell, QMainWindow):
         actions.addWidget(self.save_button)
         main.addWidget(footer)
         shell.addWidget(main_area, 1)
+        outer_shell.addWidget(workspace_row, 1)
         self.setCentralWidget(body)
         focus_order = [self.nav_buttons[index] for index in (5, 8, 1, 2, 3, 7, 6, 4, 0)]
         focus_order += [self._folder_button, self.menu_button, self.start_button, self.stop_button]
@@ -384,6 +390,7 @@ class MainWindow(StudioShell, QMainWindow):
         self.nav_buttons[index].setChecked(True)
         self.page_title.setText(PAGES[index][0])
         self.page_description.setText(PAGES[index][1])
+        self.orbit_header.set_page(PAGES[index][0], index == PAGE_ACTIVITY)
         self._refresh_workspace()
 
     def _test_credentials(self):
@@ -455,7 +462,8 @@ class MainWindow(StudioShell, QMainWindow):
             twitch_layout.addWidget(field(caption, widget))
         twitch_layout.addWidget(label("В награде Twitch включите обязательный ввод текста.", "muted", True))
         twitch_layout.addStretch()
-        docs = QLabel('<a href="https://dev.twitch.tv/console/apps">Создать приложение в Twitch ↗</a>')
+        docs = StudioLinkLabel()
+        docs.setText('<a href="https://dev.twitch.tv/console/apps">Создать приложение в Twitch ↗</a>')
         docs.setOpenExternalLinks(True)
         docs.setWordWrap(True)
         twitch_layout.addWidget(docs)
@@ -566,6 +574,7 @@ class MainWindow(StudioShell, QMainWindow):
         configured = all(source.get(key, "").strip() for key in ("TWITCH_CHANNEL", "TWITCH_BOT_NAME", "TWITCH_CLIENT_ID", "AI_API_KEY", "AI_MODEL", "AI_BASE_URL"))
         self.dashboard.setup_card.setVisible(not configured or not self._ui_state["setup_done"])
         self.dashboard.update_state(self._runtime)
+        self.orbit_header.update_state(self._runtime)
         self.dashboard.inspector_title.setText("Используется ботом" if self._running_gui else "Сохранённые настройки")
 
     def _set_status(self, text, state):
@@ -695,15 +704,15 @@ class MainWindow(StudioShell, QMainWindow):
             return
         compact = event.size().width() < 1100
         self.restart_button.setText("" if compact else "Перезапустить")
-        self._side_layout.setContentsMargins(*(8, 16, 8, 16) if compact else (16, 24, 16, 20))
+        self._side_layout.setContentsMargins(8, 16, 8, 16)
         for index, button in enumerate(self.nav_buttons):
-            button.setText("" if compact else PAGES[index][0].replace("Самостоятельные реплики", "Самостоятельные\nреплики"))
+            button.setText("")
         for widget in self._sidebar_aux + self._brand_labels:
-            widget.setVisible(not compact)
-        self._sidebar_profile.setVisible(not compact)
-        self._folder_button.setText("" if compact else "Папка с данными")
+            widget.hide()
+        self._sidebar_profile.hide()
+        self._folder_button.setText("")
         self._folder_button.setToolTip("Открыть папку с данными")
-        self.sidebar.panel_width = 72 if compact else 224
+        self.sidebar.panel_width = 74
         self.sidebar.panel.setFixedWidth(self.sidebar.panel_width)
         self.sidebar.set_expanded(self._sidebar_expanded, animate=False)
         if hasattr(self, "dashboard"):
@@ -926,9 +935,8 @@ class MainWindow(StudioShell, QMainWindow):
 def run_gui() -> int:
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(resource_path("assets/app.ico"))))
-    app.setFont(QFont("Segoe UI", 10))
     app.setStyle("Fusion")
-    app.setStyleSheet(STYLE)
+    apply_theme(app, "dark")
     window = MainWindow()
     window.show()
     return app.exec()

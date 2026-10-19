@@ -39,6 +39,8 @@ STAGES.update(selector_request='Запрос селектора', selector_respo
               review_request='Запрос проверки публикации', review_response='Ответ проверки публикации')
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class SafetyPage(QWidget):
     changed = Signal()
     test_requested = Signal()

@@ -22,6 +22,8 @@ def generation_worker(snapshot, output, cancel):
         output.put(result)
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class PromptBuilder(QWidget):
     test_requested = Signal(str)
     connection_requested = Signal()

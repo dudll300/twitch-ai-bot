@@ -28,6 +28,8 @@ PARAMETERS = (
 )
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class NumberInput(QSpinBox):
     """Keep step controls legible under the dark stylesheet on Windows."""
 

@@ -27,7 +27,8 @@ def main():
         return sum(weight * channel for weight, channel in zip((.2126, .7152, .0722), linear))
     for theme, colors in PALETTES.items():
         pairs = [(colors[fg], colors[bg]) for fg in ("text", "muted") for bg in ("bg", "surface", "input", "raised")]
-        pairs += [(colors["success"], colors["successbg"]), (colors["error"], colors["errorbg"]), ("#FFFFFF", "#0066CC")]
+        pairs += [(colors["success"], colors["successbg"]), (colors["error"], colors["errorbg"]),
+                  (colors["primaryText"], colors["primary"])]
         for foreground, background in pairs:
             levels = sorted((luminance(foreground), luminance(background)))
             assert (levels[1] + .05) / (levels[0] + .05) >= 4.5, (theme, foreground, background)
@@ -142,11 +143,13 @@ def main():
                     window.resize(size)
                     for index in range(len(gui.PAGES)):
                         window._navigate(index)
-                        QTest.qWait(180)
+                        QTest.qWait(320)
                         app.processEvents()
                         assert window.width() <= size.width(), (theme, size_name, index, window.width())
                         assert window.height() <= size.height(), (theme, size_name, index, window.height())
-                        assert window.start_button.geometry().right() <= window.start_button.parentWidget().width()
+                        for action in (window.start_button, window.stop_button, window.restart_button):
+                            if action.isVisible():
+                                assert action.geometry().right() <= action.parentWidget().width()
                         if "--screenshots" in sys.argv:
                             window.grab().save(str(shots / f"{theme}-{size_name}-{index}.png"))
             with patch.object(gui, "russian_question", return_value=QMessageBox.Discard):

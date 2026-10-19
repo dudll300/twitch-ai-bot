@@ -19,6 +19,8 @@ from ui_widgets import Disclosure, NoWheelComboBox, ToggleSwitch, card, field, l
 SECTION_NAMES = {0: "Подключение", 1: "Поведение", 2: "Зрители", 3: "Самостоятельные реплики", 4: "Безопасность", 7: "Знания канала"}
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class StudioShell:
     def _section_page(self, content, index):
         page = QWidget()
@@ -83,6 +85,11 @@ class StudioShell:
     def _appearance_changed(self, *_):
         self._ui_state.update(theme=self.theme_control.currentData(), animations=self.animations_control.isChecked())
         QApplication.instance().setProperty("animations", self._ui_state["animations"])
+        if not self._ui_state["animations"]:
+            self._page_animation.stop()
+            self._page_effect.setOpacity(1.0)
+            self.orbit_header._motion.stop()
+            self.orbit_header._advance(0)
         apply_theme(QApplication.instance(), self._ui_state["theme"])
         self._refresh_icons()
         self._persist_preferences()
@@ -93,6 +100,8 @@ class StudioShell:
             button.setIcon(studio_icon(self._nav_icons[index], colors["muted"]))
         self.menu_button.setIcon(menu_icon())
         self._folder_button.setIcon(studio_icon("folder", colors["accent"], 16))
+        self.start_button.setIcon(studio_icon("play", colors["primaryText"], 16))
+        self.save_button.setIcon(studio_icon("save", colors["accent"], 16))
         self.stop_button.setIcon(studio_icon("stop", colors["error"], 16))
         self.restart_button.setIcon(studio_icon("restart", colors["accent"], 18))
 

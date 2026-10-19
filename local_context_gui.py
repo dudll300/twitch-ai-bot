@@ -23,6 +23,8 @@ def _search_text(value):
     return " ".join(unicodedata.normalize("NFKC", value).casefold().replace("ё", "е").split())
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class LocalContextPage(QWidget):
     changed = Signal()
 

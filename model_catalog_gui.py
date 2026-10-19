@@ -21,6 +21,8 @@ def catalog_worker(auth, output, cancel):
         output.put(result)
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class ModelCatalogControl(QWidget):
     def __init__(self, selected, get_credentials, *, role="Модель ответов"):
         super().__init__()

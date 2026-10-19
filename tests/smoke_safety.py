@@ -47,7 +47,7 @@ def main():
         page = window.safety_page
         window._navigate(gui.PAGE_SAFETY)
         assert window.pages.currentWidget().isAncestorOf(page)
-        assert window.nav_buttons[gui.PAGE_SAFETY].text() == 'Безопасность'
+        assert window.nav_buttons[gui.PAGE_SAFETY].accessibleName() == 'Безопасность'
         assert 'ещё не выполнялась' in page.last_review.text()
         assert 'Локальные проверки: действуют' in page.state.text()
         assert 'Награды: без AI-оценки' in page.state.text()

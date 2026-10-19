@@ -2,13 +2,175 @@
 
 import re
 
-from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve, QTimer
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPalette, QTransform
+from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve, QTimer, QRectF, QPointF, QPropertyAnimation, QEvent
+from PySide6.QtGui import (QColor, QIcon, QPainter, QPen, QPixmap, QPalette, QTransform,
+                          QTextLayout, QTextOption)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                               QFrame, QGridLayout, QHBoxLayout, QLabel, QListView, QListWidget,
                               QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QScrollBar,
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget,
-                              QSplitter, QStackedWidget)
+                              QSplitter, QStackedWidget, QSizePolicy, QStyleOptionButton,
+                              QStylePainter, QStyledItemDelegate)
+
+
+class StudioButton(QPushButton):
+    """Native button semantics with wrapping captions and a short hover response."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._hover = 0.0
+        self._hover_animation = QVariantAnimation(self)
+        self._hover_animation.setDuration(180)
+        self._hover_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._hover_animation.valueChanged.connect(self._advance_hover)
+        policy = self.sizePolicy()
+        policy.setHeightForWidth(True)
+        self.setSizePolicy(policy)
+
+    def _advance_hover(self, value):
+        self._hover = float(value)
+        self.update()
+
+    def _animate_hover(self, target):
+        self._hover_animation.stop()
+        if QApplication.instance().property("animations") is False:
+            self._advance_hover(target)
+            return
+        self._hover_animation.setStartValue(self._hover)
+        self._hover_animation.setEndValue(target)
+        self._hover_animation.start()
+
+    def enterEvent(self, event):
+        self._animate_hover(1.0)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._animate_hover(0.0)
+        super().leaveEvent(event)
+
+    def _text_layout(self, width):
+        caption = self.text().replace("&&", "\0").replace("&", "").replace("\0", "&")
+        layout = QTextLayout(caption, self.font())
+        option = QTextOption()
+        option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        option.setAlignment(Qt.AlignLeft)
+        layout.setTextOption(option)
+        layout.beginLayout()
+        height = 0.0
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(max(8, width))
+            line.setPosition(QPointF(0, height))
+            height += line.height()
+        layout.endLayout()
+        return layout, height
+
+    def minimumSizeHint(self):
+        hint = super().minimumSizeHint()
+        return QSize(min(hint.width(), 112) if self.text() else hint.width(), max(42, hint.height()))
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        caption = self.text().replace("&&", "\0").replace("&", "").replace("\0", "&")
+        text = max((self.fontMetrics().horizontalAdvance(line) for line in caption.splitlines()), default=0)
+        icon = self.iconSize().width() + (9 if caption else 0) if not self.icon().isNull() else 0
+        return QSize(max(hint.width(), text + icon + 38), max(44, hint.height()))
+
+    def heightForWidth(self, width):
+        icon = self.iconSize().width() + 9 if not self.icon().isNull() else 0
+        _, height = self._text_layout(width - 34 - icon)
+        return max(super().sizeHint().height(), round(height + 20), 42)
+
+    def paintEvent(self, event):
+        option = QStyleOptionButton()
+        self.initStyleOption(option)
+        icon = QIcon(self.icon())
+        option.text = ""
+        option.icon = QIcon()
+        painter = QStylePainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.drawControl(QStyle.CE_PushButton, option)
+        if self._hover and self.isEnabled() and self.property("variant") not in ("nav", "quiet"):
+            color = QColor(self.palette().color(QPalette.Link))
+            color.setAlpha(round(18 * self._hover))
+            painter.setBrush(color)
+            painter.setPen(Qt.NoPen)
+            rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+            painter.drawRoundedRect(rect, min(22, rect.height() / 2), min(22, rect.height() / 2))
+        icon_width = self.iconSize().width() if not icon.isNull() else 0
+        gap = 9 if icon_width and self.text() else 0
+        available = max(8, self.width() - 34 - icon_width - gap)
+        layout, text_height = self._text_layout(available)
+        text_width = max((layout.lineAt(i).naturalTextWidth() for i in range(layout.lineCount())), default=0)
+        total = icon_width + gap + min(available, text_width)
+        left = 17 if self.property("variant") in ("nav", "quiet") and self.text() else max(5, (self.width() - total) / 2)
+        if icon_width:
+            icon.paint(painter, round(left), (self.height() - self.iconSize().height()) // 2,
+                       icon_width, self.iconSize().height(), Qt.AlignCenter,
+                       QIcon.Normal if self.isEnabled() else QIcon.Disabled)
+        foreground = self.palette().color(QPalette.Active if self.isEnabled() else QPalette.Disabled, QPalette.ButtonText)
+        # QSS resolves the button's semantic foreground into its palette.
+        painter.setPen(foreground)
+        layout.draw(painter, QPointF(left + icon_width + gap, max(2, (self.height() - text_height) / 2)))
+
+
+# Internal shared widgets use the same button as the editor modules.
+QPushButton = StudioButton
+
+
+class ComboItemDelegate(QStyledItemDelegate):
+    """Opaque, padded popup rows; retain QComboBox's native keyboard behavior."""
+
+    def __init__(self, combo):
+        super().__init__(combo)
+        self.combo = combo
+
+    def sizeHint(self, option, index):
+        return QSize(super().sizeHint(option, index).width() + 48, max(44, option.fontMetrics.height() + 22))
+
+    def paint(self, painter, option, index):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing)
+        selected = index.row() == self.combo.currentIndex()
+        hovered = bool(option.state & (QStyle.State_Selected | QStyle.State_MouseOver))
+        rect = option.rect.adjusted(4, 2, -4, -2)
+        if selected or hovered:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(option.palette.color(QPalette.Highlight if selected else QPalette.AlternateBase))
+            painter.drawRoundedRect(rect, 11, 11)
+        color = option.palette.color(QPalette.Text)
+        if not index.flags() & Qt.ItemIsEnabled:
+            color = option.palette.color(QPalette.Disabled, QPalette.Text)
+        painter.setPen(color)
+        painter.setFont(option.font)
+        text_rect = rect.adjusted(12, 0, -34, 0)
+        text = option.fontMetrics.elidedText(str(index.data() or ""), Qt.ElideMiddle, text_rect.width())
+        painter.drawText(text_rect, Qt.AlignVCenter | Qt.AlignLeft, text)
+        if selected:
+            painter.setPen(QPen(option.palette.color(QPalette.Link), 1.7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            x, y = rect.right() - 19, rect.center().y()
+            painter.drawLine(x - 4, y, x - 1, y + 3)
+            painter.drawLine(x - 1, y + 3, x + 5, y - 3)
+        painter.restore()
+
+
+class StudioLinkLabel(QLabel):
+    """Keep rich-text links readable when the native palette changes."""
+
+    def setText(self, text):
+        self._source_text = text
+        self._render_link()
+
+    def _render_link(self):
+        color = self.palette().color(QPalette.Link).name()
+        super().setText('<style>a { color: ' + color + '; }</style>' + self._source_text)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange) and hasattr(self, "_source_text"):
+            self._render_link()
 
 
 class ContainedScrollBar(QScrollBar):
@@ -93,17 +255,60 @@ class NoWheelComboBox(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setView(ScrollListView(self))
-        self.setMaxVisibleItems(15)
+        self.setItemDelegate(ComboItemDelegate(self))
+        self.view().setObjectName("orbitComboPopup")
+        self.view().setSpacing(2)
+        self.setMaxVisibleItems(10)
         self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.setMinimumContentsLength(8)
+        self._popup_animation = None
+
+    def showPopup(self):
+        view = self.view()
+        screen = self.screen().availableGeometry()
+        view.setMinimumWidth(min(max(self.width(), 220), max(120, screen.width() - 24)))
+        super().showPopup()
+        popup = view.window()
+        popup.setObjectName("orbitComboContainer")
+        popup.setAttribute(Qt.WA_StyledBackground, True)
+        popup.style().unpolish(popup)
+        popup.style().polish(popup)
+        # Qt owns placement, scrolling, accessibility and focus. Only fade its
+        # popup window; never delay the selection or animate model changes.
+        if QApplication.instance().property("animations") is not False and QApplication.platformName() != "offscreen":
+            if self._popup_animation:
+                self._popup_animation.stop()
+            if self._popup_animation is None:
+                self._popup_animation = QPropertyAnimation(popup, b"windowOpacity", self)
+            else:
+                self._popup_animation.setTargetObject(popup)
+            self._popup_animation.setDuration(160)
+            self._popup_animation.setEasingCurve(QEasingCurve.OutCubic)
+            self._popup_animation.setStartValue(.65)
+            self._popup_animation.setEndValue(1.0)
+            self._popup_animation.start()
+
+    def hidePopup(self):
+        if self._popup_animation:
+            self._popup_animation.stop()
+            self.view().window().setWindowOpacity(1.0)
+        super().hidePopup()
 
     def wheelEvent(self, event):
         event.ignore()
 
     def paintEvent(self, event):
-        super().paintEvent(event)
         option = QStyleOptionComboBox()
         self.initStyleOption(option)
+        if self.isEditable():
+            super().paintEvent(event)
+        else:
+            field = self.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, self)
+            option.currentText = self.fontMetrics().elidedText(self.currentText(), Qt.ElideMiddle, max(8, field.width() - 6))
+            style_painter = QStylePainter(self)
+            style_painter.drawComplexControl(QStyle.CC_ComboBox, option)
+            style_painter.drawControl(QStyle.CE_ComboBoxLabel, option)
+            style_painter.end()
         center = self.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxArrow, self).center()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)

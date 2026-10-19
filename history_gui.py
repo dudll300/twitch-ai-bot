@@ -57,6 +57,8 @@ def history_worker(store, tasks, output, closed):
             output.put((kind, token, result, error))
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class HistoryPage(QWidget):
     def __init__(self, root):
         super().__init__()

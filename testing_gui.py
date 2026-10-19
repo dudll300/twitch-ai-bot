@@ -32,6 +32,8 @@ def comparison_worker(snapshot, pending, output, cancel):
             output.put(("result", result))
 
 
+from ui_widgets import StudioButton as QPushButton
+
 class TestingPage(QWidget):
     def __init__(self, get_credentials, get_snapshot, get_profiles, *, safety_store=None, get_answer_model=lambda: '', get_diagnostic_model=None):
         super().__init__()
@@ -67,6 +69,21 @@ class TestingPage(QWidget):
         self.restore_prompt_button.clicked.connect(self.clear_prompt_override)
         self.restore_prompt_button.hide()
         request_layout.addWidget(self.restore_prompt_button)
+        self.answer_model = NoWheelComboBox()
+        self.answer_model.setEditable(True)
+        self.answer_model.setInsertPolicy(NoWheelComboBox.NoInsert)
+        self.answer_model.setAccessibleName("Модель для пробного ответа")
+        self.answer_model.setToolTip("Выберите модель из каталога или введите её точный ID")
+        self.answer_model.addItem("Как в настройках · " + self.get_answer_model(), "")
+        self.load_models_button = QPushButton("Загрузить модели")
+        self.load_models_button.clicked.connect(self.refresh_catalog)
+        model_row = QHBoxLayout()
+        model_row.addWidget(field("Модель для пробного ответа", self.answer_model,
+                                  "Можно выбрать из каталога или ввести ID вручную."), 1)
+        model_row.addWidget(self.load_models_button, 0, Qt.AlignVCenter)
+        request_layout.addLayout(model_row)
+        self.model_hint = label("Для сравнения нескольких моделей раскройте каталог ниже.", "muted", True)
+        request_layout.addWidget(self.model_hint)
         self.case_combo = NoWheelComboBox()
         self.case_combo.addItem("Свой вопрос", None)
         for index, (title, _, _) in enumerate(TEST_CASES):
@@ -109,7 +126,6 @@ class TestingPage(QWidget):
         action_row.addWidget(self.run_button, 1)
         action_row.addWidget(self.cancel_button)
         request_layout.addLayout(action_row)
-        request_layout.addWidget(self.selected_count if hasattr(self, "selected_count") else label("Модель ответов выбирается автоматически, если список пуст.", "muted", True))
         self.status = label("", "muted", True)
         request_layout.addWidget(self.status)
 
@@ -188,6 +204,7 @@ class TestingPage(QWidget):
         self._timer.start()
 
     def refresh_profiles(self):
+        self._sync_answer_models()
         previous = self.viewer.currentData()
         self.viewer.clear()
         for index, row in enumerate(self.get_profiles()):
@@ -240,12 +257,36 @@ class TestingPage(QWidget):
         self.catalog = ()
         self._catalog_auth = None
         self.models.clear()
+        self._sync_answer_models()
         self.catalog_status.setText("Параметры API изменились. Обновите каталог для текущего ключа.")
         self._selection_count()
 
     def selected_models(self):
         return [self.models.item(i).data(Qt.UserRole) for i in range(self.models.count())
                 if self.models.item(i).checkState() == Qt.Checked]
+
+    def _sync_answer_models(self):
+        use_default = self.answer_model.currentIndex() == 0 and self.answer_model.currentText() == self.answer_model.itemText(0)
+        previous = self.answer_model.currentText()
+        self.answer_model.blockSignals(True)
+        self.answer_model.clear()
+        self.answer_model.addItem("Как в настройках · " + self.get_answer_model(), "")
+        for model in self.catalog:
+            self.answer_model.addItem(model.id, model.id)
+            if model.available is False:
+                self.answer_model.model().item(self.answer_model.count() - 1).setEnabled(False)
+        if not use_default and previous:
+            self.answer_model.setCurrentText(previous)
+        self.answer_model.blockSignals(False)
+
+    def _test_models(self):
+        selected = self.selected_models()
+        if selected:
+            return selected
+        combo = self.answer_model
+        if combo.currentIndex() == 0 and combo.currentText() == combo.itemText(0):
+            return [self.get_answer_model()]
+        return [combo.currentText().strip()]
 
     def _add_model(self, model, checked=False):
         suffix = " · недоступна для ключа" if model.available is False else ""
@@ -288,7 +329,11 @@ class TestingPage(QWidget):
             item.setHidden(query not in item.data(Qt.UserRole).casefold())
 
     def _selection_count(self, *_):
-        self.selected_count.setText("Выбрано: " + ", ".join(self.selected_models()) if self.selected_models() else "Используется модель ответов из настроек")
+        selected = self.selected_models()
+        self.selected_count.setText("Выбрано: " + ", ".join(selected) if selected else "Для одного ответа используйте модель над вопросом")
+        self.model_hint.setText("Сравниваем: " + ", ".join(selected) + ". Сбросьте выбор в каталоге, чтобы проверить одну модель."
+                                if selected else "Для сравнения нескольких моделей раскройте каталог ниже.")
+        self.answer_model.setEnabled(not selected and not self._testing_busy and not self._catalog_busy)
         if hasattr(self, "catalog_disclosure"):
             self.catalog_disclosure.title = "Модели: " + ", ".join(self.selected_models()) if self.selected_models() else "Модель ответов · выбрать другие"
             self.catalog_disclosure.set_expanded(self.catalog_disclosure.button.isChecked())
@@ -305,12 +350,14 @@ class TestingPage(QWidget):
 
     def _set_busy(self):
         busy = self._testing_busy or self._catalog_busy
-        for widget in (self.run_button, self.refresh_button, self.add_button, self.reset_button, self.manual,
+        for widget in (self.run_button, self.refresh_button, self.load_models_button, self.add_button, self.reset_button, self.manual,
                        self.models, self.sender, self.viewer, self.login, self.question,
                        self.case_combo, self.restore_prompt_button):
             widget.setEnabled(not busy)
         self.run_button.setText("Получаем ответы…" if self._testing_busy else "Получить ответы")
         self.refresh_button.setText("Загрузка…" if self._catalog_busy else "Обновить список")
+        self.load_models_button.setText("Загрузка…" if self._catalog_busy else "Загрузить модели")
+        self.answer_model.setEnabled(not busy and not self.selected_models())
         self.cancel_button.setVisible(busy)
 
     def refresh_catalog(self):
@@ -331,7 +378,7 @@ class TestingPage(QWidget):
             return
         try:
             kwargs = {"prompt_override": self.prompt_override} if self.prompt_override is not None else {}
-            models = self.selected_models() or [self.get_answer_model()]
+            models = self._test_models()
             snapshot = self.get_snapshot(models, self.question.toPlainText(),
                                          self.sender.currentData(),
                                          self.login.text() if self.sender.currentData() == "viewer" else "",
@@ -397,6 +444,7 @@ class TestingPage(QWidget):
                 self._catalog_auth = auth
                 for model in models:
                     self._add_model(model, checked=model.id in selected)
+                self._sync_answer_models()
                 self._filter_models()
                 self._selection_count()
                 self.catalog_status.setText((error + " Можно ввести ID вручную.") if error else
