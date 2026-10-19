@@ -6,7 +6,7 @@ PALETTES = {
     "dark": dict(bg="#06090F", surface="#0C121C", raised="#152438", input="#0A121E",
                  text="#EFF5FF", muted="#A9B8CE", border="#2D4058", accent="#B5DCFF",
                  primary="#C5DFFF", primaryText="#112B48", primaryHover="#DCEEFF",
-                 selected="#203A56", success="#8BE0BB", successbg="#12352C",
+                 selected="#162D44", success="#8BE0BB", successbg="#12352C",
                  error="#FFBCC8", errorbg="#40202D", warning="#F5D59A", warningbg="#382D19"),
     "light": dict(bg="#F7FAFF", surface="#FFFFFF", raised="#EEF3FA", input="#FFFFFF",
                   text="#162032", muted="#526179", border="#B8C5D7", accent="#0066CC",
@@ -28,8 +28,10 @@ QFrame#card, QFrame#inspectorCard, QFrame#questionCard {{ background: {surface};
 QFrame#footer {{ background: {surface}; border-top: 1px solid {border}; }}
 QFrame#sidebarProfile, QFrame#activityStats {{ background: {raised}; border: 1px solid {border}; border-radius: 12px; }}
 QLabel {{ background: transparent; border: none; }}
-QLabel[role="title"] {{ font-size: 34px; font-weight: 500; }}
-QLabel[role="section"] {{ font-size: 18px; font-weight: 600; }}
+QLabel[role="title"] {{ font-size: 40px; font-weight: 500; }}
+QLabel[role="section"] {{ font-size: 16px; font-weight: 500; }}
+QFrame#panelHeading {{ background: transparent; border: none; border-bottom: 1px solid {border}; }}
+QLabel[role="eyebrow"] {{ color: {accent}; }}
 QLabel[role="brand"] {{ font-size: 23px; font-weight: 500; }}
 QLabel[role="muted"] {{ color: {muted}; font-size: 13px; }}
 QLabel[role="caption"] {{ font-size: 14px; }}
@@ -49,11 +51,12 @@ QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {{ background: {input}; color: {t
 QLineEdit, QComboBox, QSpinBox {{ min-height: 22px; }}
 QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus {{ border: 2px solid {accent}; padding: 10px 13px; }}
 QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled, QSpinBox:disabled {{ color: {muted}; background: {raised}; }}
-QComboBox {{ padding-right: 32px; }}
+QComboBox {{ padding-right: 10px; }}
 QComboBox::drop-down {{ border: none; width: 30px; }}
 QComboBox::down-arrow {{ image: none; }}
 QComboBox QAbstractItemView {{ background: {raised}; color: {text}; selection-background-color: {selected}; selection-color: {text}; border: 1px solid {border}; border-radius: 14px; padding: 5px; outline: none; }}
 QFrame#orbitComboContainer {{ background: {raised}; border: 1px solid {border}; border-radius: 16px; padding: 3px; }}
+QFrame#rule {{ background: {border}; border: none; }}
 QComboBox QLineEdit {{ border: none; background: transparent; padding: 0; }}
 QSpinBox {{ padding-right: 36px; }}
 QSpinBox::up-button, QSpinBox::down-button {{ width: 28px; background: {raised}; border: none; }}
@@ -70,15 +73,15 @@ QPushButton#primary:disabled, QPushButton[variant="primary"]:disabled {{ color: 
 QPushButton[variant="danger"] {{ color: {error}; background: {errorbg}; border-color: {error}; }}
 QPushButton[variant="quiet"] {{ background: transparent; border-color: transparent; color: {accent}; text-align: left; }}
 QPushButton[variant="nav"] {{ text-align: left; background: transparent; border-color: transparent; border-radius: 16px; color: {muted}; font-weight: 400; padding: 9px 12px; }}
-QPushButton[variant="nav"]:checked {{ background: {selected}; color: {accent}; border-color: {border}; font-weight: 600; }}
-QPushButton[variant="nav"]:focus {{ border-color: {accent}; }}
+QPushButton[variant="nav"]:checked {{ background: {selected}; color: {accent}; border-color: transparent; font-weight: 500; }}
+QPushButton[variant="nav"]:focus {{ border-color: transparent; outline: none; }}
 QPushButton[variant="inspector"] {{ text-align: left; color: {accent}; }}
 QPushButton#menuToggle {{ padding: 0; }}
 QListWidget {{ background: {input}; color: {text}; border: 1px solid {border}; border-radius: 10px; outline: none; }}
 QListWidget::item {{ padding: 10px; color: {text}; border-radius: 8px; }}
 QListWidget::item:selected {{ background: {selected}; color: {text}; }}
 QListWidget::item:hover {{ background: {raised}; }}
-QListWidget::item:focus {{ border: 1px solid {accent}; }}
+QListWidget::item:focus {{ border: none; }}
 QListWidget::indicator, QCheckBox::indicator {{ width: 18px; height: 18px; border: 1px solid {muted}; border-radius: 5px; background: {input}; }}
 QListWidget::indicator:checked, QCheckBox::indicator:checked {{ background: #0066CC; border-color: #0066CC; image: url("{check}"); }}
 QCheckBox {{ spacing: 8px; }}
@@ -87,7 +90,20 @@ QScrollBar:vertical {{ background: transparent; width: 10px; margin: 2px 0; }}
 QScrollBar::handle:vertical {{ background: {border}; border-radius: 5px; min-height: 32px; }}
 QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
 QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
+QScrollBar:horizontal {{ background: transparent; height: 10px; margin: 0; }}
+QScrollBar::handle:horizontal {{ background: {border}; border-radius: 4px; min-width: 32px; }}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
+QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: none; }}
+QSplitter::handle {{ background: transparent; width: 18px; }}
+QPlainTextEdit[presentation="reading"] {{ border: none; padding: 0; border-radius: 0; background: transparent; }}
+QPlainTextEdit[presentation="reading"][emphasis="true"] {{ font-size: 20px; font-weight: 400; }}
+QListWidget[presentation="rows"] {{ background: transparent; border: none; border-radius: 0; padding: 0; }}
+QListWidget[presentation="rows"]::item {{ border: none; border-bottom: 1px solid {border}; border-radius: 0; padding: 16px 18px; }}
+QListWidget[presentation="rows"]::item:selected {{ background: {selected}; border: none; border-left: 2px solid {accent}; }}
 QToolTip {{ background: {surface}; color: {text}; border: 1px solid {border}; padding: 8px; }}
+QMenu {{ background: {raised}; color: {text}; border: 1px solid {border}; border-radius: 12px; padding: 8px; }}
+QMenu::item {{ padding: 10px 24px; border-radius: 8px; }}
+QMenu::item:selected {{ background: {selected}; }}
 QTabWidget::pane {{ border: none; background: transparent; }}
 QTabBar::tab {{ color: {muted}; background: transparent; padding: 12px 16px; border-bottom: 2px solid {border}; }}
 QTabBar::tab:selected {{ color: {accent}; border-bottom-color: {accent}; }}
@@ -107,7 +123,10 @@ def load_fonts(app):
     family = "Onest" if font_id >= 0 else "Segoe UI"
     app.setProperty("studioFontFamily", family)
     app.setProperty("studioFontsLoaded", True)
-    app.setFont(QFont(family, 10))
+    font = QFont(family, 10)
+    font.setHintingPreference(QFont.PreferNoHinting)
+    font.setStyleStrategy(QFont.PreferAntialias)
+    app.setFont(font)
 
 
 def apply_theme(app, theme):

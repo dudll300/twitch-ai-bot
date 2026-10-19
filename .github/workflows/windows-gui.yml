@@ -23,6 +23,7 @@ jobs:
       - run: python tests/smoke_gui.py
       - run: python tests/smoke_windows_studio.py
       - run: python tests/smoke_orbit.py
+      - run: python tests/smoke_orbit_fidelity.py
       - run: python tests/smoke_orbit.py
         env:
           QT_SCALE_FACTOR: '1.25'

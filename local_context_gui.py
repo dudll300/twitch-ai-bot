@@ -24,6 +24,9 @@ def _search_text(value):
 
 
 from ui_widgets import StudioButton as QPushButton
+from studio_controls import StudioTabs as QTabWidget
+from studio_rows import OrbitRowDelegate
+from ui_widgets import panel_badge
 
 class LocalContextPage(QWidget):
     changed = Signal()
@@ -44,14 +47,16 @@ class LocalContextPage(QWidget):
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(20)
-        system, system_layout = card("Знания вашего канала",
-            "Словарь выражений и отсылок вашего канала.")
+        system, system_layout = card()
+        system_layout.setContentsMargins(22, 12, 22, 12)
         self.enabled = ToggleSwitch("Включить локальный контекст")
         self.enabled.setAccessibleName("Локальный контекст включён")
         self.enabled.setChecked(self.saved.settings.enabled)
-        system_layout.addWidget(self.enabled)
+        system_row = QHBoxLayout()
+        system_row.addWidget(self.enabled)
         self.state = label("", "muted", True)
-        system_layout.addWidget(self.state)
+        system_row.addWidget(self.state, 1)
+        system_layout.addLayout(system_row)
         self.error = label("", "error", True)
         self.error.hide()
         system_layout.addWidget(self.error)
@@ -95,17 +100,15 @@ class LocalContextPage(QWidget):
 
         columns = QHBoxLayout()
         columns.setSpacing(20)
-        left, left_layout = card()
+        left, left_layout = card("Карточки канала")
         left.setMinimumWidth(260)
         left.setMaximumWidth(330)
         heading = QHBoxLayout()
-        self.count = label("", "section")
-        heading.addWidget(self.count, 1)
+        self.count = left_layout.title_label
         self.add_button = QPushButton("+ Добавить")
         self.add_button.setProperty("variant", "quiet")
         self.add_button.clicked.connect(self.add_card)
-        heading.addWidget(self.add_button)
-        left_layout.addLayout(heading)
+        panel_badge(left_layout, self.add_button)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Название или алиас")
         self.search.setAccessibleName("Поиск локальных карточек")
@@ -113,6 +116,8 @@ class LocalContextPage(QWidget):
         self.search.textChanged.connect(self._filter)
         left_layout.addWidget(self.search)
         self.list = ScrollListWidget()
+        self.list.setProperty("presentation", "rows")
+        self.list.setItemDelegate(OrbitRowDelegate(self.list, "profile"))
         self.list.setAccessibleName("Карточки локального контекста")
         self.list.setMinimumHeight(180)
         self.list.setMaximumHeight(400)
@@ -139,14 +144,12 @@ class LocalContextPage(QWidget):
             "muted", True))
         empty_layout.addStretch()
         self.stack.addWidget(empty)
-        editor, editor_layout = card()
+        editor, editor_layout = card("Карточка")
         header = QHBoxLayout()
-        self.editor_title = label("Карточка", "section")
-        header.addWidget(self.editor_title, 1)
+        self.editor_title = editor_layout.title_label
         self.card_enabled = ToggleSwitch("Активна")
         self.card_enabled.setAccessibleName("Карточка активна")
-        header.addWidget(self.card_enabled)
-        editor_layout.addLayout(header)
+        panel_badge(editor_layout, self.card_enabled)
         self.name = QLineEdit()
         self.name.setAccessibleName("Название карточки")
         self.name.setPlaceholderText("Локальное выражение или название отсылки")

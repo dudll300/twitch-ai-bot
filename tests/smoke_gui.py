@@ -256,8 +256,8 @@ def main() -> None:
         assert window.sidebar.width() == window.sidebar.panel_width
         assert window.profiles_editor.remove_button.property("variant") == "danger"
         window._navigate(1)
-        wait_for(lambda: window._page_effect.opacity() == 1.0, "Page transition did not finish")
-        assert window._page_effect.opacity() == 1.0
+        wait_for(lambda: not window._transition.isVisible(), "Page transition did not finish")
+        assert not window._transition.isVisible()
         assert not any("Настроить" in button.text() for button in window.pages.widget(1).findChildren(gui.QPushButton))
         window.close()
         with patch.object(gui, "data_dir", return_value=root):

@@ -6,10 +6,10 @@ import json
 import sys
 from copy import deepcopy
 
-from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize, QPropertyAnimation, QEasingCurve
+from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize
 from PySide6.QtGui import QCloseEvent, QDesktopServices, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout, QGraphicsOpacityEffect,
+    QApplication, QButtonGroup, QFrame, QGridLayout, QHBoxLayout,
     QLabel, QLineEdit, QMainWindow, QMessageBox, QPushButton,
     QStackedWidget, QVBoxLayout, QWidget,
 )
@@ -28,7 +28,7 @@ from reply_rules import ANSWER_MAX_CHARS, upgrade_generated_prompt
 from settings import load_settings, save_settings
 from studio_shell import StudioShell
 from studio_dashboard import Dashboard
-from studio_artwork import OrbitHeader
+from studio_artwork import OrbitHeader, PageTransition
 from runtime_events import RuntimeState, PREFIX, activation_url
 from ui_state import load_ui_state
 from gui_theme import apply_theme
@@ -60,6 +60,7 @@ def available_screen_size():
 
 from ui_widgets import StudioButton as QPushButton
 from ui_widgets import StudioLinkLabel
+from ui_widgets import SegmentedControl
 
 class MainWindow(StudioShell, QMainWindow):
     def __init__(self):
@@ -86,6 +87,8 @@ class MainWindow(StudioShell, QMainWindow):
         self._active_values = {}
         self.resize(min(self._ui_state["width"], available.width() - 24), min(self._ui_state["height"], available.height() - 48))
         values, prompt = load_settings(self._root)
+        if all(values.get(key, "").strip() for key in ("TWITCH_CHANNEL", "TWITCH_BOT_NAME", "TWITCH_CLIENT_ID", "AI_API_KEY", "AI_MODEL", "AI_BASE_URL")):
+            self._ui_state["setup_done"] = True
         self._has_saved_key = bool(values.get("AI_API_KEY"))
         self._dirty = False
         self._saving = False
@@ -200,6 +203,8 @@ class MainWindow(StudioShell, QMainWindow):
         main.setContentsMargins(0, 0, 0, 0)
         main.setSpacing(0)
         topbar = QFrame()
+        self.topbar = topbar
+        topbar.setMinimumHeight(84)
         topbar.setObjectName("topbar")
         header = QHBoxLayout(topbar)
         header.setContentsMargins(24, 12, 24, 12)
@@ -240,8 +245,8 @@ class MainWindow(StudioShell, QMainWindow):
         self.restart_button.hide()
         header.addWidget(self.restart_button)
         self.stop_button = QPushButton("Остановить бота")
-        self.stop_button.setProperty("variant", "danger")
-        self.stop_button.setIcon(studio_icon("stop", "#FF9B9B", 16))
+        self.stop_button.setProperty("variant", "primary")
+        self.stop_button.setIcon(studio_icon("stop", "#112B48", 16))
         self.stop_button.clicked.connect(self._stop)
         self.stop_button.hide()
         header.addWidget(self.stop_button)
@@ -284,12 +289,7 @@ class MainWindow(StudioShell, QMainWindow):
             self._detail_views[name].restore_sizes(sizes)
         self.safety_page.test_requested.connect(self._test_security)
         self.safety_page.history_requested.connect(self._security_history)
-        self._page_effect = QGraphicsOpacityEffect(self.pages)
-        self.pages.setGraphicsEffect(self._page_effect)
-        self._page_effect.setOpacity(1.0)
-        self._page_animation = QPropertyAnimation(self._page_effect, b"opacity", self)
-        self._page_animation.setDuration(280)
-        self._page_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._transition = PageTransition(self.pages)
         content_layout.addWidget(self.pages, 1)
         main.addWidget(content, 1)
 
@@ -381,12 +381,10 @@ class MainWindow(StudioShell, QMainWindow):
         if index == PAGE_TESTING:
             self.testing_page.refresh_profiles()
         changed = self.pages.currentIndex() != index
+        previous = self.pages.grab() if changed and self.isVisible() and self._ui_state["animations"] else None
         self.pages.setCurrentIndex(index)
-        if changed and self._ui_state["animations"]:
-            self._page_animation.stop()
-            self._page_animation.setStartValue(0.65)
-            self._page_animation.setEndValue(1.0)
-            self._page_animation.start()
+        if previous is not None:
+            self._transition.start(previous)
         self.nav_buttons[index].setChecked(True)
         self.page_title.setText(PAGES[index][0])
         self.page_description.setText(PAGES[index][1])
@@ -516,14 +514,30 @@ class MainWindow(StudioShell, QMainWindow):
         self.behavior_mode = NoWheelComboBox()
         self.behavior_mode.addItems(("Редактировать", "Создать", "Улучшить"))
         self.behavior_mode.setAccessibleName("Работа с характером бота")
-        layout.addWidget(self.behavior_mode)
-        layout.addWidget(main, 1)
+        layout.addWidget(SegmentedControl(self.behavior_mode))
+        companion = QWidget()
+        companion_layout = QVBoxLayout(companion)
+        companion_layout.setContentsMargins(0, 0, 0, 0)
+        companion_layout.setSpacing(20)
+        rhythm, rhythm_layout = card("Ритм ответа")
+        rhythm_layout.addWidget(label(f"До {ANSWER_MAX_CHARS} символов", "reply", True))
+        rhythm_layout.addWidget(label("Короткий ответ легче заметить в быстром чате. Язык, интонацию и отношение к спойлерам задайте в инструкции.", "muted", True))
+        companion_layout.addWidget(rhythm)
+        preview, preview_layout = card("Сначала — пробный разговор")
+        preview_layout.addWidget(label("Проверьте характер на своём вопросе. Тест использует черновик инструкции и не отправляет ответ в Twitch.", "muted", True))
+        test = QPushButton("Попробовать вопрос")
+        test.clicked.connect(self._test_prompt)
+        preview_layout.addWidget(test)
+        companion_layout.addWidget(preview)
+        companion_layout.addStretch()
+        editor_columns = ResponsiveColumns(main, companion, threshold=850, ratios=(3, 2))
+        layout.addWidget(editor_columns, 1)
         self.prompt_builder = PromptBuilder(self._test_credentials, self.prompt.toPlainText,
                                             self.prompt.setPlainText)
         layout.addWidget(self.prompt_builder)
         self.prompt_builder.hide()
         def mode_changed(index):
-            main.setVisible(index == 0)
+            editor_columns.setVisible(index == 0)
             self.prompt_builder.setVisible(index != 0)
             self.prompt_builder.set_operation_mode("improve" if index == 2 else "create")
         self.behavior_mode.currentIndexChanged.connect(mode_changed)
@@ -535,6 +549,7 @@ class MainWindow(StudioShell, QMainWindow):
         self.dashboard.settings_requested.connect(lambda: self._navigate(PAGE_CONNECTION))
         self.dashboard.test_requested.connect(self._test_prompt)
         self.dashboard.setup_requested.connect(self._open_setup)
+        self.dashboard.autonomy_requested.connect(lambda: self._navigate(PAGE_AUTONOMOUS))
         self.questions_label = self.dashboard.metrics["questions"]
         self.answers_label = self.dashboard.metrics["answers"]
         self.auth_hint = self.dashboard.auth_hint
@@ -564,6 +579,7 @@ class MainWindow(StudioShell, QMainWindow):
         self.inspector_values["model"].setText(source.get("AI_MODEL", "").strip() or "Не выбрана")
         self.inspector_values["reward"].setText(source.get("TWITCH_REWARD_TITLE", "").strip() or "Не указана")
         auto = self.autonomous_page.saved
+        self.dashboard.update_participation(auto)
         self.inspector_values["autonomous"].setText(
             ("Предпросмотр" if auto.mode == "preview" else "Публикация в чат") if auto.enabled else "Выключены")
         context = self.local_context_page.saved
@@ -572,7 +588,7 @@ class MainWindow(StudioShell, QMainWindow):
             f"Включён · активных карточек: {active_cards}" if context.settings.enabled else "Выключен")
         self.connection_pill.setText(self.status.text())
         configured = all(source.get(key, "").strip() for key in ("TWITCH_CHANNEL", "TWITCH_BOT_NAME", "TWITCH_CLIENT_ID", "AI_API_KEY", "AI_MODEL", "AI_BASE_URL"))
-        self.dashboard.setup_card.setVisible(not configured or not self._ui_state["setup_done"])
+        self.dashboard.setup_card.setVisible(not configured)
         self.dashboard.update_state(self._runtime)
         self.orbit_header.update_state(self._runtime)
         self.dashboard.inspector_title.setText("Используется ботом" if self._running_gui else "Сохранённые настройки")
@@ -703,6 +719,7 @@ class MainWindow(StudioShell, QMainWindow):
         if not hasattr(self, "nav_buttons"):
             return
         compact = event.size().width() < 1100
+        self.topbar.setMinimumHeight(68 if compact else 84)
         self.restart_button.setText("" if compact else "Перезапустить")
         self._side_layout.setContentsMargins(8, 16, 8, 16)
         for index, button in enumerate(self.nav_buttons):

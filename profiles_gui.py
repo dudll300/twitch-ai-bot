@@ -16,6 +16,9 @@ from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card
 
 
 from ui_widgets import StudioButton as QPushButton
+from studio_controls import StudioCheckBox as QCheckBox
+from studio_rows import OrbitRowDelegate
+from ui_widgets import panel_badge
 
 class ProfilesEditor(QWidget):
     changed = Signal()
@@ -47,19 +50,16 @@ class ProfilesEditor(QWidget):
 
         columns = QHBoxLayout()
         columns.setSpacing(20)
-        left, left_layout = card()
+        left, left_layout = card("Зрители")
         left.setMinimumWidth(260)
         left.setMaximumWidth(300)
         left_layout.setContentsMargins(16, 16, 16, 16)
         header = QHBoxLayout()
-        self.count = label("", "section")
-        header.addWidget(self.count)
-        header.addStretch()
+        self.count = left_layout.title_label
         self.add_button = QPushButton("+ Добавить")
         self.add_button.setProperty("variant", "quiet")
         self.add_button.clicked.connect(self.add_profile)
-        header.addWidget(self.add_button)
-        left_layout.addLayout(header)
+        panel_badge(left_layout, self.add_button)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Логин, имя или ID")
         self.search.setAccessibleName("Поиск зрителей")
@@ -68,6 +68,8 @@ class ProfilesEditor(QWidget):
         left_layout.addWidget(self.search)
         self.list = ScrollListWidget()
         self.list.setObjectName("profileList")
+        self.list.setProperty("presentation", "rows")
+        self.list.setItemDelegate(OrbitRowDelegate(self.list, "profile"))
         self.list.setAccessibleName("Профили зрителей")
         self.list.currentRowChanged.connect(self._select)
         self.list.itemClicked.connect(lambda *_: self.master_detail.show_detail())
@@ -91,14 +93,12 @@ class ProfilesEditor(QWidget):
         empty_layout.addStretch()
         self.stack.addWidget(empty)
 
-        editor, editor_layout = card()
+        editor, editor_layout = card("Профиль зрителя")
         heading = QHBoxLayout()
-        self.editor_title = label("Новый профиль", "section")
-        heading.addWidget(self.editor_title, 1)
+        self.editor_title = editor_layout.title_label
         self.enabled = ToggleSwitch("Включён")
         self.enabled.setAccessibleName("Персонализация включена")
-        heading.addWidget(self.enabled)
-        editor_layout.addLayout(heading)
+        panel_badge(editor_layout, self.enabled)
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setColumnStretch(0, 1)

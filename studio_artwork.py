@@ -1,10 +1,67 @@
 """Orbit's native, resolution independent page horizon and session heading."""
-from PySide6.QtCore import Qt, QRectF, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient, QLinearGradient
-from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QVBoxLayout, QSizePolicy
+from PySide6.QtCore import Qt, QRectF, QVariantAnimation, QEasingCurve, QTimer, QPointF, QEvent
+from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient, QLinearGradient, QPixmap
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QVBoxLayout, QSizePolicy, QWidget
 
 from studio_theme import PALETTES
 from ui_widgets import label
+
+
+class PageTransition(QWidget):
+    """A short composited transition, with crisp native text after completion."""
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self._old, self._new = QPixmap(), QPixmap()
+        self._progress, self._generation = 1., 0
+        self._motion = QVariantAnimation(self)
+        self._motion.setDuration(340)
+        self._motion.setEasingCurve(QEasingCurve.OutCubic)
+        self._motion.valueChanged.connect(self._advance)
+        self._motion.finished.connect(self.finish)
+        parent.installEventFilter(self)
+        self.hide()
+
+    def _advance(self, value):
+        self._progress = float(value)
+        self.update()
+
+    def start(self, previous):
+        self.finish()
+        generation = self._generation
+        self._old = previous
+        def capture():
+            if generation != self._generation or not self.parentWidget().isVisible() or QApplication.instance().property("animations") is False:
+                return
+            self._new = self.parentWidget().grab()
+            self.setGeometry(self.parentWidget().rect())
+            self._progress = 0.
+            self.raise_()
+            self.show()
+            self._motion.setStartValue(0.)
+            self._motion.setEndValue(1.)
+            self._motion.start()
+        QTimer.singleShot(0, capture)
+
+    def finish(self):
+        self._generation += 1
+        self._motion.stop()
+        self.hide()
+        self._old, self._new = QPixmap(), QPixmap()
+
+    def eventFilter(self, watched, event):
+        if event.type() in (QEvent.Resize, QEvent.Hide):
+            self.finish()
+        return False
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        c = PALETTES[QApplication.instance().property("studioTheme") or "dark"]
+        p.fillRect(self.rect(), QColor(c["bg"]))
+        p.setOpacity(1 - self._progress)
+        p.drawPixmap(QPointF(0, -4 * self._progress), self._old)
+        p.setOpacity(self._progress)
+        p.drawPixmap(QPointF(0, 10 * (1 - self._progress)), self._new)
 
 
 class OrbitHeader(QFrame):
@@ -15,7 +72,7 @@ class OrbitHeader(QFrame):
         self.description = description
         self.setObjectName("orbitHeader")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
-        self.setMinimumHeight(148)
+        self.setMinimumHeight(154)
         self._shift = 0.0
         self._motion = QVariantAnimation(self)
         self._motion.setDuration(420)
@@ -79,7 +136,7 @@ class OrbitHeader(QFrame):
         compact = event.size().width() < 900
         self.eyebrow.setVisible(not compact)
         self.layout().setContentsMargins(0, 4 if compact else 16, 8, 10 if compact else 24)
-        self.setMinimumHeight(92 if compact else 148)
+        self.setMinimumHeight(92 if compact else 154)
         super().resizeEvent(event)
 
     def paintEvent(self, event):
@@ -89,22 +146,47 @@ class OrbitHeader(QFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         p.setClipRect(self.rect())
-        # A clipped ellipse creates the same quiet blue horizon at every DPI.
+        # Paint the gradient in ellipse coordinates: a circular radial gradient
+        # in window coordinates previously hid almost the entire illuminated rim.
         width = self.width()
-        planet = QRectF(width - 615, -270 + self._shift, 690, 365)
-        gradient = QRadialGradient(planet.center(), planet.width() / 2)
-        stops = ((0, colors["bg"]), (.68, colors["bg"]), (.82, "#122D50" if theme == "dark" else "#DDEBFF"),
-                 (.95, "#396CA9" if theme == "dark" else "#93B7E8"),
-                 (1, "#0C1B30" if theme == "dark" else "#EEF5FF"))
+        p.save()
+        p.translate(width - 225, -67 + self._shift)
+        p.rotate(-10)
+        p.scale(310, 165)
+        halo = QRadialGradient(0, .12, 1.25)
+        halo.setColorAt(0, QColor(Qt.transparent))
+        halo.setColorAt(.70, QColor(Qt.transparent))
+        halo.setColorAt(.83, QColor("#443C8FF0" if theme == "dark" else "#384D8DE0"))
+        halo.setColorAt(1, QColor(Qt.transparent))
+        p.setPen(Qt.NoPen)
+        p.setBrush(halo)
+        p.drawEllipse(QRectF(-1.3, -1.3, 2.6, 2.6))
+        gradient = QRadialGradient(0, .2, 1.12)
+        stops = ((0, "#02050B" if theme == "dark" else "#F7FAFF"),
+                 (.47, "#02050B" if theme == "dark" else "#F7FAFF"),
+                 (.59, "#102B56" if theme == "dark" else "#D7E8FF"),
+                 (.68, "#3565B0" if theme == "dark" else "#A0C1F3"),
+                 (.71, "#ABD7FF" if theme == "dark" else "#6E9BD7"),
+                 (.73, "#0C55D4" if theme == "dark" else "#9CBCE9"),
+                 (.88, colors["bg"]))
         for position, color in stops:
             gradient.setColorAt(position, QColor(color))
-        p.setOpacity(.95 if width >= 800 else .5)
-        p.setPen(QPen(QColor("#385C88" if theme == "dark" else "#ABC6E9"), 1))
+        p.setOpacity(.95 if width >= 800 else .6)
         p.setBrush(gradient)
-        p.drawEllipse(planet)
+        p.drawEllipse(QRectF(-1, -1, 2, 2))
+        p.restore()
+        p.save()
+        p.translate(width - 220, 39 + self._shift)
+        p.rotate(-15)
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(QColor("#244264" if theme == "dark" else "#CADBF0"), 1))
-        p.drawEllipse(QRectF(width - 630, -75 + self._shift, 660, 170))
+        p.drawEllipse(QRectF(-290, -79, 580, 158))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#304E83B0"))
+        p.drawEllipse(QRectF(-153, 58, 16, 16))
+        p.setBrush(QColor(colors["accent"]))
+        p.drawEllipse(QRectF(-148, 63, 6, 6))
+        p.restore()
         # Fade the artwork behind page copy instead of tinting its text.
         fade = QLinearGradient(0, 0, width, 0)
         opaque = QColor(colors["bg"])

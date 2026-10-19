@@ -15,12 +15,17 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 
 ## Shared visual rules
 
-- Orbit uses bundled Onest (OFL); 14 logical pixels for body text, 13 for help, 18 for sections, 34 for page titles.
+- Orbit uses bundled Onest (OFL); 14 logical pixels for body text, 13 for help, 16 for sections, 40 for page titles.
 - Spacing uses 4/8/12/16/24/32; card radius 16, field radius 14, pill buttons radius 22.
 - Primary buttons use pale blue with dark ink. All colors come from semantic theme tokens.
 - A native painted blue horizon and a full-width brand bar identify Orbit. Decorative movement is finite and respects the animation preference.
 - Shared StudioButton wraps long captions and sizes their height; dropdowns use opaque, padded rows with a selection mark and native keyboard behavior.
 - Interface preferences expose theme and an animation toggle; do not expose animation durations.
+- Panels share a separate title strip, body padding and dividers. History, profiles, knowledge and the stream conversation use native row delegates, not multiline text editors as lists.
+- Navigation has a filled selected state without a light outline. Keyboard focus remains distinct from mouse selection.
+- The wheel never edits combos, numbers or tab selections, even when they have focus. Open catalogs still scroll. Native scrollbars retain their hit areas with a slim painted thumb; outer pages ease wheel movement.
+- Step controls and checkmarks are drawn explicitly and use the shared palette. All numeric editors use NumberInput.
+- Page changes crossfade and move a short distance using transient snapshots. Remove the snapshot at completion so settled native text remains sharp. Rapid navigation and resize cancel previous transitions.
 - Text contrast target: at least 4.5:1. Important icons and focus indicators must remain visible in both themes.
 - Status uses text plus color. A gray or green pill alone must not carry the meaning.
 - Native drawn icons avoid missing glyphs. Use Qt palettes in custom-painted controls.
@@ -35,6 +40,7 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 - Reparented panes must be explicitly shown on return to the wide layout.
 - Long editors remain scrollable. Never squeeze their labels and fields to make a large form fit.
 - Retain NoWheelComboBox and nested editor-to-page wheel handling.
+- Master/detail cards have a 20-pixel splitter gap; verify pane bounds as well as the overall window bounds.
 
 ## Data and operations
 
@@ -51,10 +57,12 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 - Cancellable operations retain old queues and cancellation objects in old workers. Late results cannot reach a new operation.
 - Testing exposes an editable single-model selector above the question. Its default tracks the current model from settings; catalog loading is explicit. Checked comparison models override this selector and are listed beside it.
 - The latest published reply on Эфир comes from the existing background history read. Previews and blocked replies never appear as published.
+- The stream conversation shows existing reward questions and bot decisions from session history, not an invented full Twitch chat. Queue detail shows confirmed counts rather than fabricated viewers or question text.
+- A configured legacy installation dismisses first-run onboarding regardless of the old setup flag. The setup card depends on saved or active connection values, never unsaved form contents.
 
 ## Verification
 
-Run the existing unittest suite and GUI smoke checks, plus `tests/smoke_windows_studio.py` and `tests/smoke_orbit.py`.
+Run the existing unittest suite and GUI smoke checks, plus `tests/smoke_windows_studio.py`, `tests/smoke_orbit.py` and `tests/smoke_orbit_fidelity.py`.
 Use `--screenshots` to capture every page in both themes at wide and compact sizes.
 Use QT_SCALE_FACTOR 1, 1.25 and 1.5 in separate processes for DPI checks.
 Windows packaged checks use `tests/smoke_package.py`; TWITCH_AI_TEST_EXE can select a candidate EXE.

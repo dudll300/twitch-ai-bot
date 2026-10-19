@@ -33,6 +33,8 @@ def comparison_worker(snapshot, pending, output, cancel):
 
 
 from ui_widgets import StudioButton as QPushButton
+from ui_widgets import SegmentedControl, ResponsiveColumns
+from studio_rows import ModelChoiceDelegate
 
 class TestingPage(QWidget):
     def __init__(self, get_credentials, get_snapshot, get_profiles, *, safety_store=None, get_answer_model=lambda: '', get_diagnostic_model=None):
@@ -74,7 +76,7 @@ class TestingPage(QWidget):
         self.answer_model.setInsertPolicy(NoWheelComboBox.NoInsert)
         self.answer_model.setAccessibleName("Модель для пробного ответа")
         self.answer_model.setToolTip("Выберите модель из каталога или введите её точный ID")
-        self.answer_model.addItem("Как в настройках · " + self.get_answer_model(), "")
+        self.answer_model.addItem(self.get_answer_model(), "")
         self.load_models_button = QPushButton("Загрузить модели")
         self.load_models_button.clicked.connect(self.refresh_catalog)
         model_row = QHBoxLayout()
@@ -150,6 +152,7 @@ class TestingPage(QWidget):
         models_layout.addLayout(selection)
         self.models = ScrollListWidget()
         self.models.setObjectName("modelList")
+        self.models.setItemDelegate(ModelChoiceDelegate(self.models))
         self.models.setAccessibleName("Модели для сравнения")
         self.models.setMinimumHeight(180)
         self.models.setMaximumHeight(260)
@@ -166,28 +169,36 @@ class TestingPage(QWidget):
         models_layout.addLayout(manual_row)
         self.catalog_status = label("Нажмите «Обновить список». Доступность без отметки проверяется при запросе.", "muted", True)
         models_layout.addWidget(self.catalog_status)
-        layout.addWidget(request)
         self.catalog_disclosure = Disclosure("Выбрать модели для сравнения", models)
-        layout.addWidget(self.catalog_disclosure)
         results, results_layout = card("Ответы моделей")
         self.context = label("Контекст будет показан после нажатия «Получить ответы».", "muted", True)
         self.context.setTextFormat(Qt.PlainText)
         results_layout.addWidget(Disclosure("Состав контекста теста", self.context))
         self.results_layout = QVBoxLayout()
+        empty = QWidget()
+        empty_layout = QVBoxLayout(empty)
+        empty_layout.setContentsMargins(0, 16, 0, 22)
+        empty_layout.addWidget(label("Пока тихо.", "reply"))
+        empty_layout.addWidget(label("Задайте вопрос слева. Здесь появятся ответы выбранных моделей и результат их проверки.", "muted", True))
+        self.results_layout.addWidget(empty)
         results_layout.addLayout(self.results_layout)
-        layout.addWidget(results)
+        results_layout.addStretch(1)
+        layout.addWidget(ResponsiveColumns(request, results, threshold=850))
+        layout.addWidget(self.catalog_disclosure)
         layout.addStretch()
         self.mode = NoWheelComboBox()
         self.mode.addItem('Сравнение моделей')
         self.mode.addItem('Проверка точного текста')
         self.mode.setAccessibleName('Режим тестирования')
-        outer.addWidget(self.mode)
+        outer.addWidget(SegmentedControl(self.mode))
         self.modes = QStackedWidget()
         self.modes.addWidget(scroll_page(page))
         self.diagnostic = DiagnosticPanel(safety_store or PolicyStore(data_dir()), get_credentials, get_diagnostic_model or get_answer_model)
         self.modes.addWidget(self.diagnostic)
         outer.addWidget(self.modes, 1)
         request_layout.removeItem(action_row)
+        action_row.setStretch(0, 0)
+        action_row.addStretch(1)
         outer.addLayout(action_row)
         request_layout.removeWidget(self.status)
         outer.addWidget(self.status)
@@ -270,13 +281,14 @@ class TestingPage(QWidget):
         previous = self.answer_model.currentText()
         self.answer_model.blockSignals(True)
         self.answer_model.clear()
-        self.answer_model.addItem("Как в настройках · " + self.get_answer_model(), "")
+        self.answer_model.addItem(self.get_answer_model(), "")
         for model in self.catalog:
             self.answer_model.addItem(model.id, model.id)
             if model.available is False:
                 self.answer_model.model().item(self.answer_model.count() - 1).setEnabled(False)
         if not use_default and previous:
             self.answer_model.setCurrentText(previous)
+        self.answer_model.lineEdit().setCursorPosition(0)
         self.answer_model.blockSignals(False)
 
     def _test_models(self):

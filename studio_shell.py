@@ -20,6 +20,7 @@ SECTION_NAMES = {0: "Подключение", 1: "Поведение", 2: "Зр�
 
 
 from ui_widgets import StudioButton as QPushButton
+from studio_controls import StudioTabs as QTabWidget
 
 class StudioShell:
     def _section_page(self, content, index):
@@ -86,8 +87,7 @@ class StudioShell:
         self._ui_state.update(theme=self.theme_control.currentData(), animations=self.animations_control.isChecked())
         QApplication.instance().setProperty("animations", self._ui_state["animations"])
         if not self._ui_state["animations"]:
-            self._page_animation.stop()
-            self._page_effect.setOpacity(1.0)
+            self._transition.finish()
             self.orbit_header._motion.stop()
             self.orbit_header._advance(0)
         apply_theme(QApplication.instance(), self._ui_state["theme"])
@@ -102,7 +102,7 @@ class StudioShell:
         self._folder_button.setIcon(studio_icon("folder", colors["accent"], 16))
         self.start_button.setIcon(studio_icon("play", colors["primaryText"], 16))
         self.save_button.setIcon(studio_icon("save", colors["accent"], 16))
-        self.stop_button.setIcon(studio_icon("stop", colors["error"], 16))
+        self.stop_button.setIcon(studio_icon("stop", colors["primaryText"], 16))
         self.restart_button.setIcon(studio_icon("restart", colors["accent"], 18))
 
     def _persist_preferences(self):

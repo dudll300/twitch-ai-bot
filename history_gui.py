@@ -6,9 +6,13 @@ from threading import Event, Thread
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QListWidgetItem, QPushButton,
-                              QSplitter, QVBoxLayout, QWidget, QApplication)
+                              QSplitter, QVBoxLayout, QWidget, QApplication, QFrame, QMenu)
 
 from message_history import MessageHistory
+from studio_rows import OrbitRowDelegate
+from studio_icons import studio_icon
+from studio_artwork import PageTransition
+from ui_widgets import ReadingText, panel_badge, field
 from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, label, scroll_page, MasterDetail, Disclosure
 
 STATUS_NAMES = {
@@ -78,91 +82,123 @@ class HistoryPage(QWidget):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(16)
-        filters, filter_layout = card()
-        filters.setObjectName("headerActions")
-        filter_layout.setContentsMargins(0, 0, 0, 0)
-        filter_layout.setSpacing(8)
-        controls = QHBoxLayout()
-        self.kind = NoWheelComboBox()
-        for title, value in (("Все записи", ""), ("Ответы на награды", "reward"), ("Самостоятельные реплики", "autonomous")):
-            self.kind.addItem(title, value)
+        left, left_layout = card("Лента событий")
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+        self.refresh_button = QPushButton("Обновить")
+        self.refresh_button.setProperty("variant", "quiet")
+        self.refresh_button.setFixedHeight(30)
+        panel_badge(left_layout, self.refresh_button)
+        filters = QWidget()
+        filter_layout = QVBoxLayout(filters)
+        filter_layout.setContentsMargins(22, 20, 22, 22)
+        filter_layout.setSpacing(14)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Вопрос, ответ или зритель")
+        self.search.setAccessibleName("Поиск в истории сообщений")
+        filter_layout.addWidget(self.search)
         self.status = NoWheelComboBox()
         for title, value in (("Все статусы", ""), ("Отправлено", "sent"), ("Предпросмотр", "preview"),
                              ("Не отправлено", "not_sent"), ("Молчание", "silent"), ("Ошибки", "errors"), ("Отказы", "rejected")):
             self.status.addItem(title, value)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск по вопросам, ответам и логинам")
-        self.search.setAccessibleName("Поиск в истории сообщений")
-        self.refresh_button = QPushButton("Обновить")
-        controls.addWidget(self.search, 1)
-        filter_toggle = QPushButton("Фильтры")
-        filter_toggle.setCheckable(True)
-        controls.addWidget(filter_toggle)
-        controls.addWidget(self.refresh_button)
-        filter_layout.addLayout(controls)
-        filter_options = QWidget()
-        filter_row = QHBoxLayout(filter_options)
-        filter_row.setContentsMargins(0, 0, 0, 0)
-        self.kind.setAccessibleName("Тип записи в истории")
         self.status.setAccessibleName("Результат ответа")
-        filter_row.addWidget(self.kind)
-        filter_row.addWidget(self.status)
-        filter_layout.addWidget(filter_options)
-        filter_toggle.toggled.connect(filter_options.setVisible)
-        filter_options.hide()
-        self.hint = plain("История сохраняется между запусками. Тестирование и генератор промптов сюда не попадают.", "muted")
-        filter_layout.addWidget(self.hint)
+        self.status_chips = []
+        chip_row = QHBoxLayout()
+        chip_row.setSpacing(6)
+        for title, value in (("Все", ""), ("Отправлено", "sent"), ("Предпросмотр", "preview"), ("Отклонено", "rejected")):
+            button = QPushButton(title)
+            button.setProperty("variant", "chip")
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked=False, status=value: self.status.setCurrentIndex(self.status.findData(status)))
+            chip_row.addWidget(button)
+            self.status_chips.append((button, value))
+        def update_chips(*_):
+            for button, value in self.status_chips:
+                button.setChecked(value == self.status.currentData())
+        self.status.currentIndexChanged.connect(update_chips)
+        update_chips()
+        filter_layout.addLayout(chip_row)
+        self.kind = NoWheelComboBox()
+        for title, value in (("Все", ""), ("Награда канала", "reward"), ("Самостоятельное участие", "autonomous")):
+            self.kind.addItem(title, value)
+        self.kind.setAccessibleName("Тип записи в истории")
+        filter_layout.addWidget(field("Источник", self.kind))
+        self.status.setParent(filters)
+        self.status.hide()
+        status_menu = QMenu(self)
+        self._status_actions = []
+        for index in range(self.status.count()):
+            action = status_menu.addAction(self.status.itemText(index))
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked=False, value=index: self.status.setCurrentIndex(value))
+            self._status_actions.append(action)
+        def update_actions(*_):
+            for index, action in enumerate(self._status_actions):
+                action.setChecked(index == self.status.currentIndex())
+        self.status.currentIndexChanged.connect(update_actions)
+        update_actions()
+        self.status_menu_button = QPushButton()
+        self.status_menu_button.setIcon(studio_icon("sliders", size=16))
+        self.status_menu_button.setProperty("variant", "quiet")
+        self.status_menu_button.setAccessibleName("Все статусы истории")
+        self.status_menu_button.setToolTip("Все статусы: молчание, ошибки, отказы и другие")
+        self.status_menu_button.setFixedSize(30, 30)
+        self.status_menu_button.clicked.connect(lambda: status_menu.popup(self.status_menu_button.mapToGlobal(self.status_menu_button.rect().bottomLeft())))
+        left_layout.outer.itemAt(0).widget().layout().itemAt(0).layout().addWidget(self.status_menu_button)
+        self.hint = plain("", "muted")
         self.hint.hide()
+        filter_layout.addWidget(self.hint)
         self.reset_filters = QPushButton("Сбросить фильтры")
         self.reset_filters.clicked.connect(self._reset_filters)
-        filter_layout.addWidget(self.reset_filters)
         self.reset_filters.hide()
+        filter_layout.addWidget(self.reset_filters)
         self.error = plain("", "error")
         self.error.hide()
         filter_layout.addWidget(self.error)
-        outer.addWidget(filters)
-
-        splitter = QSplitter(Qt.Horizontal)
-        left, left_layout = card("Записи")
-        left.setMinimumWidth(300)
+        left_layout.addWidget(filters)
         self.entries = ScrollListWidget()
+        self.entries.setProperty("presentation", "rows")
         self.entries.setObjectName("historyEntries")
+        self.entries.setItemDelegate(OrbitRowDelegate(self.entries))
         self.entries.setWordWrap(True)
         self.entries.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.entries.setAccessibleName("Сохранённые ответы и самостоятельные реплики")
-        self.entries.setSpacing(4)
+        self.entries.setSpacing(0)
         left_layout.addWidget(self.entries, 1)
         pager = QHBoxLayout()
-        self.newer = QPushButton("Новее")
-        self.older = QPushButton("Старее")
+        pager.setContentsMargins(18, 12, 18, 16)
+        self.newer, self.older = QPushButton("Новее"), QPushButton("Старее")
         self.page_label = plain("", "muted")
         pager.addWidget(self.newer)
         pager.addWidget(self.page_label, 1)
         pager.addWidget(self.older)
         left_layout.addLayout(pager)
-
-
         detail_page = QWidget()
         detail_layout = QVBoxLayout(detail_page)
-        detail_layout.setContentsMargins(0, 0, 8, 0)
-        detail_layout.setSpacing(14)
-        details, details_layout = card("Детали сообщения")
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(16)
+        details, details_layout = card("Выбранное событие")
         self.badge = plain("Выберите запись", "historyStatus")
-        details_layout.addWidget(self.badge)
+        self.badge.setWordWrap(False)
+        panel_badge(details_layout, self.badge)
         self.meta = plain("", "muted")
         details_layout.addWidget(self.meta)
-        self.reason = plain("", "caption")
-        details_layout.addWidget(self.reason)
-        self.question_label = plain("Запрос зрителя", "section")
-        self.question = self._editor("Полный запрос зрителя", 100)
+        self.question_label = plain("СООБЩЕНИЕ", "eyebrow")
+        self.question = ReadingText("Полный запрос зрителя", maximum=240)
         details_layout.addWidget(self.question_label)
         details_layout.addWidget(self.question)
-        self.answer_label = plain("Ответ", "section")
-        self.answer = self._editor("Сгенерированный или отправленный ответ", 150)
+        rule = QFrame()
+        rule.setObjectName("rule")
+        rule.setFixedHeight(1)
+        details_layout.addWidget(rule)
+        self.answer_label = plain("ОТВЕТ", "eyebrow")
+        self.answer = ReadingText("Сгенерированный или отправленный ответ", emphasis=True, maximum=420)
         details_layout.addWidget(self.answer_label)
         details_layout.addWidget(self.answer)
+        self.reason = plain("", "muted")
+        details_layout.addWidget(self.reason)
         self.notice_label = plain("Уведомление, переданное Twitch", "caption")
-        self.notice = self._editor("Отправленное служебное уведомление", 90)
+        self.notice = ReadingText("Отправленное служебное уведомление")
         details_layout.addWidget(self.notice_label)
         details_layout.addWidget(self.notice)
         self.timeline = plain("", "muted")
@@ -170,11 +206,12 @@ class HistoryPage(QWidget):
         copy_row = QHBoxLayout()
         for title, editor in (("Копировать вопрос", self.question), ("Копировать ответ", self.answer)):
             button = QPushButton(title)
+            button.setIcon(studio_icon("copy", size=16))
             button.clicked.connect(lambda checked=False, source=editor: QApplication.clipboard().setText(source.toPlainText()))
             copy_row.addWidget(button)
         details_layout.addLayout(copy_row)
         detail_layout.addWidget(details)
-        context_card, context_layout = card()
+        context_card, context_layout = card("Контекст события")
         self.context_button = QPushButton("Показать контекст")
         self.context_button.setCheckable(True)
         self.context_button.toggled.connect(self._toggle_context)
@@ -191,9 +228,11 @@ class HistoryPage(QWidget):
         detail_layout.addWidget(context_card)
         detail_layout.addStretch()
         right = scroll_page(detail_page)
-        right.setMinimumWidth(340)
+        self._detail_transition = PageTransition(right.viewport())
         self.master_detail = MasterDetail(left, right)
+        self.master_detail.restore_sizes([520, 520])
         outer.addWidget(self.master_detail, 1)
+
 
         self.refresh_button.clicked.connect(lambda: self.refresh(reset=True))
         self.newer.clicked.connect(self._newer)
@@ -303,6 +342,10 @@ class HistoryPage(QWidget):
                     item = QListWidgetItem(f"{timestamp(row['created'])} · {source}{target}\n"
                                            f"{STATUS_NAMES.get(row['status'], row['status'])}\n{body[:140]}")
                     item.setData(Qt.UserRole, row["id"])
+                    item.setData(Qt.UserRole + 1, dict(time=timestamp(row["created"], short=True)[:5],
+                        title=" ".join((row["question"] or row["answer"] or row["sent_text"] or REASONS.get(row["reason"], row["reason"]) or STATUS_NAMES.get(row["status"], row["status"])).split()),
+                        subtitle=" · ".join(part for part in (row["viewer"], source, STATUS_NAMES.get(row["status"], row["status"])) if part),
+                        date=timestamp(row["created"]).split(" ")[0]))
                     self.entries.addItem(item)
                     if row["id"] == selected:
                         select_index = index
@@ -354,6 +397,7 @@ class HistoryPage(QWidget):
         self.instructions_button.setChecked(False)
 
     def _render(self, row):
+        previous = self._detail_transition.parentWidget().grab() if self._detail_id != row["id"] and self.isVisible() and QApplication.instance().property("animations") is not False else None
         self._detail_id = row["id"]
         self.badge.setText(STATUS_NAMES.get(row["status"], row["status"]))
         self.badge.setProperty("state", row["status"])
@@ -397,6 +441,8 @@ class HistoryPage(QWidget):
             self.instructions_button.setVisible(bool(instructions))
         self._toggle_context(self.context_button.isChecked())
         self._toggle_instructions(self.instructions_button.isChecked())
+        if previous is not None:
+            self._detail_transition.start(previous)
 
     def _toggle_context(self, checked):
         self.context.setVisible(checked)

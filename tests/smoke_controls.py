@@ -25,14 +25,14 @@ import model_catalog_gui
 import testing
 from autonomous import AutoSettings, load_settings
 from configuration import env_content
-from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, scroll_page
+from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, scroll_page, Disclosure
 
 
-def wait_for(predicate):
+def wait_for(predicate, message="Timed out waiting for GUI worker"):
     deadline = time.monotonic() + 4
     while not predicate() and time.monotonic() < deadline:
         QTest.qWait(15)
-    assert predicate(), "Timed out waiting for GUI worker"
+    assert predicate(), message
 
 
 def response(data):
@@ -44,6 +44,7 @@ def wheel(widget, delta):
     event = QWheelEvent(QPointF(pos), QPointF(widget.mapToGlobal(pos)), QPoint(), QPoint(0, delta),
                         Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
     QApplication.sendEvent(widget, event)
+    QTest.qWait(210)  # Outer pages now ease the remaining wheel distance.
     return event.isAccepted()
 
 
@@ -162,6 +163,7 @@ def check_all_page_text_fields(app):
         window.show()
         window.profiles_editor.add_button.click()
         window.profiles_editor.login.setText("viewer")
+        window.local_context_page.add_card()
         window.prompt_builder.show_preset()
         page = window.testing_page
         page.question.setPlainText("Вопрос для проверки прокрутки")
@@ -177,9 +179,20 @@ def check_all_page_text_fields(app):
                 window.safety_page.link_mode.setCurrentIndex(1)
             app.processEvents()
             for editor in window.pages.widget(index).findChildren(QPlainTextEdit):
+                if editor.isHidden() and editor is window.dashboard.feed:
+                    continue  # Compatibility data adapter; live conversations use native rows.
                 if index == gui.PAGE_TESTING:
                     window.testing_page.mode.setCurrentIndex(1 if window.testing_page.diagnostic.isAncestorOf(editor) else 0)
                     app.processEvents()
+                if index == gui.PAGE_BEHAVIOR:
+                    window.behavior_mode.setCurrentIndex(1 if window.prompt_builder.isAncestorOf(editor) else 0)
+                    app.processEvents()
+                for disclosure in window.pages.widget(index).findChildren(Disclosure):
+                    if disclosure.content is editor or disclosure.content.isAncestorOf(editor):
+                        disclosure.button.setChecked(True)
+                app.processEvents()
+                if not editor.isVisible():
+                    continue
                 assert isinstance(editor, ScrollPlainTextEdit), "A page uses an inconsistent text control"
                 outer = editor.parentWidget()
                 while outer is not None and not isinstance(outer, QScrollArea):
@@ -193,7 +206,8 @@ def check_all_page_text_fields(app):
                 editor.setFixedHeight(130)
                 editor.setPlainText("Short text")
                 editor.setFocus()
-                wait_for(lambda: outer.verticalScrollBar().maximum() > 100)
+                wait_for(lambda: outer.verticalScrollBar().maximum() > 100,
+                         f"No page overflow for {index}: {editor.accessibleName()}")
                 assert editor.verticalScrollBar().maximum() == 0
                 outer.verticalScrollBar().setValue(30)
                 wheel(editor.viewport(), -120)

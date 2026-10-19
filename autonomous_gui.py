@@ -2,8 +2,7 @@
 
 from dataclasses import asdict
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QPainter, QPen, QPalette
-from PySide6.QtWidgets import QAbstractSpinBox, QGridLayout, QHBoxLayout, QPushButton, QSpinBox, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractSpinBox, QGridLayout, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from autonomous import AutoSettings, MINIMUM_VALUES, load_settings, save_settings, validate_settings
 from participation import PARTICIPATION
@@ -30,23 +29,8 @@ PARAMETERS = (
 
 from ui_widgets import StudioButton as QPushButton
 
-class NumberInput(QSpinBox):
-    """Keep step controls legible under the dark stylesheet on Windows."""
-
-    def wheelEvent(self, event):
-        event.ignore()
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        option = QStyleOptionSpinBox()
-        self.initStyleOption(option)
-        painter = QPainter(self)
-        painter.setPen(QPen(self.palette().color(QPalette.Text), 1.5))
-        for control in (QStyle.SC_SpinBoxUp, QStyle.SC_SpinBoxDown):
-            center = self.style().subControlRect(QStyle.CC_SpinBox, option, control, self).center()
-            painter.drawLine(center.x() - 4, center.y(), center.x() + 4, center.y())
-            if control == QStyle.SC_SpinBoxUp:
-                painter.drawLine(center.x(), center.y() - 4, center.x(), center.y() + 4)
+from studio_controls import NumberInput
+from ui_widgets import ResponsiveColumns
 
 
 class AutonomousPage(QWidget):
@@ -176,8 +160,20 @@ class AutonomousPage(QWidget):
         self.log.setPlaceholderText("После запуска бота здесь появятся решения: промолчать, ответить, отреагировать, пошутить или задать вопрос.")
         self.log.setAccessibleName("Журнал самостоятельных реплик")
         journal_layout.addWidget(self.log)
-        layout.insertWidget(1, journal)
-        layout.addWidget(Disclosure("Инструкции самостоятельного участия", instructions))
+        layout.removeWidget(main)
+        layout.removeWidget(options)
+        left, right = QWidget(), QWidget()
+        left_box, right_box = QVBoxLayout(left), QVBoxLayout(right)
+        for box in (left_box, right_box):
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(20)
+        left_box.addWidget(main)
+        left_box.addWidget(options)
+        left_box.addStretch()
+        right_box.addWidget(journal)
+        right_box.addWidget(Disclosure("Инструкции самостоятельного участия", instructions))
+        right_box.addStretch()
+        layout.addWidget(ResponsiveColumns(left, right, threshold=850))
         outer.addWidget(scroll_page(content))
         self.enabled.toggled.connect(self._live_change)
         self.mode.currentIndexChanged.connect(self._live_change)

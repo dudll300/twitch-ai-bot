@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget,
                               QSplitter, QStackedWidget, QSizePolicy, QStyleOptionButton,
                               QStylePainter, QStyledItemDelegate)
+from studio_controls import StudioScrollBar, OrbitScrollArea, colors, mix, animate
 
 
 class StudioButton(QPushButton):
@@ -23,13 +24,33 @@ class StudioButton(QPushButton):
         self._hover_animation.setDuration(180)
         self._hover_animation.setEasingCurve(QEasingCurve.OutCubic)
         self._hover_animation.valueChanged.connect(self._advance_hover)
+        self._selected = float(self.isChecked())
+        self._selection_animation = QVariantAnimation(self)
+        self._selection_animation.setDuration(260)
+        self._selection_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._selection_animation.valueChanged.connect(self._advance_selection)
+        self.toggled.connect(lambda checked: animate(self._selection_animation, self._selected, float(checked)))
+        self._keyboard_focus = False
         policy = self.sizePolicy()
+        policy.setHorizontalPolicy(QSizePolicy.Preferred)
         policy.setHeightForWidth(True)
         self.setSizePolicy(policy)
 
     def _advance_hover(self, value):
         self._hover = float(value)
         self.update()
+
+    def _advance_selection(self, value):
+        self._selected = float(value)
+        self.update()
+
+    def focusInEvent(self, event):
+        self._keyboard_focus = event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason)
+        super().focusInEvent(event)
+
+    def mousePressEvent(self, event):
+        self._keyboard_focus = False
+        super().mousePressEvent(event)
 
     def _animate_hover(self, target):
         self._hover_animation.stop()
@@ -69,7 +90,8 @@ class StudioButton(QPushButton):
 
     def minimumSizeHint(self):
         hint = super().minimumSizeHint()
-        return QSize(min(hint.width(), 112) if self.text() else hint.width(), max(42, hint.height()))
+        limit = 62 if self.property("variant") == "chip" else 112
+        return QSize(min(hint.width(), limit) if self.text() else hint.width(), max(42, hint.height()))
 
     def sizeHint(self):
         hint = super().sizeHint()
@@ -89,16 +111,39 @@ class StudioButton(QPushButton):
         icon = QIcon(self.icon())
         option.text = ""
         option.icon = QIcon()
-        painter = QStylePainter(self)
+        painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.drawControl(QStyle.CE_PushButton, option)
-        if self._hover and self.isEnabled() and self.property("variant") not in ("nav", "quiet"):
-            color = QColor(self.palette().color(QPalette.Link))
-            color.setAlpha(round(18 * self._hover))
-            painter.setBrush(color)
-            painter.setPen(Qt.NoPen)
-            rect = QRectF(self.rect()).adjusted(2, 2, -2, -2)
-            painter.drawRoundedRect(rect, min(22, rect.height() / 2), min(22, rect.height() / 2))
+        c, variant, hover = colors(), self.property("variant"), self._hover if self.isEnabled() else 0.
+        primary = self.objectName() == "primary" or variant == "primary"
+        foreground = QColor(c["text"])
+        border = QColor(c["border"])
+        fill = mix(c["input"], c["raised"], hover)
+        radius = 22
+        if primary:
+            fill = mix(c["primary"], c["primaryHover"], hover)
+            foreground, border = QColor(c["primaryText"]), QColor(c["primary"])
+        elif variant == "danger":
+            fill, foreground = QColor(c["errorbg"]), QColor(c["error"])
+        elif variant in ("nav", "quiet", "chip"):
+            fill = QColor(c["selected"])
+            fill.setAlphaF(min(1., self._selected * .92 + hover * .22))
+            foreground = mix(c["muted"], c["accent"], max(self._selected, hover))
+            if variant != "chip":
+                border = QColor(Qt.transparent)
+            radius = 16 if variant == "nav" else 20
+        if self.isDown():
+            fill = mix(fill, c["selected"], .2)
+        if not self.isEnabled():
+            foreground = QColor(c["muted"])
+            fill = QColor(c["surface"])
+        rect = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
+        painter.setBrush(fill)
+        painter.setPen(QPen(border, 1))
+        painter.drawRoundedRect(rect, radius, radius)
+        if self.hasFocus() and self._keyboard_focus:
+            painter.setBrush(Qt.NoBrush)
+            painter.setPen(QPen(QColor(c["accent"]), 1.4))
+            painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), radius - 2, radius - 2)
         icon_width = self.iconSize().width() if not icon.isNull() else 0
         gap = 9 if icon_width and self.text() else 0
         available = max(8, self.width() - 34 - icon_width - gap)
@@ -110,8 +155,6 @@ class StudioButton(QPushButton):
             icon.paint(painter, round(left), (self.height() - self.iconSize().height()) // 2,
                        icon_width, self.iconSize().height(), Qt.AlignCenter,
                        QIcon.Normal if self.isEnabled() else QIcon.Disabled)
-        foreground = self.palette().color(QPalette.Active if self.isEnabled() else QPalette.Disabled, QPalette.ButtonText)
-        # QSS resolves the button's semantic foreground into its palette.
         painter.setPen(foreground)
         layout.draw(painter, QPointF(left + icon_width + gap, max(2, (self.height() - text_height) / 2)))
 
@@ -173,7 +216,7 @@ class StudioLinkLabel(QLabel):
             self._render_link()
 
 
-class ContainedScrollBar(QScrollBar):
+class ContainedScrollBar(StudioScrollBar):
     def wheelEvent(self, event):
         super().wheelEvent(event)
         event.accept()
@@ -185,6 +228,7 @@ class ContainedWheel:
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.setVerticalScrollBar(ContainedScrollBar(Qt.Vertical, self))
+        self.setHorizontalScrollBar(ContainedScrollBar(Qt.Horizontal, self))
         self.setHorizontalScrollBar(ContainedScrollBar(Qt.Horizontal, self))
 
     def wheelEvent(self, event):
@@ -200,7 +244,7 @@ class ScrollListWidget(ContainedWheel, QListWidget):
     pass
 
 
-class TextScrollBar(QScrollBar):
+class TextScrollBar(StudioScrollBar):
     """Use the same boundary handoff for a text editor's scrollbar and viewport."""
 
     def __init__(self, orientation, editor):
@@ -315,6 +359,63 @@ class NoWheelComboBox(QComboBox):
         painter.setPen(QPen(self.palette().color(QPalette.Text), 1.5))
         painter.drawLine(center.x() - 4, center.y() - 2, center.x(), center.y() + 2)
         painter.drawLine(center.x(), center.y() + 2, center.x() + 4, center.y() - 2)
+
+
+class ReadingText(ScrollPlainTextEdit):
+    """Selectable prose, without an input border or a large empty editor box."""
+    def __init__(self, name, *, emphasis=False, maximum=380):
+        super().__init__()
+        self.setReadOnly(True)
+        self.setProperty("presentation", "reading")
+        self.setProperty("emphasis", emphasis)
+        self.setAccessibleName(name)
+        self._maximum_reading_height = maximum
+        self.setMinimumHeight(44)
+        self.textChanged.connect(self._fit_prose)
+
+    def _fit_prose(self):
+        width = max(100, self.viewport().width() - 6)
+        rect = self.fontMetrics().boundingRect(0, 0, width, 100000, Qt.TextWordWrap, self.toPlainText() or " ")
+        self.setFixedHeight(max(44, min(self._maximum_reading_height, rect.height() + 12)))
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._fit_prose()
+
+
+def panel_badge(layout, badge):
+    heading = layout.outer.itemAt(0).widget().layout()
+    heading.removeWidget(layout.title_label)
+    row = QHBoxLayout()
+    row.addWidget(layout.title_label, 1)
+    row.addWidget(badge, 0, Qt.AlignVCenter)
+    heading.insertLayout(0, row)
+
+
+class SegmentedControl(QWidget):
+    """Show a small existing mode combo as explicit, animated tab buttons."""
+    def __init__(self, combo):
+        super().__init__()
+        self.combo, self.buttons = combo, []
+        combo.setParent(self)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        for index in range(combo.count()):
+            button = StudioButton(combo.itemText(index))
+            button.setProperty("variant", "chip")
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked=False, value=index: combo.setCurrentIndex(value))
+            row.addWidget(button)
+            self.buttons.append(button)
+        row.addStretch()
+        combo.hide()
+        combo.currentIndexChanged.connect(self._sync)
+        self._sync()
+
+    def _sync(self, *_):
+        for index, button in enumerate(self.buttons):
+            button.setChecked(index == self.combo.currentIndex())
 
 
 def menu_icon():
@@ -461,8 +562,8 @@ class ToggleSwitch(QCheckBox):
         super().__init__(text)
         self._position = 0.0
         self._animation = QVariantAnimation(self)
-        self._animation.setDuration(150)
-        self._animation.setEasingCurve(QEasingCurve.InOutCubic)
+        self._animation.setDuration(240)
+        self._animation.setEasingCurve(QEasingCurve.OutCubic)
         self._animation.valueChanged.connect(self._advance)
         self.toggled.connect(self._animate)
 
@@ -481,7 +582,7 @@ class ToggleSwitch(QCheckBox):
 
 
     def sizeHint(self):
-        return QSize(46 + self.fontMetrics().horizontalAdvance(self.text()), 30)
+        return QSize(58 + self.fontMetrics().horizontalAdvance(self.text()), 36)
 
     def hitButton(self, point):
         return self.rect().contains(point)
@@ -490,18 +591,20 @@ class ToggleSwitch(QCheckBox):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setOpacity(1 if self.isEnabled() else 0.45)
-        y = (self.height() - 20) // 2
+        y = (self.height() - 24) // 2
+        c = colors()
+        painter.setPen(QPen(mix(c["border"], c["primary"], self._position), 1))
+        painter.setBrush(mix(c["raised"], c["primary"], self._position))
+        painter.drawRoundedRect(QRectF(1, y, 42, 24), 12, 12)
         painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor("#168BFF" if self.isChecked() else "#353B48"))
-        painter.drawRoundedRect(0, y, 34, 20, 10, 10)
-        painter.setBrush(QColor("#FFFFFF" if self.isChecked() else "#A9B1C1"))
-        painter.drawEllipse(round(3 + 13 * self._position), y + 3, 14, 14)
+        painter.setBrush(mix(c["muted"], c["primaryText"], self._position))
+        painter.drawEllipse(QRectF(5 + 17 * self._position, y + 4, 16, 16))
         painter.setPen(self.palette().color(QPalette.WindowText))
-        painter.drawText(self.rect().adjusted(44, 0, 0, 0), Qt.AlignVCenter, self.text())
+        painter.drawText(self.rect().adjusted(55, 0, 0, 0), Qt.AlignVCenter, self.text())
         if self.hasFocus():
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(self.palette().color(QPalette.Link), 1, Qt.DotLine))
-            painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 6, 6)
+            painter.setPen(QPen(self.palette().color(QPalette.Link), 1))
+            painter.drawRoundedRect(QRectF(0, y - 2, 46, 28), 14, 14)
 
 
 def label(text: str, role: str = "body", wrap: bool = False) -> QLabel:
@@ -512,16 +615,33 @@ def label(text: str, role: str = "body", wrap: bool = False) -> QLabel:
     return widget
 
 
+class PanelLayout(QVBoxLayout):
+    """Keep the existing editor API while giving every card a real header."""
+    def __init__(self, frame, title, description):
+        self.outer = QVBoxLayout(frame)
+        self.outer.setContentsMargins(0, 0, 0, 0)
+        self.outer.setSpacing(0)
+        heading = QFrame()
+        heading.setObjectName("panelHeading")
+        row = QVBoxLayout(heading)
+        row.setContentsMargins(22, 18, 22, 18)
+        row.setSpacing(6)
+        self.title_label = label(title, "section")
+        row.addWidget(self.title_label)
+        if description:
+            row.addWidget(label(description, "muted", True))
+        heading.setVisible(bool(title or description))
+        self.outer.addWidget(heading)
+        self.body = QWidget()
+        super().__init__(self.body)
+        self.outer.addWidget(self.body, 1)
+
 def card(title: str = "", description: str = "") -> tuple[QFrame, QVBoxLayout]:
     frame = QFrame()
     frame.setObjectName("card")
-    layout = QVBoxLayout(frame)
+    layout = PanelLayout(frame, title, description)
     layout.setContentsMargins(22, 22, 22, 22)
     layout.setSpacing(14)
-    if title:
-        layout.addWidget(label(title, "section"))
-    if description:
-        layout.addWidget(label(description, "muted", True))
     return frame, layout
 
 
@@ -645,6 +765,7 @@ class MasterDetail(QWidget):
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
         self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setHandleWidth(20)
         self.splitter.setChildrenCollapsible(False)
         self.stack = QStackedWidget()
         self.detail = QWidget()
@@ -711,7 +832,7 @@ class MasterDetail(QWidget):
 
 
 def scroll_page(content: QWidget) -> QScrollArea:
-    scroll = QScrollArea()
+    scroll = OrbitScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     scroll.setFrameShape(QFrame.NoFrame)

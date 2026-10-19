@@ -40,6 +40,8 @@ STAGES.update(selector_request='Запрос селектора', selector_respo
 
 
 from ui_widgets import StudioButton as QPushButton
+from studio_controls import NumberInput as QSpinBox, StudioTabs as QTabWidget
+from ui_widgets import ResponsiveColumns
 
 class SafetyPage(QWidget):
     changed = Signal()
@@ -71,8 +73,7 @@ class SafetyPage(QWidget):
         layout.addWidget(status)
         protection, box = card('Действующие защиты')
         for title, description in PROTECTIONS:
-            box.addWidget(plain(title, 'body'))
-            box.addWidget(plain(description))
+            box.addWidget(Disclosure(title, plain(description)))
         box.addWidget(plain('Мат и дружеские игровые подколы сами по себе разрешены. Характер общения настраивается в «Поведении». Распознавание ограничено известными шаблонами и оценкой модели; все обходы распознать невозможно.'))
 
         settings, box = card('Ссылки и AI-оценка')
@@ -84,8 +85,10 @@ class SafetyPage(QWidget):
         self.domains.setAccessibleName('Разрешённые домены, один на строку')
         self.domains.setMinimumHeight(90)
         self.domains.setMaximumHeight(160)
-        box.addWidget(field('Разрешённые домены — один на строку', self.domains))
-        box.addWidget(plain('Без https://, пути и параметров. Только точное совпадение: www.twitch.tv нужно добавить отдельно от twitch.tv. Unicode сопоставляется через IDNA. Список не отменяет остальные защиты. Неподдерживаемые схемы запрещены.'))
+        self.domains_field = field('Разрешённые домены — один на строку', self.domains)
+        box.addWidget(self.domains_field)
+        self.domains_help = plain('Без https://, пути и параметров. Только точное совпадение: www.twitch.tv нужно добавить отдельно от twitch.tv. Unicode сопоставляется через IDNA. Список не отменяет остальные защиты. Неподдерживаемые схемы запрещены.')
+        box.addWidget(self.domains_help)
         self.model_mode = NoWheelComboBox()
         self.model_mode.addItem('Использовать модель ответа', 'same_as_answer')
         self.model_mode.addItem('Выбрать отдельную модель', 'separate')
@@ -134,7 +137,16 @@ class SafetyPage(QWidget):
         rules_layout.addWidget(Disclosure("Подробности защит", protection))
         tabs.addTab(rules, "Правила")
         tabs.addTab(test, "Проверка текста")
-        layout.addWidget(tabs)
+        layout.removeWidget(status)
+        layout.removeWidget(recent)
+        side = QWidget()
+        side_layout = QVBoxLayout(side)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(20)
+        side_layout.addWidget(status)
+        side_layout.addWidget(recent)
+        side_layout.addStretch()
+        layout.addWidget(ResponsiveColumns(tabs, side, threshold=850, ratios=(3, 2)))
         outer.addWidget(scroll_page(body))
         self._fill(self.applied.settings)
         for signal in (self.link_mode.currentIndexChanged, self.domains.textChanged, self.model_mode.currentIndexChanged,
@@ -180,6 +192,9 @@ class SafetyPage(QWidget):
     def _changed(self, *_):
         self.model_catalog.set_editable(self.model_mode.currentData() == 'separate')
         self.domains.setEnabled(self.link_mode.currentData() == 'allow_domains')
+        self.domains_field.setVisible(self.link_mode.currentData() == 'allow_domains')
+        self.domains_help.setVisible(self.link_mode.currentData() == 'allow_domains')
+        self.model_catalog.setVisible(self.model_mode.currentData() == 'separate')
         model = self.applied.settings.review_model if self.applied.settings.review_model_mode == 'separate' else 'фактическая модель каждого ответа (основная: ' + self.get_answer_model() + ')'
         self.state.setText('Локальные проверки: действуют\nНаграды: без AI-оценки\nAI-оценка самостоятельных реплик и тестирования: ' + model)
         self.settings_state.setText(self.applied.error or ('Есть несохранённые изменения — диагностика использует применённые настройки' if self.dirty else 'Настройки применены'))
