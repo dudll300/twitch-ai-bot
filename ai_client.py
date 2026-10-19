@@ -2,6 +2,8 @@
 
 import http.client
 from dataclasses import dataclass, field
+from runtime_events import emit_ui
+
 import json
 import math
 import re
@@ -344,10 +346,16 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
     )
     # All local checks and serialization finish before the durable quota gate.
     # A reservation immediately precedes urlopen, including failed connections.
+    emit_ui("ai", state="pending", model=model)
     if before_request is not None:
-        remaining = before_request()
+        try:
+            remaining = before_request()
+        except Exception:
+            emit_ui("ai", state="cancelled", model=model)
+            raise
         if type(remaining) not in (int, float) or not math.isfinite(remaining) or remaining <= 0:
             from participation import RequestCancelled
+            emit_ui("ai", state="cancelled", model=model)
             raise RequestCancelled(code="ttl_expired")
         timeout_seconds = min(timeout_seconds, remaining)
     if trace is not None and request_stage in trace.attempts:
@@ -358,6 +366,7 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
                 trace.stage = request_stage + "_response"
             data = json.load(response)
     except urllib.error.HTTPError as exc:
+        emit_ui("ai", state="error", model=model)
         message = f"AI API вернул HTTP {exc.code}{http_error_detail(exc, cfg['AI_API_KEY'])}"
         if exc.code in (400, 408, 429, 500, 502, 503, 504):
             if exc.code in (408, 504):
@@ -365,22 +374,28 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
             raise TemporaryAIError(message) from None
         raise RuntimeError(message) from None
     except TimeoutError:
+        emit_ui("ai", state="error", model=model)
         raise TimeoutAIError(f"Превышено время ожидания AI API ({timeout_seconds:g} с).") from None
     except urllib.error.URLError as exc:
+        emit_ui("ai", state="error", model=model)
         if isinstance(exc.reason, TimeoutError):
             raise TimeoutAIError(f"Превышено время ожидания AI API ({timeout_seconds:g} с).") from None
         raise TemporaryAIError(f"AI API недоступен: {type(exc).__name__}") from None
     except (OSError, http.client.HTTPException) as exc:
+        emit_ui("ai", state="error", model=model)
         # Never include the exception body: it may contain response bytes or a key.
         raise TemporaryAIError(f"Соединение с AI API прервано: {type(exc).__name__}") from None
     except ValueError:
+        emit_ui("ai", state="error", model=model)
         raise TemporaryAIError("AI API вернул некорректный JSON") from None
     try:
         choice = data["choices"][0]
         answer = choice["message"]["content"]
     except (KeyError, IndexError, TypeError):
+        emit_ui("ai", state="error", model=model)
         raise TemporaryAIError("AI API вернул некорректный ответ") from None
     if not isinstance(answer, str) or not answer.strip():
+        emit_ui("ai", state="error", model=model)
         raise TemporaryAIError("AI API вернул пустой ответ")
     if trace is not None:
         trace.stage = request_stage + "_response"
@@ -388,13 +403,17 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         check_output(response_content(answer) if response_content is not None else answer)
     except (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError) as exc:
         exc.stage = request_stage + "_response"
+        emit_ui("ai", state="error", model=model)
         raise
     if redact_secret(answer, cfg["AI_API_KEY"]) != answer:
+        emit_ui("ai", state="error", model=model)
         exc = PrivacyViolation()
         exc.stage = request_stage + "_response"
         raise exc
     if reject_truncated and choice.get("finish_reason") == "length":
+        emit_ui("ai", state="error", model=model)
         raise TruncatedAIError("AI API обрезал результат. Повторите генерацию с более короткими пожеланиями.")
+    emit_ui("ai", state="success", model=model)
     return answer
 
 

@@ -123,7 +123,9 @@ def main():
         select(page, preview)
         page.context_button.click()
         QTest.qWait(80)
-        assert page.timeline.geometry().top() > page.answer.geometry().bottom(), "Details overlap"
+        page.timeline.parentWidget().button.setChecked(True)
+        app.processEvents()
+        assert page.timeline.mapTo(page.answer.parentWidget(), page.timeline.rect().topLeft()).y() > page.answer.geometry().bottom(), "Details overlap"
         assert page.timeline.geometry().bottom() < page.timeline.parentWidget().height(), "Details clipped"
         if "--screenshot" in sys.argv:
             destination = Path(__file__).resolve().parents[1] / "build" / "history-preview.png"

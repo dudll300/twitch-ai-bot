@@ -4,7 +4,7 @@ from queue import Empty, Queue
 from threading import Event, Thread
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QComboBox, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QComboBox, QPushButton, QVBoxLayout, QWidget, QCompleter, QHBoxLayout
 
 from configuration import AI_FALLBACK_MODELS
 from ai_client import redact_secret
@@ -22,7 +22,7 @@ def catalog_worker(auth, output, cancel):
 
 
 class ModelCatalogControl(QWidget):
-    def __init__(self, selected, get_credentials):
+    def __init__(self, selected, get_credentials, *, role="Модель ответов"):
         super().__init__()
         self.get_credentials = get_credentials
         self._events, self._cancel = Queue(), Event()
@@ -33,15 +33,25 @@ class ModelCatalogControl(QWidget):
         self.combo = NoWheelComboBox()
         self.combo.setEditable(True)
         self.combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
-        self.combo.setAccessibleName("Основная модель")
+        self.combo.setAccessibleName(role)
+        self.combo.completer().setFilterMode(Qt.MatchContains)
+        self.combo.completer().setCaseSensitivity(Qt.CaseInsensitive)
+        self.combo.completer().setCompletionMode(QCompleter.PopupCompletion)
         self.combo.addItems(AI_FALLBACK_MODELS)
         self.combo.setCurrentText(selected)
         self.combo.setToolTip("Раскройте список стрелкой справа или введите точный ID модели")
         layout.addWidget(self.combo)
         self.refresh_button = QPushButton("Загрузить модели провайдера")
         self.refresh_button.clicked.connect(self.refresh)
-        layout.addWidget(self.refresh_button, 0, Qt.AlignLeft)
-        self.status = label("Полный каталог загружается только по кнопке, для вашего API-ключа.", "muted", True)
+        self.cancel_button = QPushButton("Отменить")
+        self.cancel_button.clicked.connect(self.cancel)
+        self.cancel_button.hide()
+        actions = QHBoxLayout()
+        actions.addWidget(self.refresh_button)
+        actions.addWidget(self.cancel_button)
+        actions.addStretch()
+        layout.addLayout(actions)
+        self.status = label("Доступность не проверена. Каталог загружается по кнопке.", "muted", True)
         layout.addWidget(self.status)
         self._timer = QTimer(self)
         self._timer.setInterval(60)
@@ -51,6 +61,15 @@ class ModelCatalogControl(QWidget):
     def _button_state(self):
         self.refresh_button.setEnabled(self._editable and not self._busy and not self._closed)
         self.refresh_button.setText("Загрузка…" if self._busy else "Загрузить модели провайдера")
+        self.cancel_button.setVisible(self._busy)
+
+    def cancel(self):
+        self._cancel.set()
+        self._cancel = Event()
+        self._events = Queue()
+        self._busy = False
+        self._button_state()
+        self.status.setText("Загрузка отменена. Выбранный ID модели сохранён в поле.")
 
     def set_editable(self, editable):
         self._editable = editable

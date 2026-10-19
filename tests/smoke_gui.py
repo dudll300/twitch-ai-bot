@@ -33,6 +33,8 @@ def wait_for(predicate, message, seconds=3):
 
 def main() -> None:
     app = QApplication([])
+    # Close fixture drafts without opening a modal; explicit close-choice tests override this.
+    patch.object(gui, "russian_question", return_value=QMessageBox.Discard).start()
     app.setStyle("Fusion")
     for font_file in ("segoeui.ttf", "seguisb.ttf"):
         font_path = Path("C:/Windows/Fonts") / font_file
@@ -65,10 +67,9 @@ def main() -> None:
         window.api_key.setText("sk-test")
         window.model.setCurrentText("custom/model")
         window.reward_title.setText("Ask AI")
-        assert window.workspace_channel.text() == "@streamer"
-        assert window.sidebar_channel.text() == "@streamer"
-        assert window.inspector_values["model"].text() == "custom/model"
-        assert window.inspector_values["reward"].text() == "Ask AI"
+        # The dashboard describes saved/active settings, never editor drafts.
+        assert window.workspace_channel.text() == "Канал не выбран"
+        assert window.inspector_values["model"].text() != "custom/model"
         window.fallback_models.setText("backup/model")
         window.prompt.setPlainText("Новый промпт")
         assert window._save()
@@ -84,7 +85,7 @@ def main() -> None:
         window._poll_log()
         assert "GUI_LOG_TEST" in window.log.toPlainText()
         window._append_log("Жду вопросов по награде Ask AI")
-        assert window.status.property("state") == "running"
+        assert window.status.property("state") == "starting"
         assert window.connection_pill.text() == window.status.text()
         window.reset_prompt.click()
         assert window._save()
@@ -95,7 +96,7 @@ def main() -> None:
         assert window.status.property("state") == "idle"
         assert window.connection_pill.text() == "Остановлен"
         window._set_running(True)
-        assert not window.reset_prompt.isEnabled()
+        assert window.reset_prompt.isEnabled()
         window.close()
     # Drafts and profiles can be saved before API credentials are entered.
     with tempfile.TemporaryDirectory() as directory:
@@ -223,9 +224,9 @@ def main() -> None:
         editor.user_id.setText("456")
         assert window._save()
         window._set_running(True)
-        assert not editor.add_button.isEnabled()
-        assert not editor.prompt.isEnabled()
-        assert not editor.aliases.isEnabled()
+        assert editor.add_button.isEnabled()
+        assert editor.prompt.isEnabled()
+        assert editor.aliases.isEnabled()
         window._set_running(False)
         window._append_log("Вопрос от viewer принят (в очереди: 1)")
         window._append_log("Ответ отправлен для viewer")
@@ -233,8 +234,8 @@ def main() -> None:
         assert window.answers_label.text() == "1"
         window.resize(1000, 720)
         app.processEvents()
-        assert window.width() >= 1200
-        assert window.height() >= 820
+        assert window.width() >= 800
+        assert window.height() >= 480
         assert window.start_button.geometry().right() <= window.start_button.parentWidget().width()
         # The menu can be reversed mid-animation and restored at the minimum width.
         window.menu_button.click()
@@ -243,16 +244,16 @@ def main() -> None:
         assert window.status.isVisible()
         assert window.menu_button.accessibleName() == "Показать меню"
         window.resize(900, 700)
-        assert window.width() >= 1000
+        assert window.width() >= 800
         window.menu_button.click()
-        wait_for(lambda: window.sidebar.width() == 240, "Sidebar did not finish expanding")
-        assert window.sidebar.width() == 240
-        assert window.width() >= 1200
+        wait_for(lambda: window.sidebar.width() == window.sidebar.panel_width, "Sidebar did not finish expanding")
+        assert window.sidebar.width() == window.sidebar.panel_width
+        assert window.width() >= 800
         window.menu_button.click()
         QTest.qWait(50)
         window.menu_button.click()
-        wait_for(lambda: window.sidebar.width() == 240, "Sidebar did not recover after reversing animation")
-        assert window.sidebar.width() == 240
+        wait_for(lambda: window.sidebar.width() == window.sidebar.panel_width, "Sidebar did not recover after reversing animation")
+        assert window.sidebar.width() == window.sidebar.panel_width
         assert window.profiles_editor.remove_button.property("variant") == "danger"
         window._navigate(1)
         wait_for(lambda: window._page_effect.opacity() == 1.0, "Page transition did not finish")

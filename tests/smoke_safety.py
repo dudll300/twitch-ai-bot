@@ -46,7 +46,7 @@ def main():
         window.show()
         page = window.safety_page
         window._navigate(gui.PAGE_SAFETY)
-        assert window.pages.currentWidget() is page
+        assert window.pages.currentWidget().isAncestorOf(page)
         assert window.nav_buttons[gui.PAGE_SAFETY].text() == 'Безопасность'
         assert 'ещё не выполнялась' in page.last_review.text()
         assert 'Локальные проверки: действуют' in page.state.text()
@@ -166,7 +166,8 @@ def main():
         for instance in (window, damaged):
             instance._dirty = False
             instance.safety_page._fill(instance.safety_page.applied.settings)
-            instance.close()
+            with patch.object(gui, 'russian_question', return_value=gui.QMessageBox.Discard):
+                instance.close()
         print('Security GUI: drafts, live apply, errors, exact diagnosis, cancellation and navigation passed.')
 
 

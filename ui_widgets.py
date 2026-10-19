@@ -1,11 +1,14 @@
 """Small layout primitives shared by the desktop pages."""
 
-from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+import re
+
+from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve, QTimer
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPalette, QTransform
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
-                              QFrame, QHBoxLayout, QLabel, QListView, QListWidget,
-                              QMessageBox, QPlainTextEdit, QScrollArea, QScrollBar,
-                              QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget)
+                              QFrame, QGridLayout, QHBoxLayout, QLabel, QListView, QListWidget,
+                              QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QScrollBar,
+                              QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget,
+                              QSplitter, QStackedWidget)
 
 
 class ContainedScrollBar(QScrollBar):
@@ -91,6 +94,8 @@ class NoWheelComboBox(QComboBox):
         super().__init__(parent)
         self.setView(ScrollListView(self))
         self.setMaxVisibleItems(15)
+        self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.setMinimumContentsLength(8)
 
     def wheelEvent(self, event):
         event.ignore()
@@ -102,7 +107,7 @@ class NoWheelComboBox(QComboBox):
         center = self.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxArrow, self).center()
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(QPen(QColor("#d5d8de" if self.isEnabled() else "#737781"), 1.5))
+        painter.setPen(QPen(self.palette().color(QPalette.Text), 1.5))
         painter.drawLine(center.x() - 4, center.y() - 2, center.x(), center.y() + 2)
         painter.drawLine(center.x(), center.y() + 2, center.x() + 4, center.y() - 2)
 
@@ -113,7 +118,7 @@ def menu_icon():
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
     painter.setRenderHint(QPainter.Antialiasing)
-    pen = QPen(QColor("#d5d8df"), 2)
+    pen = QPen(QApplication.palette().color(QPalette.WindowText), 2)
     pen.setCapStyle(Qt.RoundCap)
     painter.setPen(pen)
     for y in (6, 12, 18):
@@ -262,6 +267,9 @@ class ToggleSwitch(QCheckBox):
 
     def _animate(self, checked):
         self._animation.stop()
+        if QApplication.instance().property("animations") is False:
+            self._advance(1.0 if checked else 0.0)
+            return
         self._animation.setStartValue(self._position)
         self._animation.setEndValue(1.0 if checked else 0.0)
         self._animation.start()
@@ -283,11 +291,11 @@ class ToggleSwitch(QCheckBox):
         painter.drawRoundedRect(0, y, 34, 20, 10, 10)
         painter.setBrush(QColor("#FFFFFF" if self.isChecked() else "#A9B1C1"))
         painter.drawEllipse(round(3 + 13 * self._position), y + 3, 14, 14)
-        painter.setPen(QColor("#F3F5FA"))
+        painter.setPen(self.palette().color(QPalette.WindowText))
         painter.drawText(self.rect().adjusted(44, 0, 0, 0), Qt.AlignVCenter, self.text())
         if self.hasFocus():
             painter.setBrush(Qt.NoBrush)
-            painter.setPen(QPen(QColor("#65B3FF"), 1, Qt.DotLine))
+            painter.setPen(QPen(self.palette().color(QPalette.Link), 1, Qt.DotLine))
             painter.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 6, 6)
 
 
@@ -324,7 +332,177 @@ def field(title: str, widget: QWidget, hint: str = "") -> QWidget:
     layout.addWidget(widget)
     if hint:
         layout.addWidget(label(hint, "muted", True))
+    match = re.search(r"до (\d+) символ", title)
+    if match and hasattr(widget, "toPlainText") and not title.startswith("Алиасы"):
+        counter = label("", "muted")
+        def update_count():
+            counter.setText(f"{len(widget.toPlainText())} / {match.group(1)} символов")
+        widget.textChanged.connect(update_count)
+        update_count()
+        layout.addWidget(counter)
+    error = label("", "error", True)
+    error.hide()
+    widget._field_error = error
+    layout.addWidget(error)
+    signal = getattr(widget, "textChanged", None) or getattr(widget, "currentTextChanged", None)
+    if signal is not None:
+        signal.connect(lambda *_: error.hide())
     return container
+
+
+def field_error(widget, message):
+    error = getattr(widget, "_field_error", None)
+    if error is not None:
+        error.setText(message)
+        error.setVisible(bool(message))
+    widget.setAccessibleDescription(message)
+    widget.setFocus()
+    ancestor = widget.parentWidget()
+    while ancestor is not None:
+        if isinstance(ancestor, QScrollArea):
+            QTimer.singleShot(0, lambda area=ancestor, target=widget: area.ensureWidgetVisible(target))
+        ancestor = ancestor.parentWidget()
+
+
+class Disclosure(QWidget):
+    """Keyboard-accessible secondary content; collapsed by default."""
+    def __init__(self, title, content, *, expanded=False):
+        super().__init__()
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+        self.button = QPushButton()
+        self.button.setProperty("variant", "quiet")
+        self.button.setCheckable(True)
+        self.button.setAccessibleName(title)
+        self.content = content
+        self.title = title
+        layout.addWidget(self.button)
+        layout.addWidget(content)
+        self.button.toggled.connect(self.set_expanded)
+        QApplication.instance().paletteChanged.connect(self._update_icon)
+        self.button.setChecked(expanded)
+        self.set_expanded(expanded)
+
+    def set_expanded(self, expanded):
+        self.content.setVisible(expanded)
+        self.button.setText(self.title)
+        self._update_icon()
+        self.button.setAccessibleDescription("Развёрнуто" if expanded else "Свёрнуто")
+
+    def _update_icon(self, *_):
+        from studio_icons import studio_icon
+        icon = studio_icon("arrow-right", QApplication.palette().color(QPalette.WindowText).name(), 16)
+        if self.button.isChecked():
+            icon = QIcon(icon.pixmap(16, 16).transformed(QTransform().rotate(90)))
+        self.button.setIcon(icon)
+
+
+class ResponsiveColumns(QWidget):
+    """Reflow the same widgets; retain their edits and focus across resize."""
+    def __init__(self, first, second, threshold=900, ratios=(1, 1)):
+        super().__init__()
+        self.first, self.second, self.threshold = first, second, threshold
+        self.ratios = ratios
+        self.grid = QGridLayout(self)
+        self.grid.setContentsMargins(0, 0, 0, 0)
+        self.grid.setSpacing(16)
+        self._wide = None
+        self.reflow(False)
+
+    def reflow(self, wide):
+        if wide == self._wide:
+            return
+        self._wide = wide
+        self.grid.removeWidget(self.first)
+        self.grid.removeWidget(self.second)
+        self.grid.addWidget(self.first, 0, 0)
+        self.grid.addWidget(self.second, 0 if wide else 1, 1 if wide else 0)
+        self.grid.setColumnStretch(0, self.ratios[0])
+        self.grid.setColumnStretch(1, self.ratios[1] if wide else 0)
+
+    def resizeEvent(self, event):
+        self.reflow(event.size().width() >= self.threshold)
+        super().resizeEvent(event)
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+
+class MasterDetail(QWidget):
+    """Resizable list/detail on desktop, explicit Back navigation on small windows."""
+    def __init__(self, first, second, threshold=760):
+        super().__init__()
+        self.first, self.second, self.threshold = first, second, threshold
+        first.setMinimumWidth(0)
+        first.setMaximumWidth(16777215)
+        second.setMinimumWidth(0)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(0, 0, 0, 0)
+        self.splitter = QSplitter(Qt.Horizontal)
+        self.splitter.setChildrenCollapsible(False)
+        self.stack = QStackedWidget()
+        self.detail = QWidget()
+        detail = QVBoxLayout(self.detail)
+        detail.setContentsMargins(0, 0, 0, 0)
+        self.back = QPushButton("← Назад к списку")
+        self.back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        detail.addWidget(self.back)
+        detail.addWidget(second, 1)
+        self._layout.addWidget(self.splitter, 1)
+        self._layout.addWidget(self.stack, 1)
+        self._small = None
+        self._wide_sizes = [280, 560]
+        self.reflow(False)
+
+    def reflow(self, small):
+        if small == self._small:
+            return
+        self._small = small
+        if small:
+            sizes = self.splitter.sizes()
+            if len(sizes) == 2 and all(sizes):
+                self._wide_sizes = sizes
+            self.first.setParent(None)
+            self.detail.setParent(None)
+            self.stack.addWidget(self.first)
+            self.stack.addWidget(self.detail)
+            self.stack.setCurrentIndex(0)
+        else:
+            self.stack.removeWidget(self.first)
+            self.stack.removeWidget(self.detail)
+            self.splitter.addWidget(self.first)
+            self.splitter.addWidget(self.detail)
+            self.splitter.setStretchFactor(0, 1)
+            self.splitter.setStretchFactor(1, 2)
+            self.splitter.setSizes(self._wide_sizes)
+            self.first.show()
+            self.detail.show()
+        self.back.setVisible(small)
+        self.stack.setVisible(small)
+        self.splitter.setVisible(not small)
+
+    def show_detail(self):
+        if self._small:
+            self.stack.setCurrentIndex(1)
+
+    def restore_sizes(self, sizes):
+        self._wide_sizes = sizes
+        if not self._small:
+            self.splitter.setSizes(sizes)
+
+    def saved_sizes(self):
+        return self._wide_sizes if self._small else self.splitter.sizes()
+
+    def resizeEvent(self, event):
+        self.reflow(event.size().width() < self.threshold)
+        super().resizeEvent(event)
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        return QSize(840, 460)
 
 
 def scroll_page(content: QWidget) -> QScrollArea:

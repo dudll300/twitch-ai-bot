@@ -236,9 +236,12 @@ class MessageHistory:
         except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
             raise HistoryReadError("Не удалось прочитать историю. Проверьте папку с данными; исходный файл сохранён.") from exc
 
-    def page(self, *, kind="", status="", search="", before=None, limit=50, cancel=None):
+    def page(self, *, kind="", status="", search="", before=None, limit=50, cancel=None, session=""):
         limit = max(1, min(int(limit), 100))
         clauses, args = [], []
+        if session:
+            clauses.append("session=?")
+            args.append(session)
         if kind:
             clauses.append("kind=?")
             args.append(kind)

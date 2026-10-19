@@ -4,6 +4,7 @@ No chat is persisted here. Loading a broken dictionary never replaces it, and
 publication counters are updated only after the caller confirms a successful send.
 """
 
+from runtime_events import emit_ui
 from dataclasses import asdict, dataclass
 import hashlib
 import json
@@ -405,6 +406,7 @@ class LocalContextManager:
                                    revision="unavailable")
             self._notify_error(result.error, result.revision)
             self._notify_error(self._usage_error, "usage", "usage")
+            emit_ui("settings", section="context", version=result.revision)
             return result
 
     def is_current(self, snapshot: LocalSnapshot) -> bool:

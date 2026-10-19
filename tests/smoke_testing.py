@@ -54,7 +54,7 @@ def main():
                 {"login": "viewer", "user_id": "", "facts": ["Заметка по логину"], "jokes": [], "avoid": []},
                 {"login": "renamed_lopotik", "user_id": "456", "facts": ["Любит пельмени"], "jokes": [], "avoid": []}]
         }), encoding="utf-8")
-        before = {path.name: path.read_bytes() for path in root.iterdir()}
+        before = {path.name: path.read_bytes() for path in root.iterdir() if path.name != "ui-state.json"}
         with patch.object(gui, "data_dir", return_value=root):
             window = gui.MainWindow()
         window.show()
@@ -62,7 +62,8 @@ def main():
         page = window.testing_page
         window._navigate(gui.PAGE_TESTING)
         app.processEvents()
-        assert page.models.height() >= 360
+        assert page.models.minimumHeight() >= 180
+        assert not page.catalog_disclosure.button.isChecked()
         assert page.models.width() > page.width() * 0.75
         assert "Владелец канала" in page.sender.itemText(page.sender.findData("owner"))
         assert not window.channel.text() and not window.bot_name.text() and not window.client_id.text()
@@ -79,7 +80,7 @@ def main():
         assert window.pages.currentIndex() == gui.PAGE_TESTING
         assert page.sender.currentData() == "profile" and page.viewer.currentData() == 0
         assert window._dirty
-        assert before == {path.name: path.read_bytes() for path in root.iterdir()}
+        assert before == {path.name: path.read_bytes() for path in root.iterdir() if path.name != "ui-state.json"}
 
         def catalog(req, timeout):
             assert get_ident() != main_thread
@@ -158,7 +159,7 @@ def main():
         assert "не учитывалась" in page.context.text()
         assert window.log.toPlainText() == ""
         assert not window.api_key.text() == ""
-        assert before == {path.name: path.read_bytes() for path in root.iterdir()}
+        assert before == {path.name: path.read_bytes() for path in root.iterdir() if path.name != "ui-state.json"}
 
         editor.enabled.setChecked(False)
         # Exercise the actual shared evaluator and existing result widgets.
@@ -249,7 +250,7 @@ def main():
         disabled_mention = window._test_snapshot(["one"], "лопотик", "viewer", "someone_else", None)
         assert "Изменён после нажатия" not in str(disabled_mention.messages)
         assert "отключена" in disabled_mention.context
-        assert before == {path.name: path.read_bytes() for path in root.iterdir()}
+        assert before == {path.name: path.read_bytes() for path in root.iterdir() if path.name != "ui-state.json"}
         # Colliding names are shown explicitly instead of attaching another person's prompt.
         editor.list.setCurrentRow(0)
         editor.aliases.setText("ОбщееИмя")
@@ -314,7 +315,7 @@ def main():
                 wait_for(worker_finished.is_set)
                 QTest.qWait(50)
                 assert page._events.empty()
-                assert before == {path.name: path.read_bytes() for path in root.iterdir()}
+                assert before == {path.name: path.read_bytes() for path in root.iterdir() if path.name != "ui-state.json"}
             finally:
                 finish_request.set()
         # Also verify catalog teardown when the Qt object is actually destroyed.

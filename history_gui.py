@@ -6,10 +6,10 @@ from threading import Event, Thread
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QListWidgetItem, QPushButton,
-                              QSplitter, QVBoxLayout, QWidget)
+                              QSplitter, QVBoxLayout, QWidget, QApplication)
 
 from message_history import MessageHistory
-from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, label, scroll_page
+from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, label, scroll_page, MasterDetail, Disclosure
 
 STATUS_NAMES = {
     "generating": "Запрос начат · результата нет", "generated": "Сгенерировано · отправка не подтверждена",
@@ -77,6 +77,9 @@ class HistoryPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(16)
         filters, filter_layout = card()
+        filters.setObjectName("headerActions")
+        filter_layout.setContentsMargins(0, 0, 0, 0)
+        filter_layout.setSpacing(8)
         controls = QHBoxLayout()
         self.kind = NoWheelComboBox()
         for title, value in (("Все записи", ""), ("Ответы на награды", "reward"), ("Самостоятельные реплики", "autonomous")):
@@ -89,13 +92,29 @@ class HistoryPage(QWidget):
         self.search.setPlaceholderText("Поиск по вопросам, ответам и логинам")
         self.search.setAccessibleName("Поиск в истории сообщений")
         self.refresh_button = QPushButton("Обновить")
-        controls.addWidget(self.kind)
-        controls.addWidget(self.status)
         controls.addWidget(self.search, 1)
+        filter_toggle = QPushButton("Фильтры")
+        filter_toggle.setCheckable(True)
+        controls.addWidget(filter_toggle)
         controls.addWidget(self.refresh_button)
         filter_layout.addLayout(controls)
+        filter_options = QWidget()
+        filter_row = QHBoxLayout(filter_options)
+        filter_row.setContentsMargins(0, 0, 0, 0)
+        self.kind.setAccessibleName("Тип записи в истории")
+        self.status.setAccessibleName("Результат ответа")
+        filter_row.addWidget(self.kind)
+        filter_row.addWidget(self.status)
+        filter_layout.addWidget(filter_options)
+        filter_toggle.toggled.connect(filter_options.setVisible)
+        filter_options.hide()
         self.hint = plain("История сохраняется между запусками. Тестирование и генератор промптов сюда не попадают.", "muted")
         filter_layout.addWidget(self.hint)
+        self.hint.hide()
+        self.reset_filters = QPushButton("Сбросить фильтры")
+        self.reset_filters.clicked.connect(self._reset_filters)
+        filter_layout.addWidget(self.reset_filters)
+        self.reset_filters.hide()
         self.error = plain("", "error")
         self.error.hide()
         filter_layout.addWidget(self.error)
@@ -119,7 +138,7 @@ class HistoryPage(QWidget):
         pager.addWidget(self.page_label, 1)
         pager.addWidget(self.older)
         left_layout.addLayout(pager)
-        splitter.addWidget(left)
+
 
         detail_page = QWidget()
         detail_layout = QVBoxLayout(detail_page)
@@ -145,7 +164,13 @@ class HistoryPage(QWidget):
         details_layout.addWidget(self.notice_label)
         details_layout.addWidget(self.notice)
         self.timeline = plain("", "muted")
-        details_layout.addWidget(self.timeline)
+        details_layout.addWidget(Disclosure("Ход обработки", self.timeline))
+        copy_row = QHBoxLayout()
+        for title, editor in (("Копировать вопрос", self.question), ("Копировать ответ", self.answer)):
+            button = QPushButton(title)
+            button.clicked.connect(lambda checked=False, source=editor: QApplication.clipboard().setText(source.toPlainText()))
+            copy_row.addWidget(button)
+        details_layout.addLayout(copy_row)
         detail_layout.addWidget(details)
         context_card, context_layout = card()
         self.context_button = QPushButton("Показать контекст")
@@ -165,16 +190,14 @@ class HistoryPage(QWidget):
         detail_layout.addStretch()
         right = scroll_page(detail_page)
         right.setMinimumWidth(340)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        splitter.setChildrenCollapsible(False)
-        outer.addWidget(splitter, 1)
+        self.master_detail = MasterDetail(left, right)
+        outer.addWidget(self.master_detail, 1)
 
         self.refresh_button.clicked.connect(lambda: self.refresh(reset=True))
         self.newer.clicked.connect(self._newer)
         self.older.clicked.connect(self._older)
         self.entries.currentItemChanged.connect(self._selection)
+        self.entries.itemClicked.connect(lambda *_: self.master_detail.show_detail())
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
@@ -267,6 +290,7 @@ class HistoryPage(QWidget):
                 self._rows, self._more = result["rows"], result["more"]
                 selected = self._selected
                 self.entries.blockSignals(True)
+                old_scroll = self.entries.verticalScrollBar().value()
                 self.entries.clear()
                 select_index = 0
                 for index, row in enumerate(self._rows):
@@ -285,15 +309,24 @@ class HistoryPage(QWidget):
                 self.older.setEnabled(self._more)
                 self.page_label.setText(f"Страница {len(self._cursors)}")
                 self.hint.setText(f"Записей на странице: {len(self._rows)}. Самые новые — сверху." if self._rows else
-                                  "Записей пока нет или они не подходят под фильтры. История появится после работы бота.")
+                                  "Ничего не найдено. Сбросьте фильтры или измените поиск." if self.kind.currentData() or self.status.currentData() or self.search.text().strip() else "История пуста. Запустите бота — здесь появятся ответы и решения.")
+                self.reset_filters.setVisible(not self._rows and bool(self.kind.currentData() or self.status.currentData() or self.search.text().strip()))
+                self.hint.setVisible(not self._rows)
                 if self._rows:
                     self.entries.setCurrentRow(select_index)
+                    self.entries.verticalScrollBar().setValue(old_scroll)
                 else:
                     self._selected = None
                     self._cancel["detail"].set()
                     self._clear_detail()
             elif result is not None and result["id"] == self._selected:
                 self._render(result)
+
+    def _reset_filters(self):
+        self.kind.setCurrentIndex(0)
+        self.status.setCurrentIndex(0)
+        self.search.clear()
+        self.refresh(reset=True)
 
     def _selection(self, item, previous=None):
         if item is None:

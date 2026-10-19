@@ -5,14 +5,14 @@ from queue import Queue, Empty
 from threading import Thread, Event
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QLineEdit, QSpinBox
+from PySide6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QHBoxLayout, QLineEdit, QSpinBox, QTabWidget
 
 from safety_settings import PolicyStore, SafetySettings, validate_settings
 from safety import SafetyReview, describe_review
 from safety_diagnostics import diagnose
 from message_history import MessageHistory
 from model_catalog_gui import ModelCatalogControl
-from ui_widgets import card, field, label, scroll_page, NoWheelComboBox, ScrollPlainTextEdit, ScrollListWidget
+from ui_widgets import card, field, label, scroll_page, NoWheelComboBox, ScrollPlainTextEdit, ScrollListWidget, Disclosure
 
 
 def plain(text='', role='muted'):
@@ -72,7 +72,7 @@ class SafetyPage(QWidget):
             box.addWidget(plain(title, 'body'))
             box.addWidget(plain(description))
         box.addWidget(plain('Мат и дружеские игровые подколы сами по себе разрешены. Характер общения настраивается в «Поведении». Распознавание ограничено известными шаблонами и оценкой модели; все обходы распознать невозможно.'))
-        layout.addWidget(protection)
+
         settings, box = card('Ссылки и AI-оценка')
         self.link_mode = NoWheelComboBox()
         self.link_mode.addItem('Запретить ссылки', 'block_all')
@@ -105,7 +105,7 @@ class SafetyPage(QWidget):
         buttons.addWidget(self.reset_button)
         buttons.addStretch()
         box.addLayout(buttons)
-        layout.addWidget(settings)
+
         recent, box = card('Последние решения')
         self.recent_status = plain('Ещё нет решений реальной работы бота.')
         box.addWidget(self.recent_status)
@@ -124,7 +124,15 @@ class SafetyPage(QWidget):
         self.test_button = QPushButton('Проверить текст')
         self.test_button.clicked.connect(self.test_requested.emit)
         box.addWidget(self.test_button)
-        layout.addWidget(test)
+        tabs = QTabWidget()
+        rules = QWidget()
+        rules_layout = QVBoxLayout(rules)
+        rules_layout.setContentsMargins(0, 0, 0, 0)
+        rules_layout.addWidget(settings)
+        rules_layout.addWidget(Disclosure("Подробности защит", protection))
+        tabs.addTab(rules, "Правила")
+        tabs.addTab(test, "Проверка текста")
+        layout.addWidget(tabs)
         outer.addWidget(scroll_page(body))
         self._fill(self.applied.settings)
         for signal in (self.link_mode.currentIndexChanged, self.domains.textChanged, self.model_mode.currentIndexChanged,
@@ -157,6 +165,10 @@ class SafetyPage(QWidget):
                 'review_model_mode': self.model_mode.currentData(), 'review_model': self.model_catalog.combo.currentText(),
                 'review_timeout_seconds': self.timeout.value()}
 
+    def revert(self):
+        self._fill(self.applied.settings)
+        self.error.setText('')
+
     @property
     def dirty(self):
         applied = asdict(self.applied.settings)
@@ -168,7 +180,7 @@ class SafetyPage(QWidget):
         self.domains.setEnabled(self.link_mode.currentData() == 'allow_domains')
         model = self.applied.settings.review_model if self.applied.settings.review_model_mode == 'separate' else 'фактическая модель каждого ответа (основная: ' + self.get_answer_model() + ')'
         self.state.setText('Локальные проверки: действуют\nНаграды: без AI-оценки\nAI-оценка самостоятельных реплик и тестирования: ' + model)
-        self.settings_state.setText(self.applied.error or ('Есть несохранённые изменения — диагностика использует применённые настройки' if self.dirty else 'Настройки применены') + '\nВерсия политики: ' + self.applied.version[:12])
+        self.settings_state.setText(self.applied.error or ('Есть несохранённые изменения — диагностика использует применённые настройки' if self.dirty else 'Настройки применены'))
         self.error.setText(self.applied.error)
         self.changed.emit()
 
@@ -267,7 +279,7 @@ class DiagnosticPanel(QWidget):
         form, box = card('Проверка точного текста')
         self.policy_label = plain()
         box.addWidget(self.policy_label)
-        box.addWidget(plain('Черновик из «Безопасности» не используется. Сначала нажмите там «Применить». Локальная проверка не вызывает API. AI-проверка расходует один запрос оценки; новый ответ не генерируется.'))
+        box.addWidget(plain('Черновик из «Безопасности» не используется. Сначала нажмите там «Сохранить и применить». Локальная проверка не вызывает API. AI-проверка расходует один запрос оценки; новый ответ не генерируется.'))
         self.kind = NoWheelComboBox()
         self.kind.addItem('Вопрос зрителя', 'question')
         self.kind.addItem('Готовый ответ бота', 'answer')

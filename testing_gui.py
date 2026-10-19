@@ -6,7 +6,7 @@ from threading import Event, Thread
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit,
                               QListWidgetItem, QPushButton,
-                              QVBoxLayout, QWidget, QStackedWidget)
+                              QVBoxLayout, QWidget, QStackedWidget, QApplication)
 
 from ai_client import redact_secret
 from configuration import normalize
@@ -16,7 +16,7 @@ from safety_gui import DiagnosticPanel
 from safety_settings import PolicyStore
 from paths import data_dir
 from prompt_builder import TEST_CASES
-from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, field, label, scroll_page
+from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, field, label, scroll_page, Disclosure
 
 
 def comparison_worker(snapshot, pending, output, cancel):
@@ -33,7 +33,7 @@ def comparison_worker(snapshot, pending, output, cancel):
 
 
 class TestingPage(QWidget):
-    def __init__(self, get_credentials, get_snapshot, get_profiles, *, safety_store=None, get_answer_model=lambda: ''):
+    def __init__(self, get_credentials, get_snapshot, get_profiles, *, safety_store=None, get_answer_model=lambda: '', get_diagnostic_model=None):
         super().__init__()
         self.get_credentials = get_credentials
         self.get_snapshot = get_snapshot
@@ -46,6 +46,8 @@ class TestingPage(QWidget):
         self._catalog_auth = None
         self._remaining = 0
         self._result_widgets = {}
+        self._result_headers = {}
+        self.get_answer_model = get_answer_model
         self.catalog = ()
         self.prompt_override = None
 
@@ -69,9 +71,13 @@ class TestingPage(QWidget):
         self.case_combo.addItem("Свой вопрос", None)
         for index, (title, _, _) in enumerate(TEST_CASES):
             self.case_combo.addItem(title, index)
-        request_layout.addWidget(field("Примеры для проверки поведения и защиты", self.case_combo))
+        examples = QWidget()
+        examples_layout = QVBoxLayout(examples)
+        examples_layout.setContentsMargins(0, 0, 0, 0)
+        examples_layout.addWidget(field("Примеры для проверки поведения и защиты", self.case_combo))
         self.expectation = label("Оцените ответ самостоятельно: проверки примеров не гарантируют защиту от всех обходов.", "muted", True)
-        request_layout.addWidget(self.expectation)
+        examples_layout.addWidget(self.expectation)
+        request_layout.addWidget(Disclosure("Примеры вопросов", examples))
         self.question = ScrollPlainTextEdit()
         self.question.setPlaceholderText("Что спросить у каждой выбранной модели?")
         self.question.setAccessibleName("Пробный вопрос")
@@ -91,16 +97,19 @@ class TestingPage(QWidget):
         self.login.setPlaceholderText("Пробный логин · можно оставить пустым")
         self.login.setAccessibleName("Пробный логин")
         request_layout.addWidget(self.login)
-        request_layout.addWidget(label("Владелец канала — имитация роли без входа в Twitch.", "muted", True))
-        request_layout.addWidget(label(
-            "Чтобы проверить узнавание другого зрителя, выберите обычного отправителя и упомяните ник, "
-            "русский вариант или другое имя из профиля в вопросе. Учитываются текущие изменения всех профилей.",
-            "muted", True))
+        self.sender.setToolTip("Владелец канала — имитация роли. Тест использует текущие черновики профилей; другого зрителя можно упомянуть в вопросе.")
         request_layout.addStretch()
         self.run_button = QPushButton("Получить ответы")
         self.run_button.setObjectName("primary")
         self.run_button.clicked.connect(self.start_test)
-        request_layout.addWidget(self.run_button)
+        self.cancel_button = QPushButton("Отменить запросы")
+        self.cancel_button.clicked.connect(self.cancel_operation)
+        self.cancel_button.hide()
+        action_row = QHBoxLayout()
+        action_row.addWidget(self.run_button, 1)
+        action_row.addWidget(self.cancel_button)
+        request_layout.addLayout(action_row)
+        request_layout.addWidget(self.selected_count if hasattr(self, "selected_count") else label("Модель ответов выбирается автоматически, если список пуст.", "muted", True))
         self.status = label("", "muted", True)
         request_layout.addWidget(self.status)
 
@@ -126,8 +135,8 @@ class TestingPage(QWidget):
         self.models = ScrollListWidget()
         self.models.setObjectName("modelList")
         self.models.setAccessibleName("Модели для сравнения")
-        self.models.setMinimumHeight(360)
-        self.models.setMaximumHeight(520)
+        self.models.setMinimumHeight(180)
+        self.models.setMaximumHeight(260)
         self.models.itemChanged.connect(self._selection_count)
         models_layout.addWidget(self.models, 1)
         manual_row = QHBoxLayout()
@@ -141,12 +150,13 @@ class TestingPage(QWidget):
         models_layout.addLayout(manual_row)
         self.catalog_status = label("Нажмите «Обновить список». Доступность без отметки проверяется при запросе.", "muted", True)
         models_layout.addWidget(self.catalog_status)
-        layout.addWidget(models)
         layout.addWidget(request)
+        self.catalog_disclosure = Disclosure("Выбрать модели для сравнения", models)
+        layout.addWidget(self.catalog_disclosure)
         results, results_layout = card("Ответы моделей")
         self.context = label("Контекст будет показан после нажатия «Получить ответы».", "muted", True)
         self.context.setTextFormat(Qt.PlainText)
-        results_layout.addWidget(self.context)
+        results_layout.addWidget(Disclosure("Состав контекста теста", self.context))
         self.results_layout = QVBoxLayout()
         results_layout.addLayout(self.results_layout)
         layout.addWidget(results)
@@ -158,9 +168,13 @@ class TestingPage(QWidget):
         outer.addWidget(self.mode)
         self.modes = QStackedWidget()
         self.modes.addWidget(scroll_page(page))
-        self.diagnostic = DiagnosticPanel(safety_store or PolicyStore(data_dir()), get_credentials, get_answer_model)
+        self.diagnostic = DiagnosticPanel(safety_store or PolicyStore(data_dir()), get_credentials, get_diagnostic_model or get_answer_model)
         self.modes.addWidget(self.diagnostic)
-        outer.addWidget(self.modes)
+        outer.addWidget(self.modes, 1)
+        request_layout.removeItem(action_row)
+        outer.addLayout(action_row)
+        request_layout.removeWidget(self.status)
+        outer.addWidget(self.status)
         self.mode.currentIndexChanged.connect(self._mode_changed)
         # Provider errors and IDs are always plain text, never HTML.
         for widget in (self.status, self.catalog_status):
@@ -274,7 +288,10 @@ class TestingPage(QWidget):
             item.setHidden(query not in item.data(Qt.UserRole).casefold())
 
     def _selection_count(self, *_):
-        self.selected_count.setText(f"Выбрано: {len(self.selected_models())}")
+        self.selected_count.setText("Выбрано: " + ", ".join(self.selected_models()) if self.selected_models() else "Используется модель ответов из настроек")
+        if hasattr(self, "catalog_disclosure"):
+            self.catalog_disclosure.title = "Модели: " + ", ".join(self.selected_models()) if self.selected_models() else "Модель ответов · выбрать другие"
+            self.catalog_disclosure.set_expanded(self.catalog_disclosure.button.isChecked())
 
     def reset_selection(self):
         if self._testing_busy or self._catalog_busy or self._closed:
@@ -294,6 +311,7 @@ class TestingPage(QWidget):
             widget.setEnabled(not busy)
         self.run_button.setText("Получаем ответы…" if self._testing_busy else "Получить ответы")
         self.refresh_button.setText("Загрузка…" if self._catalog_busy else "Обновить список")
+        self.cancel_button.setVisible(busy)
 
     def refresh_catalog(self):
         if self._testing_busy or self._catalog_busy or self._closed:
@@ -313,7 +331,8 @@ class TestingPage(QWidget):
             return
         try:
             kwargs = {"prompt_override": self.prompt_override} if self.prompt_override is not None else {}
-            snapshot = self.get_snapshot(self.selected_models(), self.question.toPlainText(),
+            models = self.selected_models() or [self.get_answer_model()]
+            snapshot = self.get_snapshot(models, self.question.toPlainText(),
                                          self.sender.currentData(),
                                          self.login.text() if self.sender.currentData() == "viewer" else "",
                                          self.viewer.currentData(), **kwargs)
@@ -329,6 +348,7 @@ class TestingPage(QWidget):
             widget = self.results_layout.takeAt(0).widget()
             widget.deleteLater()
         self._result_widgets = {}
+        self._result_headers = {}
         pending = Queue()
         for model in snapshot.models:
             result = ScrollPlainTextEdit()
@@ -336,7 +356,15 @@ class TestingPage(QWidget):
             result.setMinimumHeight(90)
             result.setMaximumHeight(140)
             result.setPlainText(model + "\nОжидание ответа…")
-            self.results_layout.addWidget(result)
+            result_card, box = card()
+            header = label(model + " · ожидание", "section", True)
+            self._result_headers[model] = header
+            box.addWidget(header)
+            box.addWidget(result)
+            copy = QPushButton("Копировать ответ")
+            copy.clicked.connect(lambda checked=False, editor=result: QApplication.clipboard().setText(editor.toPlainText()))
+            box.addWidget(copy)
+            self.results_layout.addWidget(result_card)
             self._result_widgets[model] = result
             pending.put(model)
         self.status.setText(f"Ожидаем ответы: {self._remaining}. Настройки зафиксированы на момент нажатия.")
@@ -375,6 +403,7 @@ class TestingPage(QWidget):
                     f"Моделей в каталоге: {len(models)}. Без отметки — доступность проверяется при запросе.")
             elif event[0] == "result":
                 result = event[1]
+                self._result_headers[result.model].setText(f"{result.model} · {result.seconds:.2f} с · " + ("ошибка" if result.error else "проверка пройдена"))
                 self._result_widgets[result.model].setPlainText(
                     f"{result.model} · {result.seconds:.2f} с\n" +
                     ("Ошибка: " + result.error if result.error else
@@ -384,6 +413,15 @@ class TestingPage(QWidget):
                 if not self._remaining:
                     self._testing_busy = False
                     self._set_busy()
+
+    def cancel_operation(self):
+        self._cancel.set()
+        self._cancel = Event()
+        self._events = Queue()
+        self._testing_busy = self._catalog_busy = False
+        self._remaining = 0
+        self._set_busy()
+        self.status.setText("Операция отменена. Поздние результаты не будут показаны.")
 
     def _mode_changed(self, index):
         self._cancel.set()
@@ -395,6 +433,8 @@ class TestingPage(QWidget):
         self._set_busy()
         self.diagnostic.invalidate()
         self.modes.setCurrentIndex(index)
+        self.run_button.setVisible(index == 0)
+        self.status.setVisible(index == 0)
 
     def open_diagnostic(self):
         self.mode.setCurrentIndex(1)

@@ -1,5 +1,7 @@
 """Low-priority, bounded chat participation with live local settings."""
 
+from runtime_events import emit_ui
+
 import asyncio
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -348,6 +350,7 @@ class Autonomous:
         if revision == self.revision:
             return
         self.settings, self.revision = settings, revision
+        emit_ui("settings", section="autonomous", version=revision)
         self.interrupt()
         self.buffer.clear()
         if not settings.enabled:

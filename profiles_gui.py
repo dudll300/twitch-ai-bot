@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 from profiles import MAX_PROFILE_PROMPT, ProfileError, load_profiles, validate_profiles
 from configuration import normalize
 from viewer_recognition import russian_name
-from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page
+from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page, Disclosure, MasterDetail
 
 
 class ProfilesEditor(QWidget):
@@ -68,6 +68,7 @@ class ProfilesEditor(QWidget):
         self.list.setObjectName("profileList")
         self.list.setAccessibleName("Профили зрителей")
         self.list.currentRowChanged.connect(self._select)
+        self.list.itemClicked.connect(lambda *_: self.master_detail.show_detail())
         left_layout.addWidget(self.list, 1)
         self.empty_search = label("", "muted", True)
         left_layout.addWidget(self.empty_search)
@@ -75,7 +76,7 @@ class ProfilesEditor(QWidget):
         self.undo_button.clicked.connect(self._undo)
         self.undo_button.setVisible(False)
         left_layout.addWidget(self.undo_button)
-        columns.addWidget(left, 1)
+
 
         self.stack = QStackedWidget()
         empty, empty_layout = card()
@@ -109,22 +110,26 @@ class ProfilesEditor(QWidget):
         editor_layout.addLayout(grid)
         editor_layout.addWidget(label(
             "Достаточно логина или ID. Если указан ID, используем его — даже после смены ника.", "muted", True))
+        advanced = QWidget()
+        advanced_layout = QVBoxLayout(advanced)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.addWidget(Disclosure("Другие имена и ограничение наград", advanced))
         self.reward_blocked = QCheckBox("Запретить запросы через награду")
-        editor_layout.addWidget(self.reward_blocked)
-        editor_layout.addWidget(label(
+        advanced_layout.addWidget(self.reward_blocked)
+        advanced_layout.addWidget(label(
             "Бот отправит стандартный отказ без обращения к AI. Запрет действует независимо от персонализации. "
             "Для такого профиля личную инструкцию можно оставить пустой.", "muted", True))
         self.aliases = QLineEdit()
         self.aliases.setPlaceholderText("Например: лопотик, лопотика, Лёха")
-        editor_layout.addWidget(field("Другие имена / ники · через запятую", self.aliases))
+        advanced_layout.addWidget(field("Другие имена / ники · через запятую", self.aliases))
         alias_row = QHBoxLayout()
         self.russian_hint = label("", "muted", True)
         alias_row.addWidget(self.russian_hint, 1)
         self.suggest_alias_button = QPushButton("Добавить русский вариант")
         self.suggest_alias_button.clicked.connect(self._suggest_alias)
         alias_row.addWidget(self.suggest_alias_button)
-        editor_layout.addLayout(alias_row)
-        editor_layout.addWidget(label(
+        advanced_layout.addLayout(alias_row)
+        advanced_layout.addWidget(label(
             "Бот узнаёт эти имена в вопросах других зрителей и в чате. Русский вариант логина распознаётся "
             "автоматически; его можно уточнить здесь. Небольшие опечатки допускаются при однозначном совпадении.", "muted", True))
         self.prompt = ScrollPlainTextEdit()
@@ -148,7 +153,8 @@ class ProfilesEditor(QWidget):
             "Тестирование учитывает черновики; работающий бот — сохранённые профили после перезапуска.",
             "muted", True))
         self.stack.addWidget(scroll_page(editor))
-        columns.addWidget(self.stack, 3)
+        self.master_detail = MasterDetail(left, self.stack)
+        columns.addWidget(self.master_detail, 1)
         outer.addLayout(columns, 1)
         for widget in (self.login, self.user_id, self.aliases):
             widget.textChanged.connect(self._store)
@@ -189,6 +195,8 @@ class ProfilesEditor(QWidget):
         self._filter()
 
     def _select(self, index):
+        if hasattr(self, "master_detail") and index >= 0:
+            self.master_detail.show_detail()
         if index < 0 or index >= len(self.rows):
             self.stack.setCurrentIndex(0)
             return

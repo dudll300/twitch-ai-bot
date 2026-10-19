@@ -8,14 +8,14 @@ from uuid import uuid4
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QGridLayout, QHBoxLayout, QLineEdit, QListWidgetItem,
-    QPushButton, QStackedWidget, QVBoxLayout, QWidget,
+    QPushButton, QStackedWidget, QVBoxLayout, QWidget, QTabWidget,
 )
 
 from autonomous_gui import NumberInput
 from local_context import DOCUMENT_NAME, document_raw, load_document, save_document, validate_document
 from ui_widgets import (
     NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch,
-    card, field, label, scroll_page,
+    card, field, label, scroll_page, Disclosure, MasterDetail,
 )
 
 
@@ -43,7 +43,7 @@ class LocalContextPage(QWidget):
         layout.setContentsMargins(0, 0, 8, 0)
         layout.setSpacing(20)
         system, system_layout = card("Знания вашего канала",
-            "Поясните локальные выражения и отсылки. Бот сможет понять их в вопросе и иногда вспомнить по подходящей ситуации. Отсылка необязательна: содержательный ответ важнее.")
+            "Словарь выражений и отсылок вашего канала.")
         self.enabled = ToggleSwitch("Включить локальный контекст")
         self.enabled.setAccessibleName("Локальный контекст включён")
         self.enabled.setChecked(self.saved.settings.enabled)
@@ -112,9 +112,10 @@ class LocalContextPage(QWidget):
         left_layout.addWidget(self.search)
         self.list = ScrollListWidget()
         self.list.setAccessibleName("Карточки локального контекста")
-        self.list.setMinimumHeight(400)
-        self.list.setMaximumHeight(560)
+        self.list.setMinimumHeight(180)
+        self.list.setMaximumHeight(400)
         self.list.currentRowChanged.connect(self._select)
+        self.list.itemClicked.connect(lambda *_: self.master_detail.show_detail())
         left_layout.addWidget(self.list)
         self.empty_search = label("", "muted", True)
         left_layout.addWidget(self.empty_search)
@@ -124,7 +125,7 @@ class LocalContextPage(QWidget):
         self.undo_button.hide()
         left_layout.addWidget(self.undo_button)
         left_layout.addStretch()
-        columns.addWidget(left, 1, Qt.AlignTop)
+
 
         self.stack = QStackedWidget()
         empty, empty_layout = card("Словарь начинается с ваших карточек")
@@ -152,12 +153,13 @@ class LocalContextPage(QWidget):
         self.aliases.setMinimumHeight(110)
         self.aliases.setAccessibleName("Алиасы карточки")
         self.aliases.setPlaceholderText("Один вариант на строку. Многословную фразу пишите целиком.")
-        editor_layout.addWidget(field("Алиасы · до 20 вариантов, до 80 символов каждый", self.aliases))
+        aliases_field = field("Алиасы · до 20 вариантов, до 80 символов каждый", self.aliases)
         self.meaning = ScrollPlainTextEdit()
         self.meaning.setMinimumHeight(130)
         self.meaning.setAccessibleName("Значение карточки")
         self.meaning.setPlaceholderText("Кратко объясните локальный смысл и интонацию выражения.")
         editor_layout.addWidget(field("Что означает · обязательно, до 600 символов", self.meaning))
+        editor_layout.addWidget(Disclosure("Другие написания и алиасы", aliases_field))
         self.allow_situational = ToggleSwitch("Использовать по ситуации")
         self.allow_situational.setAccessibleName("Разрешить использование по ситуации без прямого упоминания")
         editor_layout.addWidget(self.allow_situational)
@@ -168,25 +170,30 @@ class LocalContextPage(QWidget):
         self.situations.setMinimumHeight(130)
         self.situations.setAccessibleName("Уместные ситуации")
         self.situations.setPlaceholderText("Свяжите отсылку с конкретной ситуацией. Одного «чат весёлый» недостаточно.")
-        editor_layout.addWidget(field("Когда уместно · обязательно для подбора по ситуации, до 600 символов", self.situations))
+        situations_field = field("Когда уместно · обязательно для подбора по ситуации, до 600 символов", self.situations)
+        editor_layout.addWidget(situations_field)
+        self.allow_situational.toggled.connect(situations_field.setVisible)
+        situations_field.setVisible(False)
         self.avoid = ScrollPlainTextEdit()
         self.avoid.setMinimumHeight(130)
         self.avoid.setAccessibleName("Когда не использовать")
         self.avoid.setPlaceholderText("Опишите оговорки: серьёзная тема, спор, нежелательный подкол и другие границы.")
-        editor_layout.addWidget(field("Когда не использовать · до 600 символов", self.avoid))
+        editor_layout.addWidget(Disclosure("Ограничения использования", field("Когда не использовать · до 600 символов", self.avoid)))
         self.example = ScrollPlainTextEdit()
         self.example.setMinimumHeight(100)
         self.example.setAccessibleName("Пример употребления")
         self.example.setPlaceholderText("Необязательный пример, который показывает смысл. Бот не обязан его копировать.")
-        editor_layout.addWidget(field("Пример · необязательно, до 300 символов", self.example))
+        editor_layout.addWidget(Disclosure("Пример употребления", field("Пример · необязательно, до 300 символов", self.example)))
         self.remove_button = QPushButton("Удалить карточку")
         self.remove_button.setProperty("variant", "danger")
         self.remove_button.clicked.connect(self.remove_card)
         editor_layout.addWidget(self.remove_button, 0, Qt.AlignRight)
         self.stack.addWidget(editor)
-        columns.addWidget(self.stack, 3)
-        layout.addLayout(columns)
-        layout.addWidget(options)
+        self.master_detail = MasterDetail(left, scroll_page(self.stack))
+        tabs = QTabWidget()
+        tabs.addTab(self.master_detail, "Карточки")
+        tabs.addTab(options, "Использование")
+        layout.addWidget(tabs)
         layout.addWidget(label(
             "До 40 карточек. Ситуационный каталог — до 10 000 символов описаний, общий контекст карточек в запросе вместе с инструкциями и резервом протокола — до 16 000. При превышении сократите описания или выключите подбор по ситуации у части карточек. Карточки добавляют входные токены AI API; дополнительных постоянных запросов для них нет.",
             "muted", True))
@@ -221,7 +228,7 @@ class LocalContextPage(QWidget):
         return self.raw_document() != document_raw(self.saved)
 
     def _update_hint(self):
-        self.hint.setText("Есть несохранённые карточки или параметры — нажмите «Применить»" if self.dirty else
+        self.hint.setText("Есть несохранённые карточки или параметры — нажмите «Сохранить и применить»" if self.dirty else
                           "Карточки и параметры сохранены")
 
     def _edited(self, *_):
@@ -231,7 +238,7 @@ class LocalContextPage(QWidget):
 
     def _show_load_error(self):
         if self.load_error:
-            self.error.setText(self.load_error + " «Применить» сохранит текущие карточки вместо повреждённого файла. До этого бот работает без локального контекста.")
+            self.error.setText(self.load_error + " «Сохранить и применить» сохранит текущие карточки вместо повреждённого файла. До этого бот работает без локального контекста.")
             self.error.show()
 
     def _show_error(self, message):
@@ -260,6 +267,8 @@ class LocalContextPage(QWidget):
         self._filter()
 
     def _select(self, index):
+        if hasattr(self, "master_detail") and index >= 0:
+            self.master_detail.show_detail()
         if index < 0 or index >= len(self.rows):
             self.stack.setCurrentIndex(0)
             return
@@ -380,4 +389,19 @@ class LocalContextPage(QWidget):
     def set_running(self, running):
         self._running = running
         self.state.setText(
-            "Тумблер сразу переключает уже применённый словарь. Карточки и частота сохраняются по кнопке «Применить», даже во время работы бота. Черновики остаются при переходе между вкладками.")
+            "Тумблер действует сразу для сохранённых карточек.")
+
+    def revert(self):
+        self._loading = True
+        try:
+            self._removed = None
+            self.undo_button.hide()
+            self.rows = deepcopy(document_raw(self.saved)["cards"])
+            self.enabled.setChecked(self.saved.settings.enabled)
+            self.max_per_reply.setCurrentIndex(self.max_per_reply.findData(self.saved.settings.max_per_reply))
+            for key, widget in self.inputs.items():
+                widget.setValue(getattr(self.saved.settings, key))
+            self._rebuild(0 if self.rows else -1)
+        finally:
+            self._loading = False
+        self._edited()
