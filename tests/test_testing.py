@@ -1,4 +1,3 @@
-import ai_connection
 from safety_fakes import stub_reviews
 import io
 import json
@@ -43,7 +42,7 @@ class TestingTests(unittest.TestCase):
         self.assertEqual(testing.credentials("https://ai.starimg.ru/v1/", "new", "old").api_key, "new")
         self.assertEqual(testing.credentials("https://ai.starimg.ru/v1", "", "old").api_key, "old")
         self.assertNotIn(self.auth.api_key, repr(self.auth))
-        with patch.object(ai_connection, "urlopen", return_value=response(
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response(
                 {"choices": [{"message": {"content": "Ответ"}}]})):
             result = testing.test_model(self.snapshot(), "exact/model")
         self.assertEqual(result.answer, "Ответ")
@@ -113,7 +112,7 @@ class TestingTests(unittest.TestCase):
         self.assertIn("не учитывалась", snapshot.context)
         self.assertIn("ответ — 400", snapshot.context)
         self.assertTrue(snapshot.messages[-1][1].endswith("x" * 400))
-        with patch.object(ai_connection, "urlopen", return_value=response(
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response(
                 {"choices": [{"message": {"content": " x\n" * 400}}]})):
             result = testing.test_model(snapshot, "exact/model")
         self.assertGreater(len(result.answer), 300)
@@ -132,7 +131,7 @@ class TestingTests(unittest.TestCase):
                     "error": {"message": "Ошибка " + self.auth.api_key}}))
             return response({"choices": [{"message": {"content": "Успешный ответ"}}]})
         output = io.StringIO()
-        with patch.object(ai_connection, "urlopen", side_effect=request), redirect_stdout(output):
+        with patch.object(ai_client.urllib.request, "urlopen", side_effect=request), redirect_stdout(output):
             results = [testing.test_model(snapshot, model) for model in snapshot.models]
         self.assertEqual([p["model"] for p in payloads], ["provider/a", "provider/b"])
         self.assertEqual(payloads[0]["messages"], payloads[1]["messages"])
@@ -146,7 +145,7 @@ class TestingTests(unittest.TestCase):
         payload = {"data": [{"id": "z/custom"}, {"id": "a/model", "available": True},
                             {"id": "denied", "available": False},
                             {"id": "permission-denied", "permission": [{"allow_view": False}]}]}
-        with patch.object(ai_connection, "urlopen", return_value=response(payload)) as request:
+        with patch.object(testing.urllib.request, "urlopen", return_value=response(payload)) as request:
             models = testing.fetch_models(self.auth)
         req = request.call_args.args[0]
         self.assertEqual(req.full_url, "https://ai.starimg.ru/v1/models")
@@ -162,23 +161,23 @@ class TestingTests(unittest.TestCase):
         failures = [urllib.error.HTTPError("https://example/models", 401, "err", {}, response(
                         {"error": {"message": "Ключ " + self.auth.api_key}})), TimeoutError()]
         for failure in failures:
-            with patch.object(ai_connection, "urlopen", side_effect=failure):
+            with patch.object(testing.urllib.request, "urlopen", side_effect=failure):
                 with self.assertRaises(RuntimeError) as raised:
                     testing.fetch_models(self.auth)
                 self.assertNotIn(self.auth.api_key, str(raised.exception))
-        with patch.object(ai_connection, "urlopen", return_value=response({"html": "oops"})):
+        with patch.object(testing.urllib.request, "urlopen", return_value=response({"html": "oops"})):
             with self.assertRaisesRegex(ValueError, "data"):
                 testing.fetch_models(self.auth)
 
     def test_timeout_and_malformed_ai_responses_are_per_model_errors(self):
         for failure in (TimeoutError(), urllib.error.URLError("down")):
-            with patch.object(ai_connection, "urlopen", side_effect=failure):
+            with patch.object(ai_client.urllib.request, "urlopen", side_effect=failure):
                 self.assertTrue(testing.test_model(self.snapshot(), "exact/model").error)
-        with patch.object(ai_connection, "urlopen", return_value=response({"choices": []})):
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response({"choices": []})):
             self.assertIn("некорректный ответ", testing.test_model(self.snapshot(), "exact/model").error)
 
     def test_echoed_key_redacted_before_response_truncation_and_context_preview(self):
-        with patch.object(ai_connection, "urlopen", return_value=response(
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response(
                 {"choices": [{"message": {"content": "x" * 392 + self.auth.api_key}}]})):
             result = testing.test_model(self.snapshot(), "exact/model")
         self.assertNotIn(self.auth.api_key[:8], result.answer)

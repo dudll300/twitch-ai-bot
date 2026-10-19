@@ -1,4 +1,3 @@
-import ai_connection
 from safety_fakes import stub_reviews
 """Name recognition, identity boundaries and identical AI snapshots."""
 
@@ -172,7 +171,7 @@ class RecognitionTests(unittest.TestCase):
         def request(req, timeout):
             payloads.append(json.loads(req.data))
             return io.BytesIO(b'{"choices":[{"message":{"content":"OK"}}]}')
-        with patch.object(ai_connection, "urlopen", side_effect=request):
+        with patch.object(ai_client.urllib.request, "urlopen", side_effect=request):
             for model in snapshot.models:
                 testing.test_model(snapshot, model)
         self.assertEqual(payloads[0]["messages"], payloads[1]["messages"])
@@ -218,7 +217,7 @@ class RecognitionTests(unittest.TestCase):
                       "reason": "answer", "intent": "Ответить про знакомого зрителя"}
                      if len(captured) == 1 else {"text": "Знакомый любитель пельменей!"})
             return io.BytesIO(json.dumps({"choices": [{"message": {"content": json.dumps(value)}}]}).encode())
-        with patch.object(ai_connection, "urlopen", side_effect=request):
+        with patch.object(ai_client.urllib.request, "urlopen", side_effect=request):
             autonomous.request_decision(cfg, participants, autonomous.AutoSettings(), profiles=self.rows, memory_data=self.memory)
         self.assertEqual(captured[0]["model"], "primary")
         self.assertEqual(len(captured), 2)

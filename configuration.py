@@ -10,7 +10,6 @@ AI_FALLBACK_MODELS = ("deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-fla
 FIRST_RUN_FALLBACK_MODELS = "deepseek-v4-pro,deepseek-v4-flash"
 SYSTEM_PROMPT = ""
 DEFAULTS = {
-    "AI_PROVIDER": "compatible",
     "AI_BASE_URL": "https://ai.starimg.ru/v1",
     "AI_MODEL": AI_MODEL,
     "AI_FALLBACK_MODELS": "",
@@ -21,7 +20,6 @@ FIELDS = (
     ("TWITCH_BOT_NAME", "Логин отдельного Twitch-аккаунта бота"),
     ("TWITCH_CLIENT_ID", "Client ID приложения Twitch типа Public"),
     ("TWITCH_REWARD_TITLE", "Название награды за баллы канала"),
-    ("AI_PROVIDER", "Подключение AI: openai или compatible"),
     ("AI_BASE_URL", "Base URL совместимого Chat Completions API"),
     ("AI_API_KEY", "Ключ AI API"),
     ("AI_MODEL", "ID основной модели у вашего провайдера"),
@@ -76,9 +74,6 @@ def normalize(name: str, value: str) -> str:
     if any(ord(char) < 32 or ord(char) == 127 for char in value):
         caption = FIELD_NAMES.get(name, "Настройка")
         raise ValueError(f"Поле «{caption}» содержит перенос строки или другой недопустимый управляющий символ. Удалите его.")
-    if name == "AI_PROVIDER":
-        from ai_connection import provider_id
-        return provider_id(value)
     if name == "AI_FALLBACK_MODELS":
         return ",".join(dict.fromkeys(part.strip() for part in value.split(",") if part.strip()))
     if not value:
@@ -95,10 +90,6 @@ def normalize(name: str, value: str) -> str:
     elif name == "AI_BASE_URL":
         value = value.rstrip("/").removesuffix("/chat/completions")
         parsed = urlparse(value)
-        try:
-            parsed.port
-        except ValueError:
-            raise ValueError("Некорректный порт в адресе AI API (Base URL).") from None
         if (parsed.scheme != "https" or not parsed.hostname or parsed.query or parsed.fragment
                 or parsed.username or parsed.password or any(char.isspace() for char in value)):
             raise ValueError("Адрес AI API (Base URL) должен начинаться с https:// и не содержать логин, пароль, параметры или пробелы.")

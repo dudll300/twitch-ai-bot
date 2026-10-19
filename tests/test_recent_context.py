@@ -1,6 +1,5 @@
 """Recipient identity, durable sent status and real reward API preparation."""
 
-import ai_connection
 import asyncio
 from collections import deque
 from dataclasses import replace
@@ -192,7 +191,7 @@ class RewardRequestIntegrationTests(unittest.IsolatedAsyncioTestCase):
         def http(request, **kwargs):
             payloads.append(json.loads(request.data))
             return io.BytesIO(json.dumps({"choices": [{"message": {"content": "Ответ на продолжение"}}]}).encode())
-        with patch("bot.time.time", return_value=10000), patch("ai_connection.urlopen", side_effect=http):
+        with patch("bot.time.time", return_value=10000), patch("ai_client.urllib.request.urlopen", side_effect=http):
             task = asyncio.create_task(self.instance.worker(None, queue))
             await asyncio.wait_for(queue.join(), 5)
             task.cancel()
@@ -246,7 +245,7 @@ class RewardRequestIntegrationTests(unittest.IsolatedAsyncioTestCase):
             payloads.append(json.loads(request.data))
             return io.BytesIO(json.dumps({"choices": [{"message": {"content": "Ответ"}}]}).encode())
         with patch.object(MessageHistory, "recent_personal_replies", side_effect=AssertionError("offline read")), \
-                patch("ai_connection.urlopen", side_effect=http):
+                patch("ai_client.urllib.request.urlopen", side_effect=http):
             result = testing.test_model(snapshot, "primary")
         self.assertEqual(result.error, "")
         self.assertNotIn("recent_autonomous_reply", str(payloads))

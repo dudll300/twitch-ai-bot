@@ -20,15 +20,26 @@ from reply_rules import ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_
 from safety import SafetyBlocked, SafetyReview, review_candidate, describe_review, validate_publication
 from safety_settings import PolicyStore, current_policy, policy_scope, policy_binding
 from privacy import PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError
-import ai_connection
-from ai_connection import Credentials, credentials, chat_compatibility
+
+
+@dataclass(frozen=True)
+class Credentials:
+    base_url: str
+    api_key: str = field(repr=False)
+
+    def config(self):
+        return {"AI_CHAT_URL": self.base_url + "/chat/completions", "AI_API_KEY": self.api_key}
+
+
+def credentials(base_url: str, entered_key: str, saved_key: str = "") -> Credentials:
+    return Credentials(normalize("AI_BASE_URL", base_url),
+                       normalize("AI_API_KEY", entered_key.strip() or saved_key))
 
 
 @dataclass(frozen=True)
 class Model:
     id: str
     available: bool | None = None
-    chat_error: str = ''
 
 
 def fetch_models(auth: Credentials) -> tuple[Model, ...]:
@@ -37,9 +48,11 @@ def fetch_models(auth: Credentials) -> tuple[Model, ...]:
     Do not infer key access from a public website or a configured fallback list.
     Standard responses only carry IDs; optional access flags are respected.
     """
-    request = ai_connection.authenticated_request(auth.base_url + "/models", auth.api_key)
+    request = urllib.request.Request(auth.base_url + "/models", headers={
+        "Authorization": "Bearer " + auth.api_key, "Accept": "application/json",
+    })
     try:
-        with ai_connection.urlopen(request, timeout=AI_REQUEST_TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=AI_REQUEST_TIMEOUT_SECONDS) as response:
             payload = json.load(response)
     except urllib.error.HTTPError as exc:
         raise RuntimeError(f"Каталог: HTTP {exc.code}{http_error_detail(exc, auth.api_key)}") from None
@@ -65,7 +78,7 @@ def fetch_models(auth: Credentials) -> tuple[Model, ...]:
         if isinstance(permissions, list) and permissions and all(
                 isinstance(p, dict) and p.get("allow_view") is False for p in permissions):
             available = False
-        models[model_id] = Model(model_id, available, chat_compatibility(auth.provider, model_id))
+        models[model_id] = Model(model_id, available)
     return tuple(sorted(models.values(), key=lambda model: model.id.casefold()))
 
 

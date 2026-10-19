@@ -1,4 +1,3 @@
-import ai_connection
 from safety_fakes import stub_reviews
 """Replay cancellation, quota and snapshot boundaries without AI or Twitch access."""
 
@@ -68,7 +67,7 @@ class PipelineControllerTests(unittest.IsolatedAsyncioTestCase):
                 raise generation_failure
             return response({"text": "Поздравляю с победой!"})
         function, *args = self.executor.calls[-1]
-        with patch("ai_connection.urlopen", side_effect=http):
+        with patch("ai_client.urllib.request.urlopen", side_effect=http):
             try:
                 result = function(*args, **self.executor.kwargs[-1])
             except Exception as exc:

@@ -7,7 +7,6 @@ import math
 import re
 import urllib.error
 import urllib.request
-import ai_connection
 
 from configuration import SYSTEM_PROMPT
 from local_context import LocalReply, LocalResultError
@@ -191,15 +190,15 @@ def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
     try:
         raw = exc.read(4096)
     except (AttributeError, KeyError, OSError, ValueError, http.client.HTTPException):
-        raw = b''
+        return ""
+    if not raw:
+        return ""
     detail = raw.decode("utf-8", errors="replace")
-    code = ''
     try:
         payload = json.loads(detail)
         if isinstance(payload, dict):
             error = payload.get("error", payload)
             if isinstance(error, dict):
-                code = error.get('code') or error.get('type') or ''
                 detail = error.get("message") or error.get("detail") or error.get("code") or ""
             elif isinstance(error, str):
                 detail = error
@@ -209,15 +208,7 @@ def http_error_detail(exc: urllib.error.HTTPError, api_key: str) -> str:
         detail = str(detail)
     detail = redact_secret(detail, api_key)
     detail = clean_text(safe_history_text(detail), 240)
-    caption = {401: 'Ключ отклонён. Проверьте ключ выбранного API.',
-               403: 'Нет доступа к API или выбранной модели.',
-               404: 'Модель не найдена или не поддерживает этот endpoint.',
-               429: 'Ограничение частоты запросов. Повторите позже.'}.get(exc.code, '')
-    if code in ('insufficient_quota', 'billing_hard_limit_reached', 'billing_not_active'):
-        caption = 'Исчерпана API-квота или баланс выбранного подключения.'
-    if exc.code in (301, 302, 303, 307, 308):
-        caption, detail = 'Перенаправление AI API запрещено. Укажите прямой HTTPS Base URL.', ''
-    return ': ' + ' '.join(part for part in (caption, detail) if part) if caption or detail else ''
+    return f": {detail}" if detail else ""
 
 
 def build_messages(cfg: dict[str, str], user: str, question: str,
@@ -336,10 +327,21 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         except (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError) as exc:
             exc.stage = request_stage + "_request"
             raise
-    auth = ai_connection.from_config(cfg)
-    payload = ai_connection.completion_payload(auth, model, messages, max_tokens)
-    request = ai_connection.authenticated_request(auth.base_url + '/chat/completions', auth.api_key,
-        data=json.dumps(payload, ensure_ascii=False).encode('utf-8'))
+    payload = {
+        "model": model,
+        "messages": messages,
+        "max_tokens": max_tokens,
+        "stream": False,
+    }
+    request = urllib.request.Request(
+        cfg["AI_CHAT_URL"],
+        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        headers={
+            "Authorization": "Bearer " + cfg["AI_API_KEY"],
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
     # All local checks and serialization finish before the durable quota gate.
     # A reservation immediately precedes urlopen, including failed connections.
     if before_request is not None:
@@ -351,7 +353,7 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
     if trace is not None and request_stage in trace.attempts:
         trace.attempts[request_stage] += 1
     try:
-        with ai_connection.urlopen(request, timeout=timeout_seconds) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             if trace is not None:
                 trace.stage = request_stage + "_response"
             data = json.load(response)
@@ -375,17 +377,10 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         raise TemporaryAIError("AI API вернул некорректный JSON") from None
     try:
         choice = data["choices"][0]
-        message = choice['message']
-        if not isinstance(message, dict):
-            raise TypeError()
-        if message.get('refusal') or choice.get('finish_reason') == 'content_filter':
-            raise RuntimeError('Модель отказалась формировать этот ответ. Попробуйте другой запрос.')
-        answer = message.get('content')
+        answer = choice["message"]["content"]
     except (KeyError, IndexError, TypeError):
         raise TemporaryAIError("AI API вернул некорректный ответ") from None
     if not isinstance(answer, str) or not answer.strip():
-        if (reject_truncated or auth.provider == 'openai') and choice.get('finish_reason') == 'length':
-            raise TruncatedAIError('AI API исчерпал лимит токенов до готового ответа. Выберите другую модель или сократите запрос.')
         raise TemporaryAIError("AI API вернул пустой ответ")
     if trace is not None:
         trace.stage = request_stage + "_response"
@@ -398,7 +393,7 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         exc = PrivacyViolation()
         exc.stage = request_stage + "_response"
         raise exc
-    if (reject_truncated or auth.provider == 'openai') and choice.get("finish_reason") == "length":
+    if reject_truncated and choice.get("finish_reason") == "length":
         raise TruncatedAIError("AI API обрезал результат. Повторите генерацию с более короткими пожеланиями.")
     return answer
 

@@ -48,7 +48,7 @@ def main() -> None:
             window = gui.MainWindow()
         assert window.api_key.echoMode() == QLineEdit.Password
         assert [window.model.itemText(index) for index in range(window.model.count())] == [
-            "deepseek-v4.1-flash",
+            "deepseek-v4.1-flash", "deepseek-v4-pro", "deepseek-v4-flash",
         ]
         assert window.model.currentText() == "deepseek-v4.1-flash"
         assert window.model.isEditable()

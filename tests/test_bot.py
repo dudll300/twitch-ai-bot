@@ -1,4 +1,3 @@
-import ai_connection
 from safety_fakes import stub_reviews
 import asyncio
 import io
@@ -104,7 +103,7 @@ class BotTests(unittest.TestCase):
         cfg = {"AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "key",
                "AI_CHAT_URL": "https://api.example.com/chat/completions"}
         history = tuple((f"Вопрос {i}", f"Ответ {i}") for i in range(12))
-        with patch.object(ai_connection, "urlopen", fake_urlopen):
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
             bot.call_ai(cfg, "viewer", "Новый вопрос", history=history)
         self.assertEqual(len(captured), 23)
         self.assertEqual(captured[2]["content"], "Зритель viewer спрашивает: Вопрос 2")
@@ -131,7 +130,7 @@ class BotTests(unittest.TestCase):
             self.assertEqual(len(payload["messages"]), 3)
             return Response(json.dumps({"choices": [{"message": {"content": "Привет!\nКак дела?"}}]}).encode())
 
-        with patch.object(ai_connection, "urlopen", fake_urlopen):
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
             answer = bot.call_ai({
                 "AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "test-key",
                 "AI_CHAT_URL": "https://api.deepseek.com/chat/completions",
@@ -157,7 +156,7 @@ class BotTests(unittest.TestCase):
             "AI_API_KEY": "test-key", "AI_CHAT_URL": "https://api.example.com/chat/completions",
             "AI_PROMPT": "Пользовательский промпт",
         }
-        with patch.object(ai_connection, "urlopen", fake_urlopen):
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
             bot.call_ai(cfg, "Streamer", "Привет")
             bot.call_ai(cfg, "viewer", "Привет")
 
@@ -232,10 +231,10 @@ class BotTests(unittest.TestCase):
         def http_error(status):
             return urllib.error.HTTPError(cfg["AI_CHAT_URL"], status, "error", {}, None)
 
-        with patch.object(ai_connection, "urlopen", side_effect=http_error(503)):
+        with patch.object(bot.urllib.request, "urlopen", side_effect=http_error(503)):
             with self.assertRaises(bot.TemporaryAIError):
                 bot.call_ai(cfg, "viewer", "вопрос")
-        with patch.object(ai_connection, "urlopen", side_effect=http_error(401)):
+        with patch.object(bot.urllib.request, "urlopen", side_effect=http_error(401)):
             with self.assertRaisesRegex(RuntimeError, "HTTP 401"):
                 bot.call_ai(cfg, "viewer", "вопрос")
 
@@ -262,7 +261,7 @@ class BotTests(unittest.TestCase):
             return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
 
         log = io.StringIO()
-        with patch.object(ai_connection, "urlopen", fake_urlopen), redirect_stdout(log):
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen), redirect_stdout(log):
             self.assertEqual(bot.AIModelRouter().ask(cfg, "viewer", "вопрос"), "OK")
         self.assertEqual(attempts, [bot.AI_MODEL, "deepseek-v4-pro"])
         self.assertIn("HTTP 400: model unavailable: [ключ скрыт]", log.getvalue())
@@ -313,7 +312,7 @@ class BotTests(unittest.TestCase):
             self.assertIn("Любит хорроры", messages[0]["content"])
             return Response(b'{"choices":[{"message":{"content":"OK"}}]}')
 
-        with patch.object(ai_connection, "urlopen", fake_urlopen):
+        with patch.object(bot.urllib.request, "urlopen", fake_urlopen):
             self.assertEqual(bot.call_ai({
                 "AI_MODEL": bot.AI_MODEL, "AI_API_KEY": "test-key",
                 "AI_CHAT_URL": "https://api.deepseek.com/chat/completions",
@@ -351,7 +350,7 @@ class BotTests(unittest.TestCase):
             path = Path(directory) / ".env"
             answers = iter([
                 "https://www.twitch.tv/Streamer", "Helper_bot", "client123",
-                "Ask AI", "compatible", "https://api.example.com/v1/chat/completions", "", "",
+                "Ask AI", "https://api.example.com/v1/chat/completions", "", "",
             ])
             with patch("builtins.input", side_effect=lambda _: next(answers)), patch.object(
                 start.getpass, "getpass", return_value="secret-key"

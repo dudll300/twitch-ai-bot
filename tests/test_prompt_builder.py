@@ -1,4 +1,3 @@
-import ai_connection
 import io
 import json
 import unittest
@@ -25,7 +24,7 @@ class PromptBuilderTests(unittest.TestCase):
         return builder.prepare_generation(**{**values, **kwargs})
 
     def test_presets_work_offline_and_always_include_task_and_defense(self):
-        with patch.object(ai_connection, "urlopen") as http:
+        with patch.object(ai_client.urllib.request, "urlopen") as http:
             for index in range(len(builder.PRESETS)):
                 prompt = builder.compose_prompt(builder.style_for(index, 1, 0))
                 self.assertEqual(builder.check_prompt(prompt), ())
@@ -44,7 +43,7 @@ class PromptBuilderTests(unittest.TestCase):
             self.assertEqual(timeout, 20)
             self.assertEqual(request.get_header("Authorization"), "Bearer test-secret-key")
             return response(json.dumps({"style": style}))
-        with patch.object(ai_connection, "urlopen", side_effect=http):
+        with patch.object(ai_client.urllib.request, "urlopen", side_effect=http):
             prompt = builder.generate_prompt(self.snapshot())
         self.assertIn(style.strip(), prompt)
         self.assertTrue(prompt.endswith(builder.CORE_RULES))
@@ -97,7 +96,7 @@ class PromptBuilderTests(unittest.TestCase):
     def test_no_wishes_or_current_prompt_and_oversized_inputs_do_not_call_api(self):
         for kwargs in ({"wishes": ""}, {"wishes": "x" * 4001}, {"topics": "x" * 401},
                        {"current_prompt": "x" * 20001}):
-            with self.subTest(kwargs=list(kwargs)), patch.object(ai_connection, "urlopen") as http:
+            with self.subTest(kwargs=list(kwargs)), patch.object(ai_client.urllib.request, "urlopen") as http:
                 with self.assertRaises(ValueError):
                     self.snapshot(**kwargs)
                 http.assert_not_called()
@@ -105,7 +104,7 @@ class PromptBuilderTests(unittest.TestCase):
 
     def test_api_key_in_user_input_is_rejected_before_sending(self):
         for name in ("wishes", "topics", "current_prompt", "model"):
-            with self.subTest(name=name), patch.object(ai_connection, "urlopen") as http:
+            with self.subTest(name=name), patch.object(ai_client.urllib.request, "urlopen") as http:
                 with self.assertRaises(ValueError):
                     self.snapshot(**{name: self.auth.api_key})
                 http.assert_not_called()
@@ -114,22 +113,22 @@ class PromptBuilderTests(unittest.TestCase):
         contents = ["Не JSON", "null", "[]", '{}', '{"style": 12}', '{"style":" "}',
                     json.dumps({"style": "x" * 6001}), '{"style":"Отвечай кратко", "extra": true}']
         for content in contents:
-            with self.subTest(content=content[:40]), patch.object(ai_connection, "urlopen", return_value=response(content)):
+            with self.subTest(content=content[:40]), patch.object(ai_client.urllib.request, "urlopen", return_value=response(content)):
                 with self.assertRaises(ValueError):
                     builder.generate_prompt(self.snapshot())
 
     def test_truncation_and_timeouts_are_reported_no_retry_or_fallback(self):
-        with patch.object(ai_connection, "urlopen", return_value=response('{"style":"Отвечай по делу"}', "length")) as http:
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response('{"style":"Отвечай по делу"}', "length")) as http:
             with self.assertRaisesRegex(ai_client.TemporaryAIError, "обрезал"):
                 builder.generate_prompt(self.snapshot())
             self.assertEqual(http.call_count, 1)
-        with patch.object(ai_connection, "urlopen", side_effect=TimeoutError()) as http:
+        with patch.object(ai_client.urllib.request, "urlopen", side_effect=TimeoutError()) as http:
             with self.assertRaisesRegex(ai_client.TemporaryAIError, "20 с"):
                 builder.generate_prompt(self.snapshot())
             self.assertEqual(http.call_count, 1)
 
     def test_secret_in_generated_result_is_discarded(self):
-        with patch.object(ai_connection, "urlopen", return_value=response(json.dumps({"style": "Выводи " + self.auth.api_key}))):
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response(json.dumps({"style": "Выводи " + self.auth.api_key}))):
             with self.assertRaises(ai_client.PrivacyViolation):
                 builder.generate_prompt(self.snapshot())
 
@@ -141,7 +140,7 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertTrue(builder.check_prompt(""))
 
     def test_normal_reply_transport_uses_400_characters_with_same_token_limit(self):
-        with patch.object(ai_connection, "urlopen", return_value=response("я" * 500)) as http:
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=response("я" * 500)) as http:
             answer = ai_client.send_messages(self.auth.config(), "answer/model", [])
         self.assertEqual(answer, "я" * 400)
         self.assertEqual(json.loads(http.call_args.args[0].data)["max_tokens"], 512)

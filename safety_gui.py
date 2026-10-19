@@ -44,14 +44,11 @@ class SafetyPage(QWidget):
     test_requested = Signal()
     history_requested = Signal(str)
 
-    def __init__(self, root, get_credentials, get_answer_model, *, get_provider=lambda: 'compatible'):
+    def __init__(self, root, get_credentials, get_answer_model):
         super().__init__()
         self.store = PolicyStore(root)
         self.journal = MessageHistory(root)
         self.get_answer_model = get_answer_model
-        self.get_provider = get_provider
-        self._model_provider = get_provider()
-        self._model_drafts = {}
         self._events, self._closed = Queue(), Event()
         self._loading = False
         self._rows = []
@@ -147,37 +144,18 @@ class SafetyPage(QWidget):
         self.refresh()
 
     def _fill(self, settings):
-        self._model_drafts = {provider: settings.reviewer(provider) for provider in ('compatible', 'openai')}
-        self._model_provider = self.get_provider()
-        mode, model = self._model_drafts[self._model_provider]
         self.link_mode.setCurrentIndex(self.link_mode.findData(settings.link_mode))
         self.domains.setPlainText('\n'.join(settings.allowed_domains))
-        self.model_mode.setCurrentIndex(self.model_mode.findData(mode))
-        self.model_catalog.combo.setCurrentText(model)
+        self.model_mode.setCurrentIndex(self.model_mode.findData(settings.review_model_mode))
+        self.model_catalog.combo.setCurrentText(settings.review_model)
         self.timeout.setValue(settings.review_timeout_seconds)
         self._changed()
 
     def draft(self):
-        self._model_drafts[self._model_provider] = (self.model_mode.currentData(), self.model_catalog.combo.currentText())
-        compatible, openai = self._model_drafts['compatible'], self._model_drafts['openai']
         return {'schema_version': 1, 'link_mode': self.link_mode.currentData(),
                 'allowed_domains': [line.strip() for line in self.domains.toPlainText().splitlines() if line.strip()],
-                'review_model_mode': compatible[0], 'review_model': compatible[1],
-                'openai_review_model_mode': openai[0], 'openai_review_model': openai[1],
+                'review_model_mode': self.model_mode.currentData(), 'review_model': self.model_catalog.combo.currentText(),
                 'review_timeout_seconds': self.timeout.value()}
-
-    def connection_changed(self):
-        self.draft()
-        self._model_provider = self.get_provider()
-        mode, model = self._model_drafts[self._model_provider]
-        self.model_mode.blockSignals(True)
-        self.model_catalog.combo.blockSignals(True)
-        self.model_mode.setCurrentIndex(self.model_mode.findData(mode))
-        self.model_catalog.combo.setCurrentText(model)
-        self.model_mode.blockSignals(False)
-        self.model_catalog.combo.blockSignals(False)
-        self.model_catalog.invalidate()
-        self._changed()
 
     @property
     def dirty(self):
@@ -188,8 +166,7 @@ class SafetyPage(QWidget):
     def _changed(self, *_):
         self.model_catalog.set_editable(self.model_mode.currentData() == 'separate')
         self.domains.setEnabled(self.link_mode.currentData() == 'allow_domains')
-        mode, selected = self.applied.settings.reviewer(self.get_provider())
-        model = selected if mode == 'separate' else 'фактическая модель каждого ответа (основная: ' + self.get_answer_model() + ')'
+        model = self.applied.settings.review_model if self.applied.settings.review_model_mode == 'separate' else 'фактическая модель каждого ответа (основная: ' + self.get_answer_model() + ')'
         self.state.setText('Локальные проверки: действуют\nНаграды: без AI-оценки\nAI-оценка самостоятельных реплик и тестирования: ' + model)
         self.settings_state.setText(self.applied.error or ('Есть несохранённые изменения — диагностика использует применённые настройки' if self.dirty else 'Настройки применены') + '\nВерсия политики: ' + self.applied.version[:12])
         self.error.setText(self.applied.error)
@@ -203,7 +180,7 @@ class SafetyPage(QWidget):
                 auth_key = self.model_catalog.get_credentials().api_key
             except (OSError, ValueError):
                 pass
-            if auth_key and any(auth_key in item for item in (settings.review_model, settings.openai_review_model)):
+            if auth_key and auth_key in settings.review_model:
                 raise ValueError('В поле модели указан API-ключ. Удалите его.')
         except ValueError as exc:
             self.error.setText(str(exc))
@@ -342,7 +319,6 @@ class DiagnosticPanel(QWidget):
         auth, model = None, self.get_answer_model()
         try:
             auth = self.get_credentials()
-            model = auth.model or model
         except (OSError, ValueError):
             pass
         # Run local first, even when credentials are missing; no paid call on a

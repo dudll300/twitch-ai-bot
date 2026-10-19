@@ -1,5 +1,4 @@
 """Moderator deletions invalidate every stage; no real IRC or HTTP."""
-import ai_connection
 import asyncio
 from concurrent.futures import Future
 from dataclasses import replace
@@ -162,7 +161,7 @@ class ModerationPipelineTests(unittest.IsolatedAsyncioTestCase):
             started.set()
             release.wait(2)
             return io.BytesIO(b'{"choices":[{"message":{"content":"{\\"allowed\\":true,\\"reasons\\":[]}"}}]}')
-        with patch("ai_connection.urlopen", side_effect=http):
+        with patch("urllib.request.urlopen", side_effect=http):
             tick = asyncio.create_task(self.controller.tick())
             self.assertTrue(await asyncio.to_thread(started.wait, 2))
             self.controller.receive(clear())
@@ -213,7 +212,7 @@ class ModerationPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.executor.kwargs[-1]["before_request"]()
             sequence = pending.messages[-1]["sequence"]
             pending.future.set_result(Decision("reply", f"Победа уже близко, попытка {budget}!", "viewer", (sequence,), "reaction"))
-            with patch("ai_connection.urlopen", return_value=io.BytesIO(b'{"choices":[{"message":{"content":"{\\"allowed\\":true,\\"reasons\\":[]}"}}]}')) as network:
+            with patch("urllib.request.urlopen", return_value=io.BytesIO(b'{"choices":[{"message":{"content":"{\\"allowed\\":true,\\"reasons\\":[]}"}}]}')) as network:
                 await self.controller.tick()
             self.assertEqual(len(self.controller.requests), budget)
             self.assertEqual(network.call_count, 1 if budget == 3 else 0)
@@ -245,7 +244,7 @@ class ModerationPipelineTests(unittest.IsolatedAsyncioTestCase):
         def http(*args, **kwargs):
             self.now += self.controller.settings.reply_ttl_seconds + 1
             return io.BytesIO(b'{"choices":[{"message":{"content":"{\\"allowed\\":true,\\"reasons\\":[]}"}}]}')
-        with patch("ai_connection.urlopen", side_effect=http):
+        with patch("urllib.request.urlopen", side_effect=http):
             await self.controller.tick()
         self.assertEqual(len(self.controller.requests), 1)
         self.sender.assert_not_called()
@@ -257,7 +256,7 @@ class ModerationPipelineTests(unittest.IsolatedAsyncioTestCase):
         def http(*args, **kwargs):
             self.controller.paid_busy = lambda: True
             return io.BytesIO(b'{"choices":[{"message":{"content":"{\\"allowed\\":true,\\"reasons\\":[]}"}}]}')
-        with patch("ai_connection.urlopen", side_effect=http):
+        with patch("urllib.request.urlopen", side_effect=http):
             await self.controller.tick()
         self.assertEqual(len(self.controller.requests), 1)
         self.sender.assert_not_called()

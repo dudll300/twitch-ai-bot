@@ -15,7 +15,6 @@ from PySide6.QtCore import QSize, QProcess
 from PySide6.QtGui import QFontDatabase, QFont
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
-import ai_connection
 import gui
 from message_history import MessageHistory
 from safety import SafetyReview
@@ -52,7 +51,7 @@ def main():
         assert 'ещё не выполнялась' in page.last_review.text()
         assert 'Локальные проверки: действуют' in page.state.text()
         assert 'Награды: без AI-оценки' in page.state.text()
-        with patch('ai_connection.urlopen') as network:
+        with patch('urllib.request.urlopen') as network:
             for index in range(len(gui.PAGES)):
                 window._navigate(index)
                 app.processEvents()
@@ -88,7 +87,7 @@ def main():
         diagnostic = window.testing_page.diagnostic
         diagnostic.kind.setCurrentIndex(1)
         diagnostic.text.setPlainText('twitch.tv')
-        with patch('ai_connection.urlopen') as network:
+        with patch('urllib.request.urlopen') as network:
             diagnostic.local_button.click()
             assert 'Локальные проверки пройдены' in diagnostic.result.text()
             network.assert_not_called()
@@ -98,7 +97,7 @@ def main():
         def http(req, timeout):
             captured.append(json.loads(req.data))
             return response({'allowed': True, 'reasons': []})
-        with patch('ai_connection.urlopen', side_effect=http):
+        with patch('urllib.request.urlopen', side_effect=http):
             diagnostic.ai_button.click()
             wait_for(lambda: not diagnostic._busy)
         assert len(captured) == 1 and captured[0]['model'] == 'review/manual'
@@ -110,7 +109,7 @@ def main():
             release.wait(4)
             return response({'allowed': True, 'reasons': []})
         try:
-            with patch('ai_connection.urlopen', side_effect=late):
+            with patch('urllib.request.urlopen', side_effect=late):
                 diagnostic.ai_button.click()
                 wait_for(started.is_set)
                 window.testing_page.mode.setCurrentIndex(0)

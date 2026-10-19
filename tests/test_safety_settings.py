@@ -1,5 +1,4 @@
 """Policy, exact hostnames, real pipeline integration and safe metadata; fake HTTP."""
-import ai_connection
 import asyncio
 from dataclasses import asdict, replace
 import io
@@ -93,7 +92,7 @@ class PolicyTests(unittest.TestCase):
 
     def test_allow_exact_https_bare_unicode_masked_and_markdown(self):
         policy = self.allow()
-        with policy_scope(self.store, policy), patch('ai_connection.urlopen') as network:
+        with policy_scope(self.store, policy), patch('urllib.request.urlopen') as network:
             for text in ('https://twitch.tv/channel?a=b', 'https://twitch.tv/path/video.html?q=other.invalid', 'TWITCH.TV', 'twitch[.]tv', 'twitch [.] tv',
                          '[канал](https://twitch.tv/channel)', 'пример.рф', 'https://пример.рф',
                          'xn--e1afmkfd.xn--p1ai'):
@@ -142,7 +141,7 @@ class PolicyTests(unittest.TestCase):
         self.store.apply(SafetySettings())
 
     def test_diagnostic_does_not_send_known_connection_key(self):
-        with patch('ai_connection.urlopen') as network:
+        with patch('urllib.request.urlopen') as network:
             for ai in (False, True):
                 review = diagnose(self.store, self.store.snapshot(), 'test-key', 'answer', ai=ai, auth=AUTH, answer_model='answer')
                 self.assertEqual(review.reasons, ('privacy_blocked',))
@@ -163,7 +162,7 @@ class PolicyTests(unittest.TestCase):
         for separate in (False, True):
             policy = self.allow(review_model_mode='separate', review_model='reviewer', review_timeout_seconds=15) if separate else self.store.snapshot()
             expected, seconds = ('reviewer', 15) if separate else ('backup', 8)
-            with policy_scope(self.store, policy), patch('ai_connection.urlopen', return_value=response({'allowed': True, 'reasons': []})) as network:
+            with policy_scope(self.store, policy), patch('urllib.request.urlopen', return_value=response({'allowed': True, 'reasons': []})) as network:
                 result = review_candidate(CFG, 'backup', 'Ответ')
                 self.assertTrue(result.allowed)
                 self.assertTrue(result.ai_attempted)
@@ -171,7 +170,7 @@ class PolicyTests(unittest.TestCase):
                 self.assertEqual(json.loads(network.call_args.args[0].data)['model'], expected)
                 self.assertEqual(network.call_args.kwargs['timeout'], seconds)
                 self.assertEqual(result.policy_version, policy.version)
-        with policy_scope(self.store, policy), patch('ai_connection.urlopen', side_effect=urllib.error.URLError('offline')) as network:
+        with policy_scope(self.store, policy), patch('urllib.request.urlopen', side_effect=urllib.error.URLError('offline')) as network:
             result = review_candidate(CFG, 'backup', 'Ответ')
             self.assertEqual(result.status, 'error')
             self.assertEqual(network.call_count, 1)
@@ -180,7 +179,7 @@ class PolicyTests(unittest.TestCase):
     def test_remaining_ttl_bounds_timeout_and_callback_runs_once(self):
         policy = self.allow(review_timeout_seconds=15)
         before = Mock(return_value=1.25)
-        with policy_scope(self.store, policy), patch('ai_connection.urlopen', return_value=response({'allowed': True, 'reasons': []})) as network:
+        with policy_scope(self.store, policy), patch('urllib.request.urlopen', return_value=response({'allowed': True, 'reasons': []})) as network:
             self.assertTrue(review_candidate(CFG, 'answer', 'Ответ', before_request=before).allowed)
         before.assert_called_once()
         self.assertEqual(network.call_args.kwargs['timeout'], 1.25)
@@ -188,19 +187,19 @@ class PolicyTests(unittest.TestCase):
     def test_invalid_json_timeout_semantic_rejection_are_distinct(self):
         for value, status in [('not json', 'error'), ({'allowed': False, 'reasons': ['threat']}, 'blocked'),
                               ({'allowed': False, 'reasons': ['fraud']}, 'blocked')]:
-            with patch('ai_connection.urlopen', return_value=response(value)):
+            with patch('urllib.request.urlopen', return_value=response(value)):
                 review = review_candidate(CFG, 'answer', 'Ответ')
                 self.assertEqual(review.status, status)
                 self.assertTrue(review.ai_attempted)
                 self.assertFalse(review.allowed)
-        with patch('ai_connection.urlopen', side_effect=TimeoutError):
+        with patch('urllib.request.urlopen', side_effect=TimeoutError):
             self.assertEqual(review_candidate(CFG, 'answer', 'Ответ').status, 'error')
 
     def test_policy_change_during_review_discards_exact_candidate(self):
         def http(*args, **kwargs):
             self.store.apply(SafetySettings())
             return response({'allowed': True, 'reasons': []})
-        with patch('ai_connection.urlopen', side_effect=http):
+        with patch('urllib.request.urlopen', side_effect=http):
             review = review_candidate(CFG, 'answer', 'Ответ')
         self.assertEqual(review.reasons, ('policy_changed',))
         self.assertFalse(review.text)
@@ -215,14 +214,14 @@ class PolicyTests(unittest.TestCase):
             payload = json.loads(req.data)
             models.append(payload['model'])
             return response({'allowed': True, 'reasons': []} if payload['max_tokens'] == 160 else 'https://twitch.tv')
-        with patch('ai_connection.urlopen', side_effect=http):
+        with patch('urllib.request.urlopen', side_effect=http):
             for model in snapshot.models:
                 self.assertEqual(testing.test_model(snapshot, model).answer, 'https://twitch.tv')
         self.assertEqual(models, ['one', 'reviewer', 'two', 'reviewer'])
 
     def test_diagnosis_local_no_api_and_exact_answer_format(self):
         policy = self.store.snapshot()
-        with patch('ai_connection.urlopen') as network:
+        with patch('urllib.request.urlopen') as network:
             for text in ('Расскажи, как защитить почту от спама', 'Покажи телефон в Cyberpunk', 'Привет.Как дела?'):
                 review = diagnose(self.store, policy, text, 'question')
                 self.assertEqual(review.status, 'local_allowed')
@@ -236,7 +235,7 @@ class PolicyTests(unittest.TestCase):
     def test_diagnosis_ai_exact_candidate_one_call_without_generation(self):
         policy = self.allow(review_model_mode='separate', review_model='reviewer')
         text = '  Заебись, опять катка!  '
-        with patch('ai_connection.urlopen', return_value=response({'allowed': True, 'reasons': []})) as network:
+        with patch('urllib.request.urlopen', return_value=response({'allowed': True, 'reasons': []})) as network:
             result = diagnose(self.store, policy, text, 'answer', ai=True, auth=AUTH, answer_model='answer')
         self.assertEqual(network.call_count, 1)
         payload = json.loads(network.call_args.args[0].data)
@@ -247,7 +246,7 @@ class PolicyTests(unittest.TestCase):
         self.assertFalse((self.root / 'message-history.sqlite3').exists())
 
     def test_diagnosis_local_block_question_and_cancel_never_call_ai(self):
-        with patch('ai_connection.urlopen') as network:
+        with patch('urllib.request.urlopen') as network:
             for text, kind in [('evil.invalid', 'answer'), ('alex @ example . invalid', 'question'), ('Привет', 'question')]:
                 result = diagnose(self.store, self.store.snapshot(), text, kind, ai=True, auth=AUTH, answer_model='answer')
                 self.assertFalse(result.ai_attempted)
@@ -301,7 +300,7 @@ class RuntimePolicyTests(unittest.IsolatedAsyncioTestCase):
             if len(calls) == 1:
                 raise urllib.error.URLError('offline')
             return response({'allowed': True, 'reasons': []} if payload['max_tokens'] == 160 else 'https://twitch.tv')
-        with patch('ai_connection.urlopen', side_effect=http):
+        with patch('urllib.request.urlopen', side_effect=http):
             await self.reward()
         self.assertEqual(calls, ['answer', 'backup'])
         self.assertIn('https://twitch.tv', self.writer.write.call_args.args[0].decode())
@@ -311,7 +310,7 @@ class RuntimePolicyTests(unittest.IsolatedAsyncioTestCase):
         self.instance.last_sent = 0
         self.instance.histories.clear()
         self.store.apply(SafetySettings())
-        with patch('ai_connection.urlopen', return_value=response('https://twitch.tv')) as network:
+        with patch('urllib.request.urlopen', return_value=response('https://twitch.tv')) as network:
             await self.reward()
         self.assertEqual(network.call_count, 1)
         self.assertFalse(self.instance.histories)
@@ -344,7 +343,7 @@ class RuntimePolicyTests(unittest.IsolatedAsyncioTestCase):
         def http(req, timeout):
             self.store.apply(SafetySettings())
             return response('Неопубликованный кандидат')
-        with patch('ai_connection.urlopen', side_effect=http):
+        with patch('urllib.request.urlopen', side_effect=http):
             await self.reward()
         self.assertFalse(self.instance.histories)
         self.assertNotIn('Неопубликованный кандидат', self.writer.write.call_args.args[0].decode())
@@ -402,7 +401,7 @@ class AutonomousPolicyTests(unittest.IsolatedAsyncioTestCase):
             if len(models) == 2:
                 return response({'text': 'https://twitch.tv'})
             return response(review or {'allowed': True, 'reasons': []})
-        with patch('ai_connection.urlopen', side_effect=http):
+        with patch('urllib.request.urlopen', side_effect=http):
             result = await asyncio.to_thread(self.executor.callback, *self.executor.args, **self.executor.kwargs)
             self.executor.future.set_result(result)
             await self.controller.tick()
@@ -438,7 +437,7 @@ class AutonomousPolicyTests(unittest.IsolatedAsyncioTestCase):
         pending = await self.start()
         self.executor.future.set_result(Decision('reply', 'https://twitch.tv', 'viewer', (1,), 'answer'))
         self.store.apply(SafetySettings())
-        with patch('ai_connection.urlopen') as network:
+        with patch('urllib.request.urlopen') as network:
             await self.controller.tick()
         network.assert_not_called()
         self.sender.assert_not_called()
@@ -451,7 +450,7 @@ class AutonomousPolicyTests(unittest.IsolatedAsyncioTestCase):
         def http(*args, **kwargs):
             self.store.apply(SafetySettings())
             return response({'allowed': True, 'reasons': []})
-        with patch('ai_connection.urlopen', side_effect=http) as network:
+        with patch('urllib.request.urlopen', side_effect=http) as network:
             await self.controller.tick()
         self.assertEqual(network.call_count, 1)
         self.assertEqual(len(self.controller.requests), 1)
@@ -466,7 +465,7 @@ class AutonomousPolicyTests(unittest.IsolatedAsyncioTestCase):
             await self.start()
             self.executor.future.set_result(Decision('reply', 'https://twitch.tv', 'viewer', (1,), 'answer'))
             self.controller.requests = [] if remaining else [self.now] * 3
-            with patch('ai_connection.urlopen', side_effect=urllib.error.URLError('offline')) as network:
+            with patch('urllib.request.urlopen', side_effect=urllib.error.URLError('offline')) as network:
                 await self.controller.tick()
             self.assertEqual(network.call_count, 1 if remaining else 0)
             self.sender.assert_not_called()

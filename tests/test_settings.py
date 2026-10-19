@@ -46,7 +46,7 @@ class SettingsTests(unittest.TestCase):
         for entered, expected in (("", "deepseek-v4-pro,deepseek-v4-flash"), ("-", "")):
             with self.subTest(entered=entered), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / ".env"
-                inputs = ["streamer", "helper", "client", "", "compatible", "", "", entered]
+                inputs = ["streamer", "helper", "client", "", "", "", entered]
                 with patch("builtins.input", side_effect=inputs), patch.object(
                         start.getpass, "getpass", return_value="test-key"):
                     start.setup(path)

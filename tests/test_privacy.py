@@ -1,4 +1,3 @@
-import ai_connection
 import asyncio
 import io
 import json
@@ -62,7 +61,7 @@ class PrivacyTests(unittest.TestCase):
 
     def test_sensitive_input_after_truncation_limit_still_rejected_without_network(self):
         question = "x" * 500 + " viewer@example.com"
-        with patch.object(ai_connection, "urlopen") as http:
+        with patch.object(ai_client.urllib.request, "urlopen") as http:
             with self.assertRaises(privacy.PrivacyViolation):
                 ai_client.call_ai({}, "viewer", question)
             with self.assertRaises(privacy.PrivacyViolation):
@@ -73,7 +72,7 @@ class PrivacyTests(unittest.TestCase):
     def test_transport_guard_covers_direct_and_structured_requests_and_blocks_output(self):
         cfg = {"AI_CHAT_URL": "https://example.com/chat/completions", "AI_API_KEY": "key"}
         for raw in ("viewer@example.com", json.dumps({"text": "Телефон: +79991234567"})):
-            with patch.object(ai_connection, "urlopen", return_value=response(raw)) as http:
+            with patch.object(ai_client.urllib.request, "urlopen", return_value=response(raw)) as http:
                 with self.assertRaises(privacy.PrivacyViolation):
                     ai_client.request_completion(cfg, "model", [{"role": "user", "content": "Привет"}])
                 payload = json.loads(http.call_args.args[0].data)
@@ -91,7 +90,7 @@ class PrivacyTests(unittest.TestCase):
 
     def test_private_profile_or_notes_never_reach_provider(self):
         cfg = {"AI_CHAT_URL": "https://example.com/chat/completions", "AI_API_KEY": "key"}
-        with patch.object(ai_connection, "urlopen") as http:
+        with patch.object(ai_client.urllib.request, "urlopen") as http:
             for content in ("Личная инструкция: позвони +79991234567",
                             '{"заметки":"viewer\\u0040example.com"}'):
                 with self.subTest(content=content), self.assertRaises(privacy.PrivacyViolation):
@@ -106,7 +105,7 @@ class PrivacyTests(unittest.TestCase):
     def test_private_truncated_output_is_not_a_retryable_model_failure(self):
         payload = {"choices": [{"finish_reason": "length", "message": {"content": "viewer@example.com"}}]}
         cfg = {"AI_CHAT_URL": "https://example.com/chat/completions", "AI_API_KEY": "key"}
-        with patch.object(ai_connection, "urlopen", return_value=io.BytesIO(json.dumps(payload).encode())):
+        with patch.object(ai_client.urllib.request, "urlopen", return_value=io.BytesIO(json.dumps(payload).encode())):
             with self.assertRaises(privacy.PrivacyViolation):
                 ai_client.request_completion(cfg, "model", [], reject_truncated=True)
 

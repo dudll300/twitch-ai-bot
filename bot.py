@@ -10,7 +10,6 @@ import time
 import urllib.request
 from collections import deque
 from dataclasses import replace
-from ai_connection import migrate, selected_values
 
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
@@ -48,11 +47,7 @@ SERVICE_NOTICES = frozenset({PRIVACY_REFUSAL, REWARD_BLOCKED_REFUSAL, SAFETY_REF
 def config() -> dict[str, str]:
     # Saved form values take precedence over inherited shell variables.
     values = {**DEFAULTS, **os.environ, **read_config(ROOT / ".env")}
-    values = migrate(values)
-    # Keep first-run validation order: Twitch fields, then the selected AI.
-    result = {name: normalize(name, values.get(name, "")) for name, _ in FIELDS if not name.startswith('AI_')}
-    values.update(selected_values(values, values))
-    result.update({name: normalize(name, values.get(name, "")) for name, _ in FIELDS if name.startswith('AI_')})
+    result = {name: normalize(name, values.get(name, "")) for name, _ in FIELDS}
     prompt_path = ROOT / "prompt.txt"
     result["AI_PROMPT"] = prompt_path.read_text(encoding="utf-8-sig").strip() if prompt_path.exists() else SYSTEM_PROMPT
     if len(result["AI_PROMPT"]) > 20000:

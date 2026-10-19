@@ -20,7 +20,6 @@ from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget
 
-import ai_connection
 import gui
 import model_catalog_gui
 import testing
@@ -167,7 +166,7 @@ def check_all_page_text_fields(app):
         page = window.testing_page
         page.question.setPlainText("Вопрос для проверки прокрутки")
         page._add_model(testing.Model("scroll/model"), checked=True)
-        with patch.object(ai_connection, "urlopen", return_value=response(
+        with patch.object(testing.urllib.request, "urlopen", return_value=response(
                 {"choices": [{"message": {"content": "Короткий ответ"}}]})):
             page.run_button.click()
             wait_for(lambda: not page._testing_busy)
@@ -238,7 +237,8 @@ def main():
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
         (root / ".env").write_text(env_content({"AI_API_KEY": "saved-secret", "AI_MODEL": "draft/model"}), encoding="utf-8")
-        with patch.object(gui, "data_dir", return_value=root), patch.object(ai_connection, "urlopen") as network:
+        with patch.object(gui, "data_dir", return_value=root), patch.object(
+                testing.urllib.request, "urlopen") as network:
             window = gui.MainWindow()
             window.show()
             app.processEvents()
@@ -254,7 +254,7 @@ def main():
             assert request.get_header("Authorization") == "Bearer saved-secret"
             assert timeout == 20
             return response({"data": [{"id": "available/model"}, {"id": "denied/model", "available": False}]})
-        with patch.object(ai_connection, "urlopen", side_effect=catalog) as network:
+        with patch.object(testing.urllib.request, "urlopen", side_effect=catalog) as network:
             control.refresh_button.click()
             assert control._busy and not control.refresh_button.isEnabled()
             control.refresh()  # Programmatic double click also stays harmless.
@@ -272,7 +272,7 @@ def main():
         window.model.setEditText("manual/model")
         error = urllib.error.HTTPError("https://ai.starimg.ru/v1/models", 401, "error", {},
                                        response({"error": {"message": "Invalid saved-secret"}}))
-        with patch.object(ai_connection, "urlopen", side_effect=error):
+        with patch.object(testing.urllib.request, "urlopen", side_effect=error):
             control.refresh_button.click()
             wait_for(lambda: not control._busy)
         assert "HTTP 401" in control.status.text()
@@ -288,7 +288,7 @@ def main():
                 return response({"data": [{"id": "old-key-only"}]})
             finally:
                 finished.set()
-        with patch.object(ai_connection, "urlopen", side_effect=stale_catalog):
+        with patch.object(testing.urllib.request, "urlopen", side_effect=stale_catalog):
             control.refresh_button.click()
             wait_for(started.is_set)
             window.api_key.setText("new-secret")
@@ -380,7 +380,7 @@ def main():
         started.clear()
         release.clear()
         finished.clear()
-        with patch.object(ai_connection, "urlopen", side_effect=stale_catalog), patch.object(
+        with patch.object(testing.urllib.request, "urlopen", side_effect=stale_catalog), patch.object(
                 gui, "russian_question", return_value=QMessageBox.Discard):
             control.refresh_button.click()
             wait_for(started.is_set)

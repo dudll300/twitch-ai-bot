@@ -1,5 +1,4 @@
 """Real selector -> transport -> privacy; only urlopen is replaced, never AI stages."""
-import ai_connection
 import asyncio
 from contextlib import closing
 import base64
@@ -55,7 +54,7 @@ class TransportPrivacyRegression(unittest.TestCase):
         messages = messages or rows()
         outputs = outputs or [asdict(plan(len(messages))), {'text': 'Подожду такого же дропа'}]
         trace, gate = ai_client.RequestTrace(), Mock(return_value=20)
-        with patch('ai_connection.urlopen', side_effect=[response(item) for item in outputs]) as http:
+        with patch('urllib.request.urlopen', side_effect=[response(item) for item in outputs]) as http:
             result = request_decision(CFG, messages, replace(auto.AutoSettings(), context_count=len(messages)),
                                       before_request=gate, request_trace=trace, **options)
         return result, http, gate, trace
@@ -93,12 +92,12 @@ class TransportPrivacyRegression(unittest.TestCase):
         for index in (0, 10, 19):
             messages = rows()
             messages[index]['text'] = json.dumps({'user_id': '+79991234567', 'note': CONTACT})
-            with self.subTest(index=index), patch('ai_connection.urlopen', return_value=response(asdict(Plan('silent')))) as http:
+            with self.subTest(index=index), patch('urllib.request.urlopen', return_value=response(asdict(Plan('silent')))) as http:
                 result = request_decision(CFG, messages, auto.AutoSettings(), new_ids={index+1})
                 self.assertEqual(result.action, 'silent')
                 http.assert_not_called()
             # Other safe new messages remain usable, but no private row reaches HTTP.
-            with patch('ai_connection.urlopen', return_value=response(asdict(Plan('silent')))) as http:
+            with patch('urllib.request.urlopen', return_value=response(asdict(Plan('silent')))) as http:
                 request_decision(CFG, messages, auto.AutoSettings())
                 self.assertNotIn(CONTACT, http.call_args.args[0].data.decode())
                 self.assertNotIn('+79991234567', http.call_args.args[0].data.decode())
@@ -110,7 +109,7 @@ class TransportPrivacyRegression(unittest.TestCase):
                  (CFG, dict(profiles=[dict(login='viewer0', user_id=rows()[0]['user_id'], aliases=[CONTACT], enabled=True)]))]
         for cfg, options in cases:
             gate, trace = Mock(return_value=20), ai_client.RequestTrace()
-            with self.subTest(options=options), patch('ai_connection.urlopen') as http:
+            with self.subTest(options=options), patch('urllib.request.urlopen') as http:
                 with self.assertRaises(privacy.PrivacyViolation) as caught:
                     request_decision(cfg, rows(), auto.AutoSettings(), before_request=gate, request_trace=trace, **options)
                 self.assertEqual(caught.exception.stage, 'selector_request')
@@ -125,7 +124,7 @@ class TransportPrivacyRegression(unittest.TestCase):
             for phase in ('selector_response', 'generator_response'):
                 outputs = [encoded] if phase == 'selector_response' else [asdict(plan()), {'text': encoded}]
                 trace, gate = ai_client.RequestTrace(), Mock(return_value=20)
-                with self.subTest(phase=phase, encoded=encoded), patch('ai_connection.urlopen',
+                with self.subTest(phase=phase, encoded=encoded), patch('urllib.request.urlopen',
                         side_effect=[response(item) for item in outputs]) as http:
                     with self.assertRaises(privacy.PrivacyViolation) as caught:
                         request_decision(CFG, rows(), auto.AutoSettings(), before_request=gate, request_trace=trace)
@@ -149,7 +148,7 @@ class TransportPrivacyRegression(unittest.TestCase):
         for complex_text in ('[' * 20 + '0' + ']' * 20, json.dumps(list(range(17000))),
                              'base64 ' + base64.b64encode(b'x' * 1100).decode()):
             gate = Mock(return_value=20)
-            with patch('ai_connection.urlopen') as http, self.assertRaises(privacy.PrivacyAnalysisLimit):
+            with patch('urllib.request.urlopen') as http, self.assertRaises(privacy.PrivacyAnalysisLimit):
                 ai_client.request_completion(CFG, 'chosen', [{'role': 'user', 'content': complex_text}], before_request=gate)
             gate.assert_not_called()
             http.assert_not_called()
@@ -164,7 +163,7 @@ class TransportPrivacyRegression(unittest.TestCase):
                  (response(asdict(plan()), 'length'), 'truncated'), (response('not-json'), 'json'),
                  (response(invalid_schema), 'schema'), (response(disconnected), 'roles')]
         for output, suffix in cases:
-            with self.subTest(suffix=suffix), patch('ai_connection.urlopen', side_effect=[output]) as http:
+            with self.subTest(suffix=suffix), patch('urllib.request.urlopen', side_effect=[output]) as http:
                 with self.assertRaises(ParticipationError) as caught:
                     request_decision(CFG, rows(), auto.AutoSettings())
                 self.assertEqual(caught.exception.code, 'autonomous_selection_' + suffix)
@@ -234,7 +233,7 @@ class ControllerPrivacyRegression(unittest.IsolatedAsyncioTestCase):
         pending = self.controller.pending
         outputs = outputs or [response(asdict(plan())), response({'text': 'Подожду такого же дропа'}),
                               response({'allowed': True, 'reasons': []})]
-        with patch('ai_connection.urlopen', side_effect=outputs) as http:
+        with patch('urllib.request.urlopen', side_effect=outputs) as http:
             function, args, kwargs = self.executor.call
             try:
                 result = function(*args, **kwargs)
@@ -318,7 +317,7 @@ class ControllerPrivacyRegression(unittest.IsolatedAsyncioTestCase):
                     return 'attempted'
                 except RequestCancelled as exc:
                     return exc.code
-        with patch('ai_connection.urlopen', side_effect=lambda *a, **k: response('Ответ')) as http:
+        with patch('urllib.request.urlopen', side_effect=lambda *a, **k: response('Ответ')) as http:
             with ThreadPoolExecutor(max_workers=8) as pool:
                 results = list(pool.map(lambda _: call(), range(8)))
         self.assertEqual(results.count('attempted'), 3)
@@ -349,13 +348,13 @@ class ReviewCancellationRegression(unittest.TestCase):
                 for code in ('quota_exhausted', 'ttl_expired', 'paid_priority', 'settings_changed', 'cancelled'):
                     gate = Mock(side_effect=RequestCancelled(code=code))
                     trace = ai_client.RequestTrace()
-                    with self.subTest(code=code), patch('ai_connection.urlopen') as http:
+                    with self.subTest(code=code), patch('urllib.request.urlopen') as http:
                         result = review_candidate(CFG, 'chosen', 'Безопасный ответ', before_request=gate, request_trace=trace)
                     self.assertEqual(result.reasons, (code,))
                     self.assertFalse(result.ai_attempted)
                     self.assertEqual(trace.counts(), (0, 0, 0))
                     http.assert_not_called()
-                with patch('ai_connection.urlopen') as http:
+                with patch('urllib.request.urlopen') as http:
                     result = review_candidate(CFG, 'chosen', CONTACT)
                 self.assertEqual(result.reasons, ('privacy_blocked',))
                 http.assert_not_called()

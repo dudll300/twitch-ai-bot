@@ -1,5 +1,4 @@
 """Three confirmed Oct 10 defects, exercised through the real HTTP preflight."""
-import ai_connection
 from dataclasses import asdict
 import asyncio
 from collections import deque
@@ -47,7 +46,7 @@ class NestedPrivacyTests(unittest.TestCase):
                         with self.assertRaises(privacy.PrivacyViolation):
                             privacy.check_output(content)
                         gate = fixtures.Mock(return_value=20)
-                        with patch('ai_connection.urlopen') as http:
+                        with patch('urllib.request.urlopen') as http:
                             with self.assertRaises(privacy.PrivacyViolation):
                                 ai_client.request_completion(fixtures.CFG, 'chosen',
                                     [{'role':'user', 'content': content}], before_request=gate)
@@ -93,7 +92,7 @@ class NestedPrivacyTests(unittest.TestCase):
                                ('hex', fixtures.CONTACT.encode().hex())):
             plan = asdict(fixtures.plan())
             plan.update(topic=label, intent=encoded)
-            with self.subTest(label=label), patch('ai_connection.urlopen',
+            with self.subTest(label=label), patch('urllib.request.urlopen',
                     return_value=fixtures.response(plan)) as http:
                 with self.assertRaises(privacy.PrivacyViolation) as caught:
                     request_decision(fixtures.CFG, fixtures.rows(), autonomous.AutoSettings())
@@ -191,7 +190,7 @@ class RewardLocalPublicationTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(review, Exception):
                 raise review
             return review() if callable(review) else fixtures.response(review or dict(allowed=True, reasons=[]))
-        with patch('bot.time.time', return_value=10000), patch('ai_connection.urlopen', side_effect=http) as network:
+        with patch('bot.time.time', return_value=10000), patch('urllib.request.urlopen', side_effect=http) as network:
             task = asyncio.create_task(self.instance.worker(self.writer, queue))
             try:
                 await asyncio.wait_for(queue.join(), 5)
@@ -353,7 +352,7 @@ class ContextBoundsAndLegacyTests(unittest.TestCase):
         payload = snapshot.request_content(encoded, 'reward', 'viewer')
         with self.assertRaises(privacy.PrivacyViolation):
             privacy.check_output(payload)
-        with patch('ai_connection.urlopen') as network:
+        with patch('urllib.request.urlopen') as network:
             review = safety.review_candidate(fixtures.CFG, 'chosen', '@viewer ' + encoded,
                                             target='viewer', context=snapshot)
         self.assertEqual(review.reasons, ('privacy_blocked',))

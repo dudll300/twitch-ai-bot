@@ -44,8 +44,6 @@ class TestingPage(QWidget):
         self._catalog_busy = False
         self._testing_busy = False
         self._catalog_auth = None
-        self._pending_catalog_auth = None
-        self._catalog_cancel = Event()
         self._remaining = 0
         self._result_widgets = {}
         self.catalog = ()
@@ -225,30 +223,24 @@ class TestingPage(QWidget):
         self.login.setVisible(mode == "viewer")
 
     def invalidate_catalog(self, *_):
-        self._catalog_cancel.set()
-        self._catalog_cancel = Event()
-        self._pending_catalog_auth = None
-        self._catalog_busy = False
         self.catalog = ()
         self._catalog_auth = None
         self.models.clear()
         self.catalog_status.setText("Параметры API изменились. Обновите каталог для текущего ключа.")
         self._selection_count()
-        self._set_busy()
 
     def selected_models(self):
         return [self.models.item(i).data(Qt.UserRole) for i in range(self.models.count())
                 if self.models.item(i).checkState() == Qt.Checked]
 
     def _add_model(self, model, checked=False):
-        denied = model.available is False or bool(model.chat_error)
-        suffix = ' · не подходит для текстового чата' if model.chat_error else " · недоступна для ключа" if denied else ""
+        suffix = " · недоступна для ключа" if model.available is False else ""
         item = QListWidgetItem(model.id + suffix)
-        item.setToolTip(model.chat_error or model.id + suffix)
+        item.setToolTip(model.id + suffix)
         item.setData(Qt.UserRole, model.id)
         item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-        item.setCheckState(Qt.Checked if checked and not denied else Qt.Unchecked)
-        if denied:
+        item.setCheckState(Qt.Checked if checked and model.available is not False else Qt.Unchecked)
+        if model.available is False:
             item.setFlags(item.flags() & ~Qt.ItemIsEnabled & ~Qt.ItemIsUserCheckable)
         self.models.addItem(item)
 
@@ -312,10 +304,9 @@ class TestingPage(QWidget):
             self.catalog_status.setText(str(exc) + " Можно ввести ID вручную.")
             return
         self._catalog_busy = True
-        self._pending_catalog_auth = auth.identity
         self._set_busy()
         self.catalog_status.setText("Загружаем модели для текущего API-ключа…")
-        Thread(target=catalog_worker, args=(auth, self._events, self._catalog_cancel), daemon=True).start()
+        Thread(target=catalog_worker, args=(auth, self._events, self._cancel), daemon=True).start()
 
     def start_test(self):
         if self._testing_busy or self._catalog_busy or self._closed:
@@ -333,7 +324,7 @@ class TestingPage(QWidget):
         self._remaining = len(snapshot.models)
         self._set_busy()
         source = "Проверяемый промпт: временный вариант из генератора." if kwargs else "Проверяемый промпт: общий из «Поведения»."
-        self.context.setText(snapshot.auth.description + '\n' + source + "\n" + snapshot.context)
+        self.context.setText(source + "\n" + snapshot.context)
         while self.results_layout.count():
             widget = self.results_layout.takeAt(0).widget()
             widget.deleteLater()
@@ -363,15 +354,13 @@ class TestingPage(QWidget):
                 return
             if event[0] == "catalog":
                 _, auth, models, error = event
-                if auth != self._pending_catalog_auth:
-                    continue
                 self._catalog_busy = False
                 self._set_busy()
                 try:
                     current = self.get_credentials()
                 except (OSError, ValueError):
                     current = None
-                if current is None or current.identity != auth:
+                if current != auth:
                     self.invalidate_catalog()
                     continue
                 selected = set(self.selected_models())
@@ -414,7 +403,6 @@ class TestingPage(QWidget):
         self.diagnostic.shutdown()
         self._closed = True
         self._cancel.set()
-        self._catalog_cancel.set()
         self._timer.stop()
         # Running HTTP calls finish on daemon threads; they only retain plain data.
         # No wait, Qt signal emission, logging or persistence during window teardown.

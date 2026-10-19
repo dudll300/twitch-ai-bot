@@ -8,7 +8,6 @@ from pathlib import Path
 from configuration import (AI_MODEL, DEFAULTS, FIRST_RUN_FALLBACK_MODELS, FIELDS, read_config, normalize,
                            invalidate_tokens, env_content)
 from paths import data_dir
-from ai_connection import migrate, profiles, selected_values, origin, profile_key
 
 
 ROOT = data_dir()
@@ -17,8 +16,6 @@ ENV_PATH = ROOT / ".env"
 
 def complete(values: dict[str, str]) -> bool:
     try:
-        values = migrate(values)
-        values = selected_values(values, values)
         return all(normalize(name, values.get(name, DEFAULTS.get(name, ""))) or name == "AI_FALLBACK_MODELS" for name, _ in FIELDS)
     except ValueError:
         return False
@@ -32,21 +29,10 @@ def setup(path: Path, force: bool = False) -> None:
     print("\nПервоначальная настройка бота. Данные сохраняются только в файле .env на этом компьютере.")
     print(f"Основная модель: {previous.get('AI_MODEL', AI_MODEL)}; Base URL по умолчанию — https://ai.starimg.ru/v1.")
     print("Для Twitch нужен отдельный аккаунт бота и Client ID приложения типа Public.\n")
-    values = migrate(previous)
-    selected = values['AI_PROVIDER']
-    active = profiles(previous)[selected]
+    values = dict(previous)
     for name, label in FIELDS:
-        old = active.get(name.removeprefix('AI_'), '') if name.startswith('AI_') and name != 'AI_PROVIDER' else previous.get(name, DEFAULTS.get(name, ""))
-        if name == 'AI_BASE_URL' and selected == 'openai':
-            values[name] = active['BASE_URL']
-            print('OpenAI: https://api.openai.com/v1; основная модель — ' + active['MODEL'])
-            continue
-        if name == 'AI_API_KEY' and old:
-            bound = active['KEY_ORIGIN'] or origin(active['BASE_URL'])
-            if bound != origin(values['AI_BASE_URL']):
-                old = ''
-                print('Адрес изменился: введите ключ для нового сервера.')
-        if name == "AI_FALLBACK_MODELS" and first_run and selected == 'compatible':
+        old = previous.get(name, DEFAULTS.get(name, ""))
+        if name == "AI_FALLBACK_MODELS" and first_run:
             old = FIRST_RUN_FALLBACK_MODELS
         while True:
             suffix = (f" [Enter — {old}]" if name in DEFAULTS else
@@ -58,19 +44,11 @@ def setup(path: Path, force: bool = False) -> None:
                 raise RuntimeError("Настройка отменена; файл .env не изменён.") from None
             try:
                 values[name] = normalize(name, "" if name == "AI_FALLBACK_MODELS" and entered == "-" else entered or old)
-                if name == 'AI_PROVIDER':
-                    selected = values[name]
-                    active = profiles(previous)[selected]
-                    values.update({'AI_' + key: value for key, value in active.items() if key != 'KEY_ORIGIN'})
-                if name == 'AI_API_KEY' and entered.strip():
-                    values[profile_key(selected, 'CONFIRMED_ORIGIN')] = origin(values['AI_BASE_URL'])
                 break
             except ValueError as exc:
                 print(f"Ошибка: {exc}")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(".env.tmp")
-    values = {**values, **selected_values(values, previous)}
-    values = {key: value for key, value in values.items() if not key.endswith('_CONFIRMED_ORIGIN')}
     temporary.write_text(env_content(values), encoding="utf-8")
     temporary.replace(path)
     if sys.platform != "win32":

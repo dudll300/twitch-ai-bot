@@ -11,7 +11,7 @@ from privacy import check_question
 
 
 DEFAULT_TOPICS = "Стрим, игры, события канала и повседневное общение со зрителями"
-GENERATOR_MODEL = "deepseek-v4.1-flash"
+GENERATOR_MODEL = "gpt-6.1-sol"
 MAX_PROMPT = 20000
 
 PRESETS = (

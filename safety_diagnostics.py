@@ -31,7 +31,7 @@ def diagnose(store, policy, text, kind, *, target='', ai=False, auth=None, answe
             # Results never carry the diagnosis input, even for allowed text.
             from dataclasses import replace
             return replace(local, text='')
-        if auth is None or not policy.model_for(answer_model, auth.provider).strip():
+        if auth is None or not policy.model_for(answer_model).strip():
             return SafetyReview('error', '', ('review_unavailable',))
         review = review_candidate(auth.config(), answer_model, text, kind='diagnostic', target=target, cancelled=cancelled, cancellation_reason='cancelled')
         from dataclasses import replace
