@@ -12,6 +12,7 @@ from message_history import MessageHistory
 from studio_rows import OrbitRowDelegate
 from studio_icons import studio_icon
 from studio_artwork import PageTransition
+from studio_surfaces import GlowSurface
 from ui_widgets import ReadingText, panel_badge, field
 from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, label, scroll_page, MasterDetail, Disclosure
 
@@ -63,7 +64,7 @@ def history_worker(store, tasks, output, closed):
 
 from ui_widgets import StudioButton as QPushButton
 
-class HistoryPage(QWidget):
+class HistoryPage(GlowSurface):
     def __init__(self, root):
         super().__init__()
         self.store = MessageHistory(root)
@@ -167,6 +168,7 @@ class HistoryPage(QWidget):
         left_layout.addWidget(self.entries, 1)
         pager = QHBoxLayout()
         pager.setContentsMargins(18, 12, 18, 16)
+        pager.setSpacing(12)
         self.newer, self.older = QPushButton("Новее"), QPushButton("Старее")
         self.page_label = plain("", "muted")
         pager.addWidget(self.newer)

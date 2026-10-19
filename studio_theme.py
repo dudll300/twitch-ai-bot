@@ -1,30 +1,44 @@
 """Semantic theme tokens for the Windows studio and native Qt controls."""
 from PySide6.QtGui import QColor, QPalette, QFont, QFontDatabase
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QWidget
 from paths import resource_path
+from functools import lru_cache
 
 PALETTES = {
     "dark": dict(bg="#06090F", surface="#0C121C", raised="#152438", input="#0A121E",
                  text="#EFF5FF", muted="#A9B8CE", border="#2D4058", accent="#B5DCFF",
                  primary="#C5DFFF", primaryText="#112B48", primaryHover="#DCEEFF",
+                 panelTop="#14243A", panelBottom="#0A111D", glow="#3E86EA", glowSecondary="#756AC5",
                  selected="#162D44", success="#8BE0BB", successbg="#12352C",
                  error="#FFBCC8", errorbg="#40202D", warning="#F5D59A", warningbg="#382D19"),
     "light": dict(bg="#F7FAFF", surface="#FFFFFF", raised="#EEF3FA", input="#FFFFFF",
                   text="#162032", muted="#526179", border="#B8C5D7", accent="#0066CC",
                   primary="#D5E6FF", primaryText="#173459", primaryHover="#C5DDFF",
+                  panelTop="#EDF4FF", panelBottom="#FFFFFF", glow="#6D9FDB", glowSecondary="#A794CB",
                   selected="#E1EEFF", success="#14623D", successbg="#E1F4E9",
                   error="#9C183A", errorbg="#FCE8EF", warning="#785006", warningbg="#FFF1D1"),
 }
 
 
+@lru_cache(maxsize=2)
 def stylesheet(theme="dark"):
-    p = PALETTES[theme]
+    # One stable style tree. Theme changes update the palette, not 1300 widgets'
+    # style sheets. Semantic status labels resolve their small local palette.
+    p = dict(bg="palette(window)", surface="palette(alternate-base)", raised="palette(button)",
+             input="palette(base)", text="palette(text)", muted="palette(link-visited)",
+             border="palette(mid)", accent="palette(link)", selected="palette(highlight)",
+             primary="palette(midlight)", primaryText="palette(bright-text)", primaryHover="palette(light)",
+             panelTop="palette(dark)", panelBottom="palette(shadow)",
+             success="palette(text)", successbg="palette(highlight)", error="palette(text)",
+             errorbg="palette(button)", warning="palette(text)", warningbg="palette(button)")
     check = resource_path("assets/checkmark.svg").as_posix()
     return """
 QWidget {{ color: {text}; font-family: 'Onest'; font-size: 14px; }}
 QMainWindow, QWidget#workspace, QWidget#mainArea {{ background: {bg}; }}
 QFrame#sidebar {{ background: {surface}; border-right: 1px solid {border}; }}
 QFrame#topbar {{ background: {surface}; border-bottom: 1px solid {border}; }}
-QFrame#card, QFrame#inspectorCard, QFrame#questionCard {{ background: {surface}; border: 1px solid {border}; border-radius: 16px; }}
+QFrame#card, QFrame#inspectorCard, QFrame#questionCard {{ background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 {panelTop},stop:.55 {surface},stop:1 {panelBottom}); border: 1px solid {border}; border-radius: 16px; }}
 QFrame#footer {{ background: {surface}; border-top: 1px solid {border}; }}
 QFrame#sidebarProfile, QFrame#activityStats {{ background: {raised}; border: 1px solid {border}; border-radius: 12px; }}
 QLabel {{ background: transparent; border: none; }}
@@ -54,14 +68,14 @@ QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled, QSpinBox:disabl
 QComboBox {{ padding-right: 10px; }}
 QComboBox::drop-down {{ border: none; width: 30px; }}
 QComboBox::down-arrow {{ image: none; }}
-QComboBox QAbstractItemView {{ background: {raised}; color: {text}; selection-background-color: {selected}; selection-color: {text}; border: 1px solid {border}; border-radius: 14px; padding: 5px; outline: none; }}
+QComboBox QAbstractItemView {{ background: transparent; color: {text}; selection-background-color: {selected}; selection-color: {text}; border: none; padding: 5px; outline: none; }}
 QFrame#orbitComboContainer {{ background: {raised}; border: 1px solid {border}; border-radius: 16px; padding: 3px; }}
 QFrame#rule {{ background: {border}; border: none; }}
 QComboBox QLineEdit {{ border: none; background: transparent; padding: 0; }}
 QSpinBox {{ padding-right: 36px; }}
-QSpinBox::up-button, QSpinBox::down-button {{ width: 28px; background: {raised}; border: none; }}
-QSpinBox::up-button {{ subcontrol-position: top right; }}
-QSpinBox::down-button {{ subcontrol-position: bottom right; }}
+QSpinBox::up-button, QSpinBox::down-button {{ subcontrol-origin: border; width: 28px; height: 18px; background: transparent; border: none; }}
+QSpinBox::up-button {{ subcontrol-position: top right; top: 4px; right: 4px; }}
+QSpinBox::down-button {{ subcontrol-position: bottom right; bottom: 4px; right: 4px; }}
 QPushButton {{ background: {raised}; color: {text}; border: 1px solid {border}; border-radius: 22px; padding: 10px 17px; font-size: 13px; font-weight: 500; min-height: 22px; }}
 QPushButton:hover {{ background: {selected}; border-color: {accent}; }}
 QPushButton:pressed {{ background: {selected}; }}
@@ -132,19 +146,42 @@ def load_fonts(app):
 def apply_theme(app, theme):
     load_fonts(app)
     p = PALETTES[theme]
+    if app.property("studioTheme") == theme and app.palette().color(QPalette.Window).name() == p["bg"]:
+        return
     app.setProperty("studioTheme", theme)
     palette = QPalette()
-    for role, value in ((QPalette.Window, p["surface"]), (QPalette.WindowText, p["text"]),
+    for role, value in ((QPalette.Window, p["bg"]), (QPalette.WindowText, p["text"]),
                         (QPalette.Base, p["input"]), (QPalette.Text, p["text"]),
                         (QPalette.PlaceholderText, p["muted"]),
                         (QPalette.Link, p["accent"]),
+                        (QPalette.LinkVisited, p["muted"]),
+                        (QPalette.Midlight, p["primary"]), (QPalette.BrightText, p["primaryText"]),
+                        (QPalette.Light, p["primaryHover"]),
+                        (QPalette.Dark, p["panelTop"]), (QPalette.Shadow, p["panelBottom"]),
                         (QPalette.Button, p["raised"]), (QPalette.ButtonText, p["text"]),
                         (QPalette.Highlight, p["selected"]), (QPalette.HighlightedText, p["text"]),
                         (QPalette.AlternateBase, p["surface"]), (QPalette.Mid, p["border"]),
                         (QPalette.ToolTipBase, p["surface"]), (QPalette.ToolTipText, p["text"])):
         palette.setColor(role, QColor(value))
     app.setPalette(palette)
-    app.setStyleSheet(stylesheet(theme))
+    if app.styleSheet() != STYLE:
+        app.setStyleSheet(STYLE)
+    else:
+        # Qt caches palette() brushes at polish time. Refresh them in parent
+        # order without rebuilding the application's entire selector tree.
+        def depth(widget):
+            level = 0
+            parent = widget.parentWidget()
+            while parent is not None:
+                level += 1
+                parent = parent.parentWidget()
+            return level
+        for widget in sorted(app.allWidgets(), key=depth):
+            if widget.testAttribute(Qt.WA_WState_Polished):
+                widget.style().unpolish(widget)
+                widget.style().polish(widget)
+                # Item views overload update(index); call QWidget's overload.
+                QWidget.update(widget)
 
 
 STYLE = stylesheet()

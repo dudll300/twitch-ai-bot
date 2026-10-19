@@ -122,6 +122,10 @@ def main():
                 assert diagnostic.result.text() == new_result
         finally:
             release.set()
+        # Finish any periodic query before asserting the explicit refresh of
+        # the records below; otherwise an older empty result can win the race.
+        page._timer.stop()
+        wait_for(lambda: not page._loading)
         journal = MessageHistory(root)
         record_id = journal.add('reward', 'rejected', question='Привет')
         journal.safety_event('reward', SafetyReview('error', '', ('review_unavailable',), ai_attempted=True, model='review/manual'), record_id=record_id)

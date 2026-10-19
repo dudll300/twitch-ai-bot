@@ -59,7 +59,7 @@ class TestingPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
         layout.addWidget(label(
             "Тестовые запросы могут расходовать баланс AI API. Base URL и ключ берутся из «Подключения». "

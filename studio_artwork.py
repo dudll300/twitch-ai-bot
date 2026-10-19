@@ -1,4 +1,5 @@
 """Orbit's native, resolution independent page horizon and session heading."""
+from math import cos, sin, radians
 from PySide6.QtCore import Qt, QRectF, QVariantAnimation, QEasingCurve, QTimer, QPointF, QEvent
 from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient, QLinearGradient, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QVBoxLayout, QSizePolicy, QWidget
@@ -74,10 +75,16 @@ class OrbitHeader(QFrame):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.setMinimumHeight(154)
         self._shift = 0.0
+        self._parallax = QPointF()
+        self.setMouseTracking(True)
         self._motion = QVariantAnimation(self)
         self._motion.setDuration(420)
         self._motion.setEasingCurve(QEasingCurve.OutCubic)
         self._motion.valueChanged.connect(self._advance)
+        self._pointer_motion = QVariantAnimation(self)
+        self._pointer_motion.setDuration(240)
+        self._pointer_motion.setEasingCurve(QEasingCurve.OutCubic)
+        self._pointer_motion.valueChanged.connect(self._advance_pointer)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 16, 8, 24)
         row.setSpacing(20)
@@ -100,6 +107,8 @@ class OrbitHeader(QFrame):
             column.addWidget(label(caption, "muted"))
             metrics.addLayout(column)
         row.addWidget(self.stats, 0, Qt.AlignBottom)
+        for child in self.findChildren(QWidget):
+            child.setAttribute(Qt.WA_TransparentForMouseEvents)
 
     def set_page(self, title, stream=False):
         self._stream = stream
@@ -114,13 +123,38 @@ class OrbitHeader(QFrame):
         self._shift = float(value)
         self.update()
 
+    def _advance_pointer(self, value):
+        self._parallax = value
+        self.update()
+
+    def _move_pointer(self, target):
+        self._pointer_motion.stop()
+        if QApplication.instance().property("animations") is False:
+            self._advance_pointer(QPointF())
+            return
+        self._pointer_motion.setStartValue(self._parallax)
+        self._pointer_motion.setEndValue(target)
+        self._pointer_motion.start()
+
+    def reset_motion(self):
+        self._motion.stop()
+        self._pointer_motion.stop()
+        self._advance(0)
+        self._advance_pointer(QPointF())
+
+    def mouseMoveEvent(self, event):
+        point = event.position()
+        self._move_pointer(QPointF(2 * point.x() / max(1, self.width()) - 1,
+                                  2 * point.y() / max(1, self.height()) - 1))
+        super().mouseMoveEvent(event)
+
     def _move_horizon(self, value):
         self._motion.stop()
         if QApplication.instance().property("animations") is False:
             self._advance(0)
             return
         self._motion.setStartValue(self._shift)
-        self._motion.setEndValue(value)
+        self._motion.setEndValue(float(value))
         self._motion.start()
 
     def enterEvent(self, event):
@@ -129,6 +163,7 @@ class OrbitHeader(QFrame):
 
     def leaveEvent(self, event):
         self._move_horizon(0)
+        self._move_pointer(QPointF())
         super().leaveEvent(event)
 
     def resizeEvent(self, event):
@@ -149,14 +184,18 @@ class OrbitHeader(QFrame):
         # Paint the gradient in ellipse coordinates: a circular radial gradient
         # in window coordinates previously hid almost the entire illuminated rim.
         width = self.width()
+        hover = self._shift / 4
+        dx, dy = self._parallax.x(), self._parallax.y()
         p.save()
-        p.translate(width - 225, -67 + self._shift)
-        p.rotate(-10)
+        p.translate(width - 225 + dx * 9, -67 + self._shift + dy * 5)
+        p.rotate(-10 + dx * 1.4)
         p.scale(310, 165)
         halo = QRadialGradient(0, .12, 1.25)
         halo.setColorAt(0, QColor(Qt.transparent))
         halo.setColorAt(.70, QColor(Qt.transparent))
-        halo.setColorAt(.83, QColor("#443C8FF0" if theme == "dark" else "#384D8DE0"))
+        glow = QColor(colors["glow"])
+        glow.setAlpha(round(65 + 70 * hover))
+        halo.setColorAt(.83, glow)
         halo.setColorAt(1, QColor(Qt.transparent))
         p.setPen(Qt.NoPen)
         p.setBrush(halo)
@@ -176,16 +215,24 @@ class OrbitHeader(QFrame):
         p.drawEllipse(QRectF(-1, -1, 2, 2))
         p.restore()
         p.save()
-        p.translate(width - 220, 39 + self._shift)
+        p.translate(width - 220 + dx * 4, 39 + self._shift + dy * 3)
         p.rotate(-15)
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(QColor("#244264" if theme == "dark" else "#CADBF0"), 1))
         p.drawEllipse(QRectF(-290, -79, 580, 158))
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor("#304E83B0"))
-        p.drawEllipse(QRectF(-153, 58, 16, 16))
+        angle = radians(120 + dx * 9 + hover * 5)
+        satellite = QPointF(290 * cos(angle), 79 * sin(angle))
+        radius = 14 + hover * 5
+        light = QRadialGradient(satellite, radius)
+        tint = QColor(colors["glow"])
+        tint.setAlpha(round(100 + hover * 65))
+        light.setColorAt(0, tint)
+        light.setColorAt(1, QColor(Qt.transparent))
+        p.setBrush(light)
+        p.drawEllipse(satellite, radius, radius)
         p.setBrush(QColor(colors["accent"]))
-        p.drawEllipse(QRectF(-148, 63, 6, 6))
+        p.drawEllipse(satellite, 3, 3)
         p.restore()
         # Fade the artwork behind page copy instead of tinting its text.
         fade = QLinearGradient(0, 0, width, 0)

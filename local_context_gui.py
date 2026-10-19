@@ -8,7 +8,7 @@ from uuid import uuid4
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractSpinBox, QGridLayout, QHBoxLayout, QLineEdit, QListWidgetItem,
-    QPushButton, QStackedWidget, QVBoxLayout, QWidget, QTabWidget,
+    QPushButton, QStackedWidget, QVBoxLayout, QWidget, QTabWidget, QSizePolicy,
 )
 
 from autonomous_gui import NumberInput
@@ -45,9 +45,11 @@ class LocalContextPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(20)
         system, system_layout = card()
+        self.system_card = system
+        system.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         system_layout.setContentsMargins(22, 12, 22, 12)
         self.enabled = ToggleSwitch("Включить локальный контекст")
         self.enabled.setAccessibleName("Локальный контекст включён")
@@ -196,9 +198,10 @@ class LocalContextPage(QWidget):
         self.stack.addWidget(editor)
         self.master_detail = MasterDetail(left, scroll_page(self.stack))
         tabs = QTabWidget()
+        self.knowledge_tabs = tabs
         tabs.addTab(self.master_detail, "Карточки")
         tabs.addTab(options, "Использование")
-        layout.addWidget(tabs)
+        layout.addWidget(tabs, 1)
         layout.addWidget(label(
             "До 40 карточек. Ситуационный каталог — до 10 000 символов описаний, общий контекст карточек в запросе вместе с инструкциями и резервом протокола — до 16 000. При превышении сократите описания или выключите подбор по ситуации у части карточек. Карточки добавляют входные токены AI API; дополнительных постоянных запросов для них нет.",
             "muted", True))

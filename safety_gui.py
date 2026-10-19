@@ -61,7 +61,7 @@ class SafetyPage(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         body = QWidget()
         layout = QVBoxLayout(body)
-        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(16)
         status, box = card('Состояние проверок')
         self.state = plain()

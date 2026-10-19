@@ -1,6 +1,6 @@
 """Orbit's native controls, input policy and finite motion. No service calls."""
 from PySide6.QtCore import Qt, QRectF, QSize, QVariantAnimation, QEasingCurve, QPointF
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QCheckBox, QScrollBar, QScrollArea,
     QSpinBox, QStyle, QStyleOptionSlider, QStyleOptionSpinBox, QTabBar, QTabWidget,
     )
@@ -120,11 +120,17 @@ class NumberInput(QSpinBox):
         self.initStyleOption(option)
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
+        clip = QPainterPath()
+        clip.addRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 13, 13)
+        p.setClipPath(clip)
         for control, flag in ((QStyle.SC_SpinBoxUp, QAbstractSpinBox.StepUpEnabled),
                               (QStyle.SC_SpinBoxDown, QAbstractSpinBox.StepDownEnabled)):
             if self.buttonSymbols() == QAbstractSpinBox.NoButtons:
                 continue
             rect = self.style().subControlRect(QStyle.CC_SpinBox, option, control, self)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(colors()["selected"] if option.activeSubControls & control else colors()["raised"]))
+            p.drawRoundedRect(QRectF(rect).adjusted(.5, .5, -.5, -.5), 5, 5)
             color = QColor(colors()["accent"] if self.isEnabled() and self.stepEnabled() & flag else colors()["muted"])
             p.setPen(QPen(color, 1.6, Qt.SolidLine, Qt.RoundCap))
             center = rect.center()

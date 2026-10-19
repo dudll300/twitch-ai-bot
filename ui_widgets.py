@@ -2,9 +2,9 @@
 
 import re
 
-from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve, QTimer, QRectF, QPointF, QPropertyAnimation, QEvent
+from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve, QTimer, QRectF, QPointF, QPropertyAnimation, QEvent, QObject
 from PySide6.QtGui import (QColor, QIcon, QPainter, QPen, QPixmap, QPalette, QTransform,
-                          QTextLayout, QTextOption)
+                          QTextLayout, QTextOption, QPainterPath, QRegion, QLinearGradient)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                               QFrame, QGridLayout, QHBoxLayout, QLabel, QListView, QListWidget,
                               QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QScrollBar,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                               QSplitter, QStackedWidget, QSizePolicy, QStyleOptionButton,
                               QStylePainter, QStyledItemDelegate)
 from studio_controls import StudioScrollBar, OrbitScrollArea, colors, mix, animate
+from studio_surfaces import GlowSurface
 
 
 class StudioButton(QPushButton):
@@ -137,7 +138,13 @@ class StudioButton(QPushButton):
             foreground = QColor(c["muted"])
             fill = QColor(c["surface"])
         rect = QRectF(self.rect()).adjusted(.5, .5, -.5, -.5)
-        painter.setBrush(fill)
+        if primary and self.isEnabled():
+            gradient = QLinearGradient(rect.topLeft(), rect.bottomRight())
+            gradient.setColorAt(0, mix(fill, c["primaryHover"], .65))
+            gradient.setColorAt(1, fill)
+            painter.setBrush(gradient)
+        else:
+            painter.setBrush(fill)
         painter.setPen(QPen(border, 1))
         painter.drawRoundedRect(rect, radius, radius)
         if self.hasFocus() and self._keyboard_focus:
@@ -293,6 +300,33 @@ class ScrollPlainTextEdit(QPlainTextEdit):
         event.accept()
 
 
+class PopupShape(QObject):
+    """Clip the actual popup window, including the native background behind it."""
+    def __init__(self, popup):
+        super().__init__(popup)
+        self.popup = popup
+        popup.installEventFilter(self)
+
+    def update_mask(self):
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.popup.rect()), 16, 16)
+        self.popup.setMask(QRegion(path.toFillPolygon().toPolygon()))
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Resize:
+            self.update_mask()
+        elif event.type() == QEvent.Paint:
+            # QComboBox's private container bypasses QFrame's styled paint
+            # path on Windows. Paint its actual window, not an inner view.
+            painter = QPainter(watched)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(QPen(QColor(colors()["border"]), 1))
+            painter.setBrush(QColor(colors()["raised"]))
+            painter.drawRoundedRect(QRectF(watched.rect()).adjusted(.5, .5, -.5, -.5), 16, 16)
+            return True
+        return False
+
+
 class NoWheelComboBox(QComboBox):
     """Ignore wheel edits so scrolling a page cannot change a selected value."""
 
@@ -306,17 +340,42 @@ class NoWheelComboBox(QComboBox):
         self.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         self.setMinimumContentsLength(8)
         self._popup_animation = None
+        self._popup_shape = None
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        if self.sizeAdjustPolicy() == QComboBox.AdjustToContents:
+            option = QStyleOptionComboBox()
+            self.initStyleOption(option)
+            option.rect.setWidth(hint.width())
+            field = self.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, self)
+            text = max((self.fontMetrics().horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
+            hint.setWidth(max(hint.width(), text + hint.width() - field.width() + 6))
+        return hint
+
+    def minimumSizeHint(self):
+        if self.sizeAdjustPolicy() == QComboBox.AdjustToContents:
+            return self.sizeHint()
+        return super().minimumSizeHint()
 
     def showPopup(self):
         view = self.view()
         screen = self.screen().availableGeometry()
         view.setMinimumWidth(min(max(self.width(), 220), max(120, screen.width() - 24)))
-        super().showPopup()
         popup = view.window()
-        popup.setObjectName("orbitComboContainer")
-        popup.setAttribute(Qt.WA_StyledBackground, True)
-        popup.style().unpolish(popup)
-        popup.style().polish(popup)
+        if self._popup_shape is None:
+            popup.setObjectName("orbitComboContainer")
+            popup.setWindowFlag(Qt.NoDropShadowWindowHint, True)
+            popup.setAttribute(Qt.WA_TranslucentBackground, True)
+            popup.setAttribute(Qt.WA_StyledBackground, True)
+            popup.setAutoFillBackground(False)
+            view.setFrameShape(QFrame.NoFrame)
+            view.setAutoFillBackground(False)
+            view.viewport().setAutoFillBackground(False)
+            self._popup_shape = PopupShape(popup)
+            popup.style().polish(popup)
+        super().showPopup()
+        self._popup_shape.update_mask()
         # Qt owns placement, scrolling, accessibility and focus. Only fade its
         # popup window; never delay the selection or animate model changes.
         if QApplication.instance().property("animations") is not False and QApplication.platformName() != "offscreen":
@@ -607,8 +666,41 @@ class ToggleSwitch(QCheckBox):
             painter.drawRoundedRect(QRectF(0, y - 2, 46, 28), 14, 14)
 
 
+class StatusLabel(QLabel):
+    """Small semantic surfaces can change without rebuilding the app stylesheet."""
+    def __init__(self, text=""):
+        super().__init__(text)
+        self._status_signature = None
+
+    def _sync_status(self):
+        if not hasattr(self, "_status_signature"):
+            return
+        theme = QApplication.instance().property("studioTheme") or "dark"
+        role, state = self.property("role"), self.property("state")
+        signature = theme, role, state
+        if signature == self._status_signature:
+            return
+        self._status_signature = signature
+        c = colors()
+        fg, bg = c["muted"], c["raised"]
+        if role == "error" or state in ("error", "send_error"):
+            fg, bg = c["error"], c["errorbg"]
+        elif state in ("running", "sent"):
+            fg, bg = c["success"], c["successbg"]
+        elif state in ("starting", "preview"):
+            fg, bg = c["accent"], c["selected"]
+        elif state == "stopping":
+            fg, bg = c["warning"], c["warningbg"]
+        self.setStyleSheet(f"QLabel {{color:{fg};background:{bg};border:1px solid {c['border']};border-radius:9px;padding:7px 10px;font-size:13px;}}")
+
+    def event(self, event):
+        if event.type() in (QEvent.DynamicPropertyChange, QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            self._sync_status()
+        return super().event(event)
+
+
 def label(text: str, role: str = "body", wrap: bool = False) -> QLabel:
-    widget = QLabel(text)
+    widget = StatusLabel(text) if role in ("error", "historyStatus") else QLabel(text)
     widget.setTextFormat(Qt.PlainText)
     widget.setProperty("role", role)
     widget.setWordWrap(wrap or role in ("section", "caption"))
@@ -836,5 +928,9 @@ def scroll_page(content: QWidget) -> QScrollArea:
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     scroll.setFrameShape(QFrame.NoFrame)
-    scroll.setWidget(content)
+    canvas = GlowSurface()
+    canvas_layout = QVBoxLayout(canvas)
+    canvas_layout.setContentsMargins(0, 0, 8, 8)
+    canvas_layout.addWidget(content)
+    scroll.setWidget(canvas)
     return scroll

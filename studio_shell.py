@@ -84,14 +84,20 @@ class StudioShell:
         return tabs
 
     def _appearance_changed(self, *_):
+        theme_changed = self.theme_control.currentData() != self._ui_state["theme"]
         self._ui_state.update(theme=self.theme_control.currentData(), animations=self.animations_control.isChecked())
         QApplication.instance().setProperty("animations", self._ui_state["animations"])
         if not self._ui_state["animations"]:
             self._transition.finish()
-            self.orbit_header._motion.stop()
-            self.orbit_header._advance(0)
-        apply_theme(QApplication.instance(), self._ui_state["theme"])
-        self._refresh_icons()
+            self.orbit_header.reset_motion()
+        if theme_changed:
+            self.setUpdatesEnabled(False)
+            try:
+                apply_theme(QApplication.instance(), self._ui_state["theme"])
+                self._refresh_icons()
+            finally:
+                self.setUpdatesEnabled(True)
+                self.update()
         self._persist_preferences()
 
     def _refresh_icons(self):

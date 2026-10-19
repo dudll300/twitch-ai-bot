@@ -19,8 +19,9 @@ from ui_widgets import StudioButton as QPushButton
 from studio_controls import StudioCheckBox as QCheckBox
 from studio_rows import OrbitRowDelegate
 from ui_widgets import panel_badge
+from studio_surfaces import GlowSurface
 
-class ProfilesEditor(QWidget):
+class ProfilesEditor(GlowSurface):
     changed = Signal()
     test_requested = Signal(int)
 

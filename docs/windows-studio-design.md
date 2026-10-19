@@ -19,6 +19,8 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 - Spacing uses 4/8/12/16/24/32; card radius 16, field radius 14, pill buttons radius 22.
 - Primary buttons use pale blue with dark ink. All colors come from semantic theme tokens.
 - A native painted blue horizon and a full-width brand bar identify Orbit. Decorative movement is finite and respects the animation preference.
+- Panels use a restrained diagonal gradient and soft blue/violet light beneath their lower edge. Lighting is painted behind controls without graphics effects. Header hover adds eased cursor parallax and a brighter halo; leaving or disabling motion resets it.
+- Theme changes retain the shared selector tree and refresh cached palette brushes in parent order. Animation preferences never rebuild the application stylesheet. Verify actual painted colors after switching, not only the theme property.
 - Shared StudioButton wraps long captions and sizes their height; dropdowns use opaque, padded rows with a selection mark and native keyboard behavior.
 - Interface preferences expose theme and an animation toggle; do not expose animation durations.
 - Panels share a separate title strip, body padding and dividers. History, profiles, knowledge and the stream conversation use native row delegates, not multiline text editors as lists.
@@ -62,7 +64,7 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 
 ## Verification
 
-Run the existing unittest suite and GUI smoke checks, plus `tests/smoke_windows_studio.py`, `tests/smoke_orbit.py` and `tests/smoke_orbit_fidelity.py`.
+Run the existing unittest suite and GUI smoke checks, plus `tests/smoke_windows_studio.py`, `tests/smoke_orbit.py`, `tests/smoke_orbit_fidelity.py` and `tests/smoke_orbit_polish.py`.
 Use `--screenshots` to capture every page in both themes at wide and compact sizes.
 Use QT_SCALE_FACTOR 1, 1.25 and 1.5 in separate processes for DPI checks.
 Windows packaged checks use `tests/smoke_package.py`; TWITCH_AI_TEST_EXE can select a candidate EXE.
