@@ -21,7 +21,7 @@ from local_context import LocalContextManager, LocalReply, LocalResultError, pre
 from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
-from recent_context import for_reward
+from recent_context import for_reward, references_public_reply
 from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
 from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, check_question, safe_history_text, unsafe_question
 from irc import moderation_event
@@ -109,7 +109,12 @@ class AIModelRouter:
         if not models or time.monotonic() >= self.primary_disabled_until:
             models = (primary,) + models
         personal_prompt = prompt_for(self.profiles, user, user_id)
-        context = related_context(self.profiles, clean_question(question), memory_data,
+        public_reference = references_public_reply(question)
+        context_profiles = self.profiles
+        if public_reference:
+            sender = profile_for(self.profiles, user, user_id)
+            context_profiles = [sender] if sender is not None else []
+        context = related_context(context_profiles, clean_question(question), memory_data,
                                   sender_profile=profile_for(self.profiles, user, user_id))
         last_error = None
         for model in models:
@@ -344,7 +349,8 @@ class Bot:
                 autonomous = getattr(self, "autonomous", None)
                 rows = autonomous.reward_reply_snapshot() if isinstance(autonomous, Autonomous) else ()
                 recent = await asyncio.to_thread(for_reward, getattr(self, "history", None), rows,
-                    self.cfg.get("TWITCH_CHANNEL", ""), user, user_id, time.time())
+                    self.cfg.get("TWITCH_CHANNEL", ""), user, user_id, time.time(), question=question,
+                    profiles=self.ai_router.profiles if isinstance(self.ai_router, AIModelRouter) else ())
                 origins = tuple(getattr(self, 'history_recipients', {}).get(key, ()))
                 history_recipients = ('',) * max(0, len(history) - len(origins)) + origins[-len(history):] if history else ()
                 fragments = getattr(self, "fragments", None)
@@ -572,6 +578,8 @@ class Bot:
 
 
 if __name__ == "__main__":
+    from app_version import log_startup
+    log_startup()
     try:
         asyncio.run(Bot(config()).run())
     except (ValueError, RuntimeError) as exc:

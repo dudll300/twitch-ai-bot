@@ -28,7 +28,8 @@ jobs:
       - run: python tests/smoke_history.py
       - run: python tests/smoke_privacy.py
       - run: python tests/smoke_safety.py
-      - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "assets/checkmark.svg;assets" --add-data "memory.example.json;." app.py
+      - run: python -c "import json, subprocess; from pathlib import Path; Path('build-info.json').write_text(json.dumps({'commit':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()}),encoding='utf-8')"
+      - run: python -m PyInstaller --noconfirm --clean --onefile --windowed --name TwitchAIBot --icon "assets/app.ico" --add-data "assets/app.ico;assets" --add-data "assets/checkmark.svg;assets" --add-data "memory.example.json;." --add-data "build-info.json;." app.py
       - run: python tests/smoke_package.py
       - uses: actions/upload-artifact@v4
         with:

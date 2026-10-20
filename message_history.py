@@ -11,7 +11,8 @@ import uuid
 
 from ai_client import redact_secret
 from privacy import safe_history_text
-from recent_context import PERSONAL_REPLY_SECONDS, PERSONAL_REPLY_LIMIT, personal_reply
+from recent_context import (PERSONAL_REPLY_SECONDS, PERSONAL_REPLY_LIMIT, PUBLIC_CANDIDATE_LIMIT,
+                            personal_reply, public_reply)
 
 STATUSES = {"generating", "generated", "sent", "preview", "silent", "skipped",
             "cancelled", "error", "send_error", "rejected"}
@@ -281,6 +282,12 @@ class MessageHistory:
         return self._read(select, cancel)
 
     def recent_personal_replies(self, channel, login, user_id, now):
+        return self._read_publications(channel, now, recipient=(login, user_id))
+
+    def recent_public_replies(self, channel, now):
+        return self._read_publications(channel, now)
+
+    def _read_publications(self, channel, now, recipient=None):
         """Read successful publications by sent-event time, including older schemas.
 
         Existing autonomous records may lack viewer_id: derive it only from the
@@ -290,14 +297,19 @@ class MessageHistory:
         def select(connection):
             if connection is None:
                 return []
+            # The cross-viewer scan is bounded. The existing personal lookup
+            # retains its full time window even in a busy reward-heavy session.
+            kind_filter = "r.kind='autonomous'" if recipient is not None else "r.kind IN ('autonomous', 'reward')"
             rows = connection.execute("""
-                SELECT r.viewer, r.viewer_id, r.sent_text, r.context, r.mode, r.channel,
+                SELECT r.kind, r.viewer, r.viewer_id, r.sent_text,
+                       CASE WHEN r.kind='autonomous' THEN r.context ELSE NULL END AS context, r.mode, r.channel,
                        MIN(e.time) AS sent_at
                 FROM records r JOIN events e ON e.record_id=r.id AND e.status='sent'
-                WHERE r.kind='autonomous' AND r.status='sent' AND r.mode!='preview'
+                WHERE """ + kind_filter + """ AND r.status='sent' AND r.mode!='preview'
                       AND lower(r.channel)=?
-                GROUP BY r.id HAVING sent_at BETWEEN ? AND ? ORDER BY sent_at DESC, r.seq DESC
-                """, (channel.casefold(), now - PERSONAL_REPLY_SECONDS, now))
+                GROUP BY r.id HAVING sent_at BETWEEN ? AND ? ORDER BY sent_at DESC, r.seq DESC LIMIT ?
+                """, (channel.casefold(), now - PERSONAL_REPLY_SECONDS, now,
+                       PUBLIC_CANDIDATE_LIMIT if recipient is None else -1))
             result = []
             for row in rows:
                 try:
@@ -309,15 +321,19 @@ class MessageHistory:
                            if item.get("author", "").casefold() == row["viewer"].casefold() and item.get("user_id")}
                     saved_id = row["viewer_id"] or (next(iter(ids)) if len(ids) == 1 else "")
                     # Ambiguous identities in a damaged/legacy record are never login fallback.
-                    if not row["viewer_id"] and len(ids) > 1:
+                    if len(ids) > 1 or (row["viewer_id"] and ids and ids != {row["viewer_id"]}):
                         continue
-                    candidate = {"source": "autonomous", "status": "sent", "mode": row["mode"],
+                    candidate = {"source": row["kind"], "status": "sent", "mode": row["mode"],
                                  "channel": row["channel"], "time": row["sent_at"], "text": row["sent_text"],
                                  "target": row["viewer"], "user_id": saved_id, "basis_messages": anchors}
-                    if personal_reply(candidate, login, user_id, now, channel=channel):
-                        result.append(self.redact(candidate))
-                    if len(result) >= PERSONAL_REPLY_LIMIT:
-                        break
+                    public = public_reply(candidate, now, channel=channel)
+                    if public and (recipient is None or personal_reply(candidate, *recipient, now, channel=channel)):
+                        candidate["basis_messages"] = public["basis_messages"]
+                        candidate = self.redact(candidate)
+                        candidate["user_id"] = saved_id
+                        result.append(candidate)
+                        if recipient is not None and len(result) >= PERSONAL_REPLY_LIMIT:
+                            break
                 except (ValueError, TypeError, AttributeError):
                     continue
             return result

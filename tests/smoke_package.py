@@ -38,7 +38,12 @@ def main() -> None:
         log_path = Path(temporary) / "worker.log"
         missing = subprocess.run([str(EXE), "--bot", str(log_path)], env=env, timeout=30)
         assert missing.returncode == 1, missing.returncode
-        assert "Укажите ваш канал Twitch" in log_path.read_text(encoding="utf-8")
+        startup = log_path.read_text(encoding="utf-8")
+        assert "Укажите ваш канал Twitch" in startup
+        assert "APP_BUILD version=" in startup and "log_timezone=UTC" in startup
+        metadata = ROOT / "build-info.json"
+        if metadata.exists():
+            assert "commit=" + json.loads(metadata.read_text(encoding="utf-8"))["commit"] in startup
 
         data = Path(temporary) / "TwitchAIBot"
         (data / ".env").write_text(

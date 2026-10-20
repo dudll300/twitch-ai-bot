@@ -317,7 +317,7 @@ class Autonomous:
         print("AUTO_EVENT " + json.dumps(event, ensure_ascii=False), flush=True)
 
     def event(self, status, text="", action="", reason="", *, target="", basis=()):
-        self.emit({"time": datetime.fromtimestamp(self.clock()).strftime("%H:%M:%S"),
+        self.emit({"time": datetime.fromtimestamp(self.clock(), timezone.utc).isoformat(),
                    "status": status, "action": action, "text": redact_secret(text, self.cfg.get("AI_API_KEY", "")),
                    "reason": reason, "target": target, "basis": list(basis)})
 
