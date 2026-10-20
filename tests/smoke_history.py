@@ -123,8 +123,10 @@ def main():
         select(page, preview)
         page.context_button.click()
         QTest.qWait(80)
-        page.timeline.parentWidget().button.setChecked(True)
-        app.processEvents()
+        from ui_widgets import Disclosure
+        disclosure = next(row for row in page.findChildren(Disclosure) if row.content is page.timeline)
+        disclosure.button.setChecked(True)
+        QTest.qWait(280)
         assert page.timeline.mapTo(page.answer.parentWidget(), page.timeline.rect().topLeft()).y() > page.answer.geometry().bottom(), "Details overlap"
         assert page.timeline.geometry().bottom() < page.timeline.parentWidget().height(), "Details clipped"
         if "--screenshot" in sys.argv:

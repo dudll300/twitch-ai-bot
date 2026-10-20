@@ -15,11 +15,14 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 
 ## Shared visual rules
 
-- Orbit uses bundled Onest (OFL); 14 logical pixels for body text, 13 for help, 16 for sections, 40 for page titles.
+- Orbit uses bundled Nunito (OFL), with Cyrillic: 14 logical pixels/500 weight for body text, 13 for help, 17/700 for sections and 40/700 for page titles. Empty-state headings use 26/700 and supporting paragraphs 15/600.
 - Spacing uses 4/8/12/16/24/32; card radius 16, field radius 14, pill buttons radius 22.
 - Primary buttons use pale blue with dark ink. All colors come from semantic theme tokens.
-- A native painted blue horizon and a full-width brand bar identify Orbit. Decorative movement is finite and respects the animation preference.
-- Panels use a restrained diagonal gradient and soft blue/violet light beneath their lower edge. Lighting is painted behind controls without graphics effects. Header hover adds eased cursor parallax and a brighter halo; leaving or disabling motion resets it.
+- A native painted blue horizon and a full-width brand bar identify Orbit. Interactive movement is finite and all motion respects the animation preference.
+- Panels use a restrained diagonal gradient and soft blue/violet light around their edges. Canvas margins reserve space for the halo, including the left edge and gaps between panels. The compact icon rail opts out of these margins.
+- Header hover adds eased cursor parallax and a brighter halo; leaving or disabling motion resets it. Sparse stars twinkle slowly in the header only. Their timer stops when motion is disabled or the window is hidden/minimized.
+- Numeric fields have a single integrated step rail with a divider and two native hit areas. Empty error messages always collapse. Captions and collapsed disclosures retain their natural height; only editors and lists absorb extra vertical room.
+- Disclosures reveal their content over 240 ms; inner tabs use transient 280 ms transitions. Reduced motion applies immediately, and rapid changes or hiding finish pending transitions.
 - Theme changes retain the shared selector tree and refresh cached palette brushes in parent order. Animation preferences never rebuild the application stylesheet. Verify actual painted colors after switching, not only the theme property.
 - Shared StudioButton wraps long captions and sizes their height; dropdowns use opaque, padded rows with a selection mark and native keyboard behavior.
 - Interface preferences expose theme and an animation toggle; do not expose animation durations.
@@ -64,7 +67,7 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 
 ## Verification
 
-Run the existing unittest suite and GUI smoke checks, plus `tests/smoke_windows_studio.py`, `tests/smoke_orbit.py`, `tests/smoke_orbit_fidelity.py` and `tests/smoke_orbit_polish.py`.
+Run the existing unittest suite and GUI smoke checks, plus `tests/smoke_windows_studio.py`, `tests/smoke_orbit.py`, `tests/smoke_orbit_fidelity.py`, `tests/smoke_orbit_polish.py` and `tests/smoke_orbit_soft.py`.
 Use `--screenshots` to capture every page in both themes at wide and compact sizes.
 Use QT_SCALE_FACTOR 1, 1.25 and 1.5 in separate processes for DPI checks.
 Windows packaged checks use `tests/smoke_package.py`; TWITCH_AI_TEST_EXE can select a candidate EXE.

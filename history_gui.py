@@ -81,7 +81,7 @@ class HistoryPage(GlowSurface):
         self._fingerprint = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(16)
         left, left_layout = card("Лента событий")
         left_layout.setContentsMargins(0, 0, 0, 0)
@@ -229,7 +229,7 @@ class HistoryPage(GlowSurface):
         self.context_card = context_card
         detail_layout.addWidget(context_card)
         detail_layout.addStretch()
-        right = scroll_page(detail_page)
+        right = scroll_page(detail_page, ambient=False)
         self._detail_transition = PageTransition(right.viewport())
         self.master_detail = MasterDetail(left, right)
         self.master_detail.restore_sizes([520, 520])

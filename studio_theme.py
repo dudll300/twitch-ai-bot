@@ -34,7 +34,7 @@ def stylesheet(theme="dark"):
              errorbg="palette(button)", warning="palette(text)", warningbg="palette(button)")
     check = resource_path("assets/checkmark.svg").as_posix()
     return """
-QWidget {{ color: {text}; font-family: 'Onest'; font-size: 14px; }}
+QWidget {{ color: {text}; font-family: 'Nunito'; font-size: 14px; font-weight: 500; }}
 QMainWindow, QWidget#workspace, QWidget#mainArea {{ background: {bg}; }}
 QFrame#sidebar {{ background: {surface}; border-right: 1px solid {border}; }}
 QFrame#topbar {{ background: {surface}; border-bottom: 1px solid {border}; }}
@@ -42,8 +42,10 @@ QFrame#card, QFrame#inspectorCard, QFrame#questionCard {{ background: qlineargra
 QFrame#footer {{ background: {surface}; border-top: 1px solid {border}; }}
 QFrame#sidebarProfile, QFrame#activityStats {{ background: {raised}; border: 1px solid {border}; border-radius: 12px; }}
 QLabel {{ background: transparent; border: none; }}
-QLabel[role="title"] {{ font-size: 40px; font-weight: 500; }}
-QLabel[role="section"] {{ font-size: 16px; font-weight: 500; }}
+QLabel[role="title"] {{ font-size: 40px; font-weight: 700; }}
+QLabel[role="section"] {{ font-size: 17px; font-weight: 700; }}
+QLabel[role="emptyTitle"] {{ font-size: 26px; font-weight: 700; }}
+QLabel[role="emptyCopy"] {{ font-size: 15px; font-weight: 600; color: {muted}; }}
 QFrame#panelHeading {{ background: transparent; border: none; border-bottom: 1px solid {border}; }}
 QLabel[role="eyebrow"] {{ color: {accent}; }}
 QLabel[role="brand"] {{ font-size: 23px; font-weight: 500; }}
@@ -73,10 +75,10 @@ QFrame#orbitComboContainer {{ background: {raised}; border: 1px solid {border}; 
 QFrame#rule {{ background: {border}; border: none; }}
 QComboBox QLineEdit {{ border: none; background: transparent; padding: 0; }}
 QSpinBox {{ padding-right: 36px; }}
-QSpinBox::up-button, QSpinBox::down-button {{ subcontrol-origin: border; width: 28px; height: 18px; background: transparent; border: none; }}
-QSpinBox::up-button {{ subcontrol-position: top right; top: 4px; right: 4px; }}
-QSpinBox::down-button {{ subcontrol-position: bottom right; bottom: 4px; right: 4px; }}
-QPushButton {{ background: {raised}; color: {text}; border: 1px solid {border}; border-radius: 22px; padding: 10px 17px; font-size: 13px; font-weight: 500; min-height: 22px; }}
+QSpinBox::up-button, QSpinBox::down-button {{ subcontrol-origin: border; width: 36px; height: 21px; background: transparent; border: none; }}
+QSpinBox::up-button {{ subcontrol-position: top right; top: 2px; right: 2px; }}
+QSpinBox::down-button {{ subcontrol-position: bottom right; bottom: 2px; right: 2px; }}
+QPushButton {{ background: {raised}; color: {text}; border: 1px solid {border}; border-radius: 22px; padding: 10px 17px; font-size: 14px; font-weight: 600; min-height: 22px; }}
 QPushButton:hover {{ background: {selected}; border-color: {accent}; }}
 QPushButton:pressed {{ background: {selected}; }}
 QPushButton:focus {{ border: 2px solid {accent}; padding: 9px 16px; }}
@@ -133,11 +135,12 @@ def load_fonts(app):
     """Bundle the approved typeface; never depend on an OS font installation."""
     if app.property("studioFontsLoaded"):
         return
-    font_id = QFontDatabase.addApplicationFont(str(resource_path("assets/fonts/Onest.ttf")))
-    family = "Onest" if font_id >= 0 else "Segoe UI"
+    font_id = QFontDatabase.addApplicationFont(str(resource_path("assets/fonts/Nunito.ttf")))
+    family = "Nunito" if font_id >= 0 else "Segoe UI"
     app.setProperty("studioFontFamily", family)
     app.setProperty("studioFontsLoaded", True)
     font = QFont(family, 10)
+    font.setWeight(QFont.Medium)
     font.setHintingPreference(QFont.PreferNoHinting)
     font.setStyleStrategy(QFont.PreferAntialias)
     app.setFont(font)

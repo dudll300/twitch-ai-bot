@@ -125,7 +125,7 @@ class MainWindow(StudioShell, QMainWindow):
         side_contents = QWidget()
         panel_layout = QVBoxLayout(self.sidebar.panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
-        panel_layout.addWidget(scroll_page(side_contents))
+        panel_layout.addWidget(scroll_page(side_contents, ambient=False))
         side = QVBoxLayout(side_contents)
         self._side_layout = side
         side.setContentsMargins(8, 20, 8, 16)

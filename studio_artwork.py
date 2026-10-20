@@ -76,6 +76,11 @@ class OrbitHeader(QFrame):
         self.setMinimumHeight(154)
         self._shift = 0.0
         self._parallax = QPointF()
+        self._star_phase = 0.
+        self._star_window = None
+        self._twinkle_timer = QTimer(self)
+        self._twinkle_timer.setInterval(50)
+        self._twinkle_timer.timeout.connect(self._twinkle)
         self.setMouseTracking(True)
         self._motion = QVariantAnimation(self)
         self._motion.setDuration(420)
@@ -86,7 +91,7 @@ class OrbitHeader(QFrame):
         self._pointer_motion.setEasingCurve(QEasingCurve.OutCubic)
         self._pointer_motion.valueChanged.connect(self._advance_pointer)
         row = QHBoxLayout(self)
-        row.setContentsMargins(0, 16, 8, 24)
+        row.setContentsMargins(14, 16, 14, 24)
         row.setSpacing(20)
         copy = QVBoxLayout()
         copy.setSpacing(8)
@@ -141,6 +146,35 @@ class OrbitHeader(QFrame):
         self._pointer_motion.stop()
         self._advance(0)
         self._advance_pointer(QPointF())
+        self.sync_star_motion()
+
+    def sync_star_motion(self):
+        enabled = QApplication.instance().property("animations") is not False
+        if enabled and self.isVisible() and not self.window().isMinimized():
+            self._twinkle_timer.start()
+        else:
+            self._twinkle_timer.stop()
+        self.update()
+
+    def _twinkle(self):
+        self._star_phase += .05
+        self.update(self.rect().adjusted(round(self.width() * .5), 0, 0, -1))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self._star_window is not self.window():
+            self._star_window = self.window()
+            self._star_window.installEventFilter(self)
+        self.sync_star_motion()
+
+    def hideEvent(self, event):
+        self._twinkle_timer.stop()
+        super().hideEvent(event)
+
+    def eventFilter(self, watched, event):
+        if watched is self._star_window and event.type() == QEvent.WindowStateChange:
+            QTimer.singleShot(0, self.sync_star_motion)
+        return False
 
     def mouseMoveEvent(self, event):
         point = event.position()
@@ -170,7 +204,7 @@ class OrbitHeader(QFrame):
         self.stats.setVisible(self._stream and self.width() >= 650)
         compact = event.size().width() < 900
         self.eyebrow.setVisible(not compact)
-        self.layout().setContentsMargins(0, 4 if compact else 16, 8, 10 if compact else 24)
+        self.layout().setContentsMargins(14, 4 if compact else 16, 14, 10 if compact else 24)
         self.setMinimumHeight(92 if compact else 154)
         super().resizeEvent(event)
 
@@ -246,5 +280,22 @@ class OrbitHeader(QFrame):
         p.setPen(Qt.NoPen)
         p.setBrush(fade)
         p.drawRect(self.rect())
+        # A sparse deterministic sky: only opacity varies, with long, offset
+        # periods. Repainting is limited to the header, never the full window.
+        for index in range(22):
+            x = width * (.54 + .44 * ((index * 37) % 97) / 97) + dx * 2
+            y = 9 + (self.height() - 24) * ((index * 29 + 13) % 89) / 89 + dy
+            radius = .65 + (index % 4) * .24
+            pulse = .5 + .5 * sin(self._star_phase * (.65 + index % 3 * .13) + index * 1.73)
+            tint = QColor(colors["accent"])
+            tint.setAlpha(round((55 + pulse * 135) * min(1, (x / width - .5) * 4)))
+            p.setBrush(tint)
+            p.drawEllipse(QPointF(x, y), radius, radius)
+            if index % 7 == 0:
+                tint.setAlpha(round(tint.alpha() * .45))
+                p.setPen(QPen(tint, .7))
+                p.drawLine(QPointF(x - 3, y), QPointF(x + 3, y))
+                p.drawLine(QPointF(x, y - 3), QPointF(x, y + 3))
+                p.setPen(Qt.NoPen)
         p.setPen(QPen(QColor(colors["border"]), 1))
-        p.drawLine(0, self.height() - 1, width, self.height() - 1)
+        p.drawLine(14, self.height() - 1, width - 14, self.height() - 1)

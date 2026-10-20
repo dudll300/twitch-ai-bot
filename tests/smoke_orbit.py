@@ -41,8 +41,8 @@ def main():
             app.processEvents()
             assert page.answer_model.isVisible()
             assert not page.catalog_disclosure.button.isChecked()
-            assert app.property("studioFontFamily") == "Onest"
-            assert QFontInfo(page.answer_model.font()).family() == "Onest"
+            assert app.property("studioFontFamily") == "Nunito"
+            assert QFontInfo(page.answer_model.font()).family() == "Nunito"
             assert page._test_models() == [window.model.currentText()]
             window.model.setCurrentText("configured/new-model")
             page.refresh_profiles()
@@ -125,7 +125,7 @@ def main():
             assert dashboard.last_reply.text() == "Published"
             window._revert_section(gui.PAGE_CONNECTION)
             window.close()
-    print("Orbit works: Onest, wrapped buttons, keyboard dropdowns, model selection and compact themes.")
+    print("Orbit works: Nunito, wrapped buttons, keyboard dropdowns, model selection and compact themes.")
 
 
 if __name__ == "__main__":

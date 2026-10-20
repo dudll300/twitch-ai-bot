@@ -14,8 +14,8 @@ def main() -> int:
         window = MainWindow()
         if window.windowIcon().isNull():
             raise RuntimeError("Bundled application icon is missing")
-        if app.property("studioFontFamily") != "Onest":
-            raise RuntimeError("Bundled Onest font is missing")
+        if app.property("studioFontFamily") != "Nunito":
+            raise RuntimeError("Bundled Nunito font is missing")
         window.show()
         app.processEvents()
         window.close()

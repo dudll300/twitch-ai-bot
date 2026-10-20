@@ -196,7 +196,7 @@ class LocalContextPage(QWidget):
         self.remove_button.clicked.connect(self.remove_card)
         editor_layout.addWidget(self.remove_button, 0, Qt.AlignRight)
         self.stack.addWidget(editor)
-        self.master_detail = MasterDetail(left, scroll_page(self.stack))
+        self.master_detail = MasterDetail(left, scroll_page(self.stack, ambient=False))
         tabs = QTabWidget()
         self.knowledge_tabs = tabs
         tabs.addTab(self.master_detail, "Карточки")

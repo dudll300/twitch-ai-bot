@@ -22,7 +22,8 @@ dependencies or external tools.
 
 ## Interface font
 
-`fonts/Onest.ttf` is the variable Onest family, including Cyrillic, bundled
-from the official Google Fonts repository (`ofl/onest/Onest[wght].ttf`).
+`fonts/Nunito.ttf` is the rounded variable Nunito family, including Cyrillic,
+bundled from the official Google Fonts repository (`ofl/nunito/Nunito[wght].ttf`).
 It is registered by Qt at startup and included in the Windows executable.
-`fonts/OFL.txt` contains the SIL Open Font License and attribution.
+`fonts/Nunito-OFL.txt` contains its SIL Open Font License and attribution.
+The previous Onest font and `fonts/OFL.txt` are retained for earlier concepts.

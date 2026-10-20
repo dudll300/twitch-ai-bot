@@ -20,6 +20,7 @@ from studio_controls import StudioCheckBox as QCheckBox
 from studio_rows import OrbitRowDelegate
 from ui_widgets import panel_badge
 from studio_surfaces import GlowSurface
+from studio_icons import studio_icon
 
 class ProfilesEditor(GlowSurface):
     changed = Signal()
@@ -39,7 +40,7 @@ class ProfilesEditor(GlowSurface):
             self.load_error = str(exc)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(16)
         self.error = label(self.load_error, "error", True)
         self.error.setVisible(bool(self.load_error))
@@ -74,9 +75,9 @@ class ProfilesEditor(GlowSurface):
         self.list.setAccessibleName("Профили зрителей")
         self.list.currentRowChanged.connect(self._select)
         self.list.itemClicked.connect(lambda *_: self.master_detail.show_detail())
-        left_layout.addWidget(self.list, 1)
         self.empty_search = label("", "muted", True)
         left_layout.addWidget(self.empty_search)
+        left_layout.addWidget(self.list, 1)
         self.undo_button = QPushButton("Отменить удаление")
         self.undo_button.clicked.connect(self._undo)
         self.undo_button.setVisible(False)
@@ -84,17 +85,29 @@ class ProfilesEditor(GlowSurface):
 
 
         self.stack = QStackedWidget()
-        empty, empty_layout = card()
-        empty_layout.addStretch()
-        empty_layout.addWidget(label("Каждому — свой подход", "section"))
-        empty_layout.addWidget(label(
-            "Добавьте зрителя и задайте личную инструкцию: как обращаться, о чём шутить или какой тон использовать.",
-            "muted", True))
+        empty_page = QWidget()
+        empty_page_layout = QVBoxLayout(empty_page)
+        empty_page_layout.setContentsMargins(0, 0, 0, 0)
+        empty, empty_layout = card("Личные инструкции")
+        self.empty_card = empty
+        glyph = label("")
+        glyph.setPixmap(studio_icon("users", size=48).pixmap(48, 48))
+        empty_layout.addWidget(glyph)
+        empty_layout.addWidget(label("Каждому — свой подход", "emptyTitle", True))
+        self.empty_copy = label("Добавьте зрителя и задайте личную инструкцию: как обращаться, о чём шутить и какой тон использовать.", "emptyCopy", True)
+        self.empty_copy.setAlignment(Qt.AlignJustify | Qt.AlignTop)
+        empty_layout.addWidget(self.empty_copy)
         empty_layout.addWidget(label("Общий промпт продолжит действовать для всех.", "muted", True))
-        empty_layout.addStretch()
-        self.stack.addWidget(empty)
+        self.empty_add = QPushButton("Добавить первого зрителя")
+        self.empty_add.setProperty("variant", "primary")
+        self.empty_add.clicked.connect(self.add_profile)
+        empty_layout.addWidget(self.empty_add, 0, Qt.AlignLeft)
+        empty_page_layout.addWidget(empty)
+        empty_page_layout.addStretch()
+        self.stack.addWidget(empty_page)
 
         editor, editor_layout = card("Профиль зрителя")
+        self.profile_card = editor
         heading = QHBoxLayout()
         self.editor_title = editor_layout.title_label
         self.enabled = ToggleSwitch("Включён")
@@ -155,7 +168,7 @@ class ProfilesEditor(GlowSurface):
             "Инструкция действует для этого зрителя, а также при обращении к нему или обсуждении его другими людьми. "
             "Тестирование учитывает черновики; работающий бот — сохранённые профили после перезапуска.",
             "muted", True))
-        self.stack.addWidget(scroll_page(editor))
+        self.stack.addWidget(scroll_page(editor, ambient=False))
         self.master_detail = MasterDetail(left, self.stack)
         columns.addWidget(self.master_detail, 1)
         outer.addLayout(columns, 1)

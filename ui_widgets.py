@@ -10,7 +10,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                               QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QScrollBar,
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget,
                               QSplitter, QStackedWidget, QSizePolicy, QStyleOptionButton,
-                              QStylePainter, QStyledItemDelegate)
+                              QStylePainter, QStyledItemDelegate, QLayout)
 from studio_controls import StudioScrollBar, OrbitScrollArea, colors, mix, animate
 from studio_surfaces import GlowSurface
 
@@ -672,11 +672,18 @@ class StatusLabel(QLabel):
         super().__init__(text)
         self._status_signature = None
 
+    def setText(self, text):
+        super().setText(text)
+        if self.property("role") == "error":
+            self.setVisible(bool(text.strip()))
+
     def _sync_status(self):
         if not hasattr(self, "_status_signature"):
             return
         theme = QApplication.instance().property("studioTheme") or "dark"
         role, state = self.property("role"), self.property("state")
+        if role == "error":
+            self.setVisible(bool(self.text().strip()))
         signature = theme, role, state
         if signature == self._status_signature:
             return
@@ -743,10 +750,13 @@ def field(title: str, widget: QWidget, hint: str = "") -> QWidget:
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
     caption = label(title, "caption")
+    caption.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
     caption.setBuddy(widget)
     widget.setAccessibleName(title)
     layout.addWidget(caption)
-    layout.addWidget(widget)
+    layout.addWidget(widget, 1)
+    if widget.maximumHeight() < 16777215:
+        container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
     if hint:
         layout.addWidget(label(hint, "muted", True))
     match = re.search(r"до (\d+) символ", title)
@@ -785,6 +795,7 @@ class Disclosure(QWidget):
     """Keyboard-accessible secondary content; collapsed by default."""
     def __init__(self, title, content, *, expanded=False):
         super().__init__()
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
@@ -794,18 +805,52 @@ class Disclosure(QWidget):
         self.button.setAccessibleName(title)
         self.content = content
         self.title = title
+        self.reveal = QWidget()
+        reveal_layout = QVBoxLayout(self.reveal)
+        reveal_layout.setContentsMargins(0, 0, 0, 0)
+        reveal_layout.setSizeConstraint(QLayout.SetNoConstraint)
+        reveal_layout.addWidget(content)
+        self._reveal_motion = QVariantAnimation(self)
+        self._reveal_motion.setDuration(240)
+        self._reveal_motion.setEasingCurve(QEasingCurve.OutCubic)
+        self._reveal_motion.valueChanged.connect(lambda value: self.reveal.setMaximumHeight(round(value)))
+        self._reveal_motion.finished.connect(self._finish_reveal)
         layout.addWidget(self.button)
-        layout.addWidget(content)
+        layout.addWidget(self.reveal)
         self.button.toggled.connect(self.set_expanded)
         QApplication.instance().paletteChanged.connect(self._update_icon)
         self.button.setChecked(expanded)
         self.set_expanded(expanded)
 
     def set_expanded(self, expanded):
-        self.content.setVisible(expanded)
+        self._reveal_motion.stop()
+        motion = self.isVisible() and QApplication.instance().property("animations") is not False
+        if motion:
+            start = self.reveal.height() if self.reveal.isVisible() else 0
+            self.content.show()
+            self.reveal.show()
+            width = max(1, self.reveal.width())
+            target = self.content.heightForWidth(width) if self.content.hasHeightForWidth() else self.content.sizeHint().height()
+            target = max(target, self.content.minimumSizeHint().height(), self.content.minimumHeight())
+            self._reveal_motion.setStartValue(float(start))
+            self._reveal_motion.setEndValue(float(target if expanded else 0))
+            self._reveal_motion.start()
+        else:
+            self._finish_reveal()
         self.button.setText(self.title)
         self._update_icon()
         self.button.setAccessibleDescription("Развёрнуто" if expanded else "Свёрнуто")
+
+    def _finish_reveal(self):
+        expanded = self.button.isChecked()
+        self.content.setVisible(expanded)
+        self.reveal.setVisible(expanded)
+        self.reveal.setMaximumHeight(16777215 if expanded else 0)
+
+    def hideEvent(self, event):
+        self._reveal_motion.stop()
+        self._finish_reveal()
+        super().hideEvent(event)
 
     def _update_icon(self, *_):
         from studio_icons import studio_icon
@@ -923,14 +968,15 @@ class MasterDetail(QWidget):
         return QSize(840, 460)
 
 
-def scroll_page(content: QWidget) -> QScrollArea:
+def scroll_page(content: QWidget, *, ambient=True) -> QScrollArea:
     scroll = OrbitScrollArea()
     scroll.setWidgetResizable(True)
     scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     scroll.setFrameShape(QFrame.NoFrame)
-    canvas = GlowSurface()
+    canvas = GlowSurface() if ambient else QWidget()
     canvas_layout = QVBoxLayout(canvas)
-    canvas_layout.setContentsMargins(0, 0, 8, 8)
+    margin = 14 if ambient else 0
+    canvas_layout.setContentsMargins(margin, margin, margin, margin)
     canvas_layout.addWidget(content)
     scroll.setWidget(canvas)
     return scroll

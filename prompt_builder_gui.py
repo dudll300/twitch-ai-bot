@@ -133,6 +133,7 @@ class PromptBuilder(QWidget):
         draft_layout.addLayout(draft_buttons)
         outer.addWidget(self.draft_card)
         self.draft_card.hide()
+        outer.addStretch()
         self.preview.textChanged.connect(self._update_state)
         self._timer = QTimer(self)
         self._timer.setInterval(60)

@@ -67,6 +67,8 @@ class StudioShell:
         layout.addStretch()
         tabs.addTab(scroll_page(prefs), "Интерфейс")
         help_page, box = card("Как пользоваться студией")
+        box.setSpacing(4)
+        box.setContentsMargins(16, 12, 16, 12)
         for heading, text in (
             ("Первое подключение", "Нужны аккаунт бота, канал с наградой за баллы, Client ID Public-приложения Twitch и данные AI-сервиса. Client Secret не требуется."),
             ("Перед эфиром", "Проверьте ответ без Twitch. Затем запустите бота и подтвердите вход под аккаунтом бота и владельца канала. Состояния чата и наград отображаются отдельно."),
@@ -79,7 +81,12 @@ class StudioShell:
         setup = QPushButton("Открыть первую настройку")
         setup.clicked.connect(self._open_setup)
         box.addWidget(setup)
-        tabs.addTab(scroll_page(help_page), "Справка")
+        help_content = QWidget()
+        help_layout = QVBoxLayout(help_content)
+        help_layout.setContentsMargins(0, 0, 0, 0)
+        help_layout.addWidget(help_page)
+        help_layout.addStretch()
+        tabs.addTab(scroll_page(help_content), "Справка")
         self.settings_tabs = tabs
         return tabs
 
@@ -90,7 +97,21 @@ class StudioShell:
         if not self._ui_state["animations"]:
             self._transition.finish()
             self.orbit_header.reset_motion()
+            for disclosure in self.findChildren(Disclosure):
+                disclosure._reveal_motion.stop()
+                disclosure._finish_reveal()
+            for tabs in self.findChildren(QTabWidget):
+                transition = getattr(tabs, "_page_transition", None)
+                if transition is not None:
+                    transition.finish()
+        else:
+            self.orbit_header.sync_star_motion()
         if theme_changed:
+            self._transition.finish()
+            for tabs in self.findChildren(QTabWidget):
+                transition = getattr(tabs, "_page_transition", None)
+                if transition is not None:
+                    transition.finish()
             self.setUpdatesEnabled(False)
             try:
                 apply_theme(QApplication.instance(), self._ui_state["theme"])

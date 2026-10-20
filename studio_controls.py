@@ -2,7 +2,7 @@
 from PySide6.QtCore import Qt, QRectF, QSize, QVariantAnimation, QEasingCurve, QPointF
 from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QCheckBox, QScrollBar, QScrollArea,
-    QSpinBox, QStyle, QStyleOptionSlider, QStyleOptionSpinBox, QTabBar, QTabWidget,
+    QSpinBox, QStyle, QStyleOptionSlider, QStyleOptionSpinBox, QTabBar, QTabWidget, QStackedWidget,
     )
 
 
@@ -123,14 +123,24 @@ class NumberInput(QSpinBox):
         clip = QPainterPath()
         clip.addRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 13, 13)
         p.setClipPath(clip)
+        if self.buttonSymbols() != QAbstractSpinBox.NoButtons:
+            up = self.style().subControlRect(QStyle.CC_SpinBox, option, QStyle.SC_SpinBoxUp, self)
+            down = self.style().subControlRect(QStyle.CC_SpinBox, option, QStyle.SC_SpinBoxDown, self)
+            rail = QRectF(up.united(down))
+            rail.setTop(1)
+            rail.setBottom(self.height() - 1)
+            rail.setRight(self.width() - 1)
+            p.fillRect(rail, QColor(colors()["raised"]))
+            p.setPen(QPen(QColor(colors()["border"]), 1))
+            p.drawLine(rail.topLeft(), rail.bottomLeft())
+            p.drawLine(QPointF(rail.left() + 8, self.height() / 2), QPointF(rail.right() - 8, self.height() / 2))
         for control, flag in ((QStyle.SC_SpinBoxUp, QAbstractSpinBox.StepUpEnabled),
                               (QStyle.SC_SpinBoxDown, QAbstractSpinBox.StepDownEnabled)):
             if self.buttonSymbols() == QAbstractSpinBox.NoButtons:
                 continue
             rect = self.style().subControlRect(QStyle.CC_SpinBox, option, control, self)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(colors()["selected"] if option.activeSubControls & control else colors()["raised"]))
-            p.drawRoundedRect(QRectF(rect).adjusted(.5, .5, -.5, -.5), 5, 5)
+            if option.activeSubControls & control:
+                p.fillRect(rect, QColor(colors()["selected"]))
             color = QColor(colors()["accent"] if self.isEnabled() and self.stepEnabled() & flag else colors()["muted"])
             p.setPen(QPen(color, 1.6, Qt.SolidLine, Qt.RoundCap))
             center = rect.center()
@@ -243,3 +253,18 @@ class StudioTabs(QTabWidget):
     def __init__(self, *args):
         super().__init__(*args)
         self.setTabBar(OrbitTabBar(self))
+        self._last_page = -1
+        self._page_transition = None
+        self.currentChanged.connect(self._transition_page)
+
+    def _transition_page(self, index):
+        previous, self._last_page = self._last_page, index
+        if previous < 0 or previous == index or not self.isVisible() or QApplication.instance().property("animations") is False:
+            return
+        from studio_artwork import PageTransition
+        if self._page_transition is None:
+            self._page_transition = PageTransition(self.findChild(QStackedWidget))
+            self._page_transition._motion.setDuration(280)
+        self._page_transition.finish()
+        if previous < self.count():
+            self._page_transition.start(self.widget(previous).grab())
