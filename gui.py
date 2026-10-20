@@ -141,7 +141,7 @@ class MainWindow(StudioShell, QMainWindow):
         glyph.setPixmap(QIcon(str(resource_path("assets/app.ico"))).pixmap(36, 36))
         glyph.setAccessibleName("Twitch AI Bot")
         mark_layout.addWidget(glyph)
-        # The approved Orbit brand belongs to the full-width top bar.
+        # Keep the product name in the full-width top bar.
         self._brand_labels = []
 
         side.addSpacing(6)
@@ -220,8 +220,8 @@ class MainWindow(StudioShell, QMainWindow):
         header.addWidget(mark)
         wordmark = QHBoxLayout()
         wordmark.setSpacing(7)
-        wordmark.addWidget(label("orbit", "brand"))
-        wordmark.addWidget(label("studio", "muted"))
+        self.brand_label = label("Twitch AI Bot", "brand")
+        wordmark.addWidget(self.brand_label)
         header.addLayout(wordmark)
         header.addStretch(1)
         workspace_heading = QVBoxLayout()

@@ -1,6 +1,7 @@
 """Orbit's native, resolution independent page horizon and session heading."""
 from math import cos, sin, radians
-from PySide6.QtCore import Qt, QRectF, QVariantAnimation, QEasingCurve, QTimer, QPointF, QEvent
+from random import Random
+from PySide6.QtCore import Qt, QRectF, QVariantAnimation, QEasingCurve, QTimer, QPointF, QEvent, QElapsedTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient, QLinearGradient, QPixmap
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QVBoxLayout, QSizePolicy, QWidget
 
@@ -16,8 +17,8 @@ class PageTransition(QWidget):
         self._old, self._new = QPixmap(), QPixmap()
         self._progress, self._generation = 1., 0
         self._motion = QVariantAnimation(self)
-        self._motion.setDuration(340)
-        self._motion.setEasingCurve(QEasingCurve.OutCubic)
+        self._motion.setDuration(380)
+        self._motion.setEasingCurve(QEasingCurve.InOutCubic)
         self._motion.valueChanged.connect(self._advance)
         self._motion.finished.connect(self.finish)
         parent.installEventFilter(self)
@@ -30,11 +31,11 @@ class PageTransition(QWidget):
     def start(self, previous):
         self.finish()
         generation = self._generation
-        self._old = previous
+        self._old = self._opaque(previous)
         def capture():
             if generation != self._generation or not self.parentWidget().isVisible() or QApplication.instance().property("animations") is False:
                 return
-            self._new = self.parentWidget().grab()
+            self._new = self._opaque(self.parentWidget().grab())
             self.setGeometry(self.parentWidget().rect())
             self._progress = 0.
             self.raise_()
@@ -43,6 +44,17 @@ class PageTransition(QWidget):
             self._motion.setEndValue(1.)
             self._motion.start()
         QTimer.singleShot(0, capture)
+
+    @staticmethod
+    def _opaque(snapshot):
+        result = QPixmap(snapshot.size())
+        result.setDevicePixelRatio(snapshot.devicePixelRatio())
+        c = PALETTES[QApplication.instance().property("studioTheme") or "dark"]
+        result.fill(QColor(c["bg"]))
+        painter = QPainter(result)
+        painter.drawPixmap(0, 0, snapshot)
+        painter.end()
+        return result
 
     def finish(self):
         self._generation += 1
@@ -59,10 +71,11 @@ class PageTransition(QWidget):
         p = QPainter(self)
         c = PALETTES[QApplication.instance().property("studioTheme") or "dark"]
         p.fillRect(self.rect(), QColor(c["bg"]))
-        p.setOpacity(1 - self._progress)
-        p.drawPixmap(QPointF(0, -4 * self._progress), self._old)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        # A fully opaque base avoids the dark dip caused by fading both layers.
+        p.drawPixmap(QPointF(0, -3 * self._progress), self._old)
         p.setOpacity(self._progress)
-        p.drawPixmap(QPointF(0, 10 * (1 - self._progress)), self._new)
+        p.drawPixmap(QPointF(0, 6 * (1 - self._progress)), self._new)
 
 
 class OrbitHeader(QFrame):
@@ -77,9 +90,15 @@ class OrbitHeader(QFrame):
         self._shift = 0.0
         self._parallax = QPointF()
         self._star_phase = 0.
+        random = Random(73019)
+        self._stars = tuple((random.uniform(.015, .985), random.uniform(.06, .92),
+                             random.uniform(.5, 1.45), random.uniform(0, 2 * 3.14159),
+                             random.uniform(.35, .9), random.uniform(55, 145),
+                             random.random() < .12) for _ in range(42))
+        self._star_clock = QElapsedTimer()
         self._star_window = None
         self._twinkle_timer = QTimer(self)
-        self._twinkle_timer.setInterval(50)
+        self._twinkle_timer.setInterval(33)
         self._twinkle_timer.timeout.connect(self._twinkle)
         self.setMouseTracking(True)
         self._motion = QVariantAnimation(self)
@@ -151,14 +170,16 @@ class OrbitHeader(QFrame):
     def sync_star_motion(self):
         enabled = QApplication.instance().property("animations") is not False
         if enabled and self.isVisible() and not self.window().isMinimized():
-            self._twinkle_timer.start()
+            if not self._twinkle_timer.isActive():
+                self._star_clock.start()
+                self._twinkle_timer.start()
         else:
             self._twinkle_timer.stop()
         self.update()
 
     def _twinkle(self):
-        self._star_phase += .05
-        self.update(self.rect().adjusted(round(self.width() * .5), 0, 0, -1))
+        self._star_phase += min(.1, self._star_clock.restart() / 1000)
+        self.update(self.rect().adjusted(0, 0, 0, -1))
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -280,18 +301,17 @@ class OrbitHeader(QFrame):
         p.setPen(Qt.NoPen)
         p.setBrush(fade)
         p.drawRect(self.rect())
-        # A sparse deterministic sky: only opacity varies, with long, offset
-        # periods. Repainting is limited to the header, never the full window.
-        for index in range(22):
-            x = width * (.54 + .44 * ((index * 37) % 97) / 97) + dx * 2
-            y = 9 + (self.height() - 24) * ((index * 29 + 13) % 89) / 89 + dy
-            radius = .65 + (index % 4) * .24
-            pulse = .5 + .5 * sin(self._star_phase * (.65 + index % 3 * .13) + index * 1.73)
+        # Randomized once, stable through navigation and resize. Independent
+        # sizes, phases and periods keep the sky irregular across the full header.
+        for horizontal, vertical, radius, phase, rate, brightness, sparkle in self._stars:
+            x = width * horizontal + dx * 2
+            y = 5 + (self.height() - 14) * vertical + dy
+            pulse = .5 + .5 * sin(self._star_phase * rate + phase)
             tint = QColor(colors["accent"])
-            tint.setAlpha(round((55 + pulse * 135) * min(1, (x / width - .5) * 4)))
+            tint.setAlpha(round(25 + pulse * brightness))
             p.setBrush(tint)
             p.drawEllipse(QPointF(x, y), radius, radius)
-            if index % 7 == 0:
+            if sparkle:
                 tint.setAlpha(round(tint.alpha() * .45))
                 p.setPen(QPen(tint, .7))
                 p.drawLine(QPointF(x - 3, y), QPointF(x + 3, y))

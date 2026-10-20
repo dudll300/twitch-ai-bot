@@ -20,7 +20,7 @@ SECTION_NAMES = {0: "Подключение", 1: "Поведение", 2: "Зр�
 
 
 from ui_widgets import StudioButton as QPushButton
-from studio_controls import StudioTabs as QTabWidget
+from studio_controls import StudioTabs as QTabWidget, OrbitScrollArea
 
 class StudioShell:
     def _section_page(self, content, index):
@@ -97,6 +97,8 @@ class StudioShell:
         if not self._ui_state["animations"]:
             self._transition.finish()
             self.orbit_header.reset_motion()
+            for area in self.findChildren(OrbitScrollArea):
+                area.stop_scroll(settle=True)
             for disclosure in self.findChildren(Disclosure):
                 disclosure._reveal_motion.stop()
                 disclosure._finish_reveal()

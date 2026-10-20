@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget,
                               QSplitter, QStackedWidget, QSizePolicy, QStyleOptionButton,
                               QStylePainter, QStyledItemDelegate, QLayout)
-from studio_controls import StudioScrollBar, OrbitScrollArea, colors, mix, animate
+from studio_controls import StudioScrollBar, OrbitScrollArea, colors, mix, animate, stop_parent_scroll
 from studio_surfaces import GlowSurface
 
 
@@ -113,7 +113,7 @@ class StudioButton(QPushButton):
         option.text = ""
         option.icon = QIcon()
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
         c, variant, hover = colors(), self.property("variant"), self._hover if self.isEnabled() else 0.
         primary = self.objectName() == "primary" or variant == "primary"
         foreground = QColor(c["text"])
@@ -182,7 +182,7 @@ class ComboItemDelegate(QStyledItemDelegate):
 
     def paint(self, painter, option, index):
         painter.save()
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
         selected = index.row() == self.combo.currentIndex()
         hovered = bool(option.state & (QStyle.State_Selected | QStyle.State_MouseOver))
         rect = option.rect.adjusted(4, 2, -4, -2)
@@ -225,6 +225,7 @@ class StudioLinkLabel(QLabel):
 
 class ContainedScrollBar(StudioScrollBar):
     def wheelEvent(self, event):
+        stop_parent_scroll(self)
         super().wheelEvent(event)
         event.accept()
 
@@ -239,6 +240,7 @@ class ContainedWheel:
         self.setHorizontalScrollBar(ContainedScrollBar(Qt.Horizontal, self))
 
     def wheelEvent(self, event):
+        stop_parent_scroll(self)
         super().wheelEvent(event)
         event.accept()
 
@@ -277,11 +279,13 @@ class ScrollPlainTextEdit(QPlainTextEdit):
         delta = event.pixelDelta().y() or event.angleDelta().y()
         # Horizontal gestures and zero-delta phase events belong to the editor.
         if not delta or event.modifiers() & Qt.ShiftModifier:
+            stop_parent_scroll(self)
             return False
         bar = self.verticalScrollBar()
         at_boundary = (bar.value() <= bar.minimum() if delta > 0
                        else bar.value() >= bar.maximum())
         if not at_boundary:
+            stop_parent_scroll(self)
             return False
         parent = self.parentWidget()
         while parent is not None:
@@ -319,7 +323,7 @@ class PopupShape(QObject):
             # QComboBox's private container bypasses QFrame's styled paint
             # path on Windows. Paint its actual window, not an inner view.
             painter = QPainter(watched)
-            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
             painter.setPen(QPen(QColor(colors()["border"]), 1))
             painter.setBrush(QColor(colors()["raised"]))
             painter.drawRoundedRect(QRectF(watched.rect()).adjusted(.5, .5, -.5, -.5), 16, 16)
@@ -414,7 +418,7 @@ class NoWheelComboBox(QComboBox):
             style_painter.end()
         center = self.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxArrow, self).center()
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
         painter.setPen(QPen(self.palette().color(QPalette.Text), 1.5))
         painter.drawLine(center.x() - 4, center.y() - 2, center.x(), center.y() + 2)
         painter.drawLine(center.x(), center.y() + 2, center.x() + 4, center.y() - 2)
@@ -482,7 +486,7 @@ def menu_icon():
     pixmap.setDevicePixelRatio(2)
     pixmap.fill(Qt.transparent)
     painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
     pen = QPen(QApplication.palette().color(QPalette.WindowText), 2)
     pen.setCapStyle(Qt.RoundCap)
     painter.setPen(pen)
@@ -620,6 +624,7 @@ class ToggleSwitch(QCheckBox):
     def __init__(self, text=""):
         super().__init__(text)
         self._position = 0.0
+        self._keyboard_focus = False
         self._animation = QVariantAnimation(self)
         self._animation.setDuration(240)
         self._animation.setEasingCurve(QEasingCurve.OutCubic)
@@ -646,24 +651,32 @@ class ToggleSwitch(QCheckBox):
     def hitButton(self, point):
         return self.rect().contains(point)
 
+    def focusInEvent(self, event):
+        self._keyboard_focus = event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason)
+        super().focusInEvent(event)
+
+    def mousePressEvent(self, event):
+        self._keyboard_focus = False
+        super().mousePressEvent(event)
+
     def paintEvent(self, event):
         painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
         painter.setOpacity(1 if self.isEnabled() else 0.45)
-        y = (self.height() - 24) // 2
+        y = (self.height() - 24) / 2
         c = colors()
         painter.setPen(QPen(mix(c["border"], c["primary"], self._position), 1))
         painter.setBrush(mix(c["raised"], c["primary"], self._position))
-        painter.drawRoundedRect(QRectF(1, y, 42, 24), 12, 12)
+        painter.drawRoundedRect(QRectF(3, y, 42, 24), 12, 12)
         painter.setPen(Qt.NoPen)
         painter.setBrush(mix(c["muted"], c["primaryText"], self._position))
-        painter.drawEllipse(QRectF(5 + 17 * self._position, y + 4, 16, 16))
+        painter.drawEllipse(QRectF(7 + 17 * self._position, y + 4, 16, 16))
         painter.setPen(self.palette().color(QPalette.WindowText))
         painter.drawText(self.rect().adjusted(55, 0, 0, 0), Qt.AlignVCenter, self.text())
-        if self.hasFocus():
+        if self.hasFocus() and self._keyboard_focus:
             painter.setBrush(Qt.NoBrush)
             painter.setPen(QPen(self.palette().color(QPalette.Link), 1))
-            painter.drawRoundedRect(QRectF(0, y - 2, 46, 28), 14, 14)
+            painter.drawRoundedRect(QRectF(1, y - 2, 46, 28), 14, 14)
 
 
 class StatusLabel(QLabel):
@@ -755,7 +768,7 @@ def field(title: str, widget: QWidget, hint: str = "") -> QWidget:
     widget.setAccessibleName(title)
     layout.addWidget(caption)
     layout.addWidget(widget, 1)
-    if widget.maximumHeight() < 16777215:
+    if widget.maximumHeight() < 16777215 or widget.sizePolicy().verticalPolicy() in (QSizePolicy.Fixed, QSizePolicy.Maximum):
         container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
     if hint:
         layout.addWidget(label(hint, "muted", True))

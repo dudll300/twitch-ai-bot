@@ -1,5 +1,6 @@
 """Orbit's native controls, input policy and finite motion. No service calls."""
-from PySide6.QtCore import Qt, QRectF, QSize, QVariantAnimation, QEasingCurve, QPointF
+from math import exp
+from PySide6.QtCore import Qt, QRectF, QSize, QVariantAnimation, QEasingCurve, QPointF, QAbstractAnimation
 from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QCheckBox, QScrollBar, QScrollArea,
     QSpinBox, QStyle, QStyleOptionSlider, QStyleOptionSpinBox, QTabBar, QTabWidget, QStackedWidget,
@@ -24,6 +25,15 @@ def animate(animation, start, end):
         animation.setCurrentTime(animation.duration())
     else:
         animation.start()
+
+
+def stop_parent_scroll(widget):
+    """Consuming input in an inner scroller cancels the outer scroll tail."""
+    parent = widget.parentWidget()
+    while parent is not None:
+        if isinstance(parent, OrbitScrollArea):
+            parent.stop_scroll()
+        parent = parent.parentWidget()
 
 
 class StudioScrollBar(QScrollBar):
@@ -62,10 +72,32 @@ class StudioScrollBar(QScrollBar):
             rect.setTop((self.height() - thickness) / 2)
             rect.setHeight(thickness)
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
         p.setPen(Qt.NoPen)
         p.setBrush(mix(colors()["border"], colors()["muted"], .22 + .35 * self._hover))
         p.drawRoundedRect(rect, thickness / 2, thickness / 2)
+
+
+class ScrollMotion(QAbstractAnimation):
+    """Use Qt's frame clock while retaining velocity between wheel events."""
+    def __init__(self, area):
+        super().__init__(area)
+        self.area = area
+        self._last_time = 0
+
+    def duration(self):
+        return -1
+
+    def updateState(self, state, previous):
+        if state == QAbstractAnimation.Running and previous == QAbstractAnimation.Stopped:
+            self._last_time = 0
+        super().updateState(state, previous)
+
+    def updateCurrentTime(self, current):
+        elapsed = min(.05, max(0, current - self._last_time) / 1000)
+        self._last_time = current
+        if elapsed:
+            self.area._spring_step(elapsed)
 
 
 class OrbitScrollArea(QScrollArea):
@@ -75,12 +107,10 @@ class OrbitScrollArea(QScrollArea):
         self.setHorizontalScrollBar(StudioScrollBar(Qt.Horizontal, self))
         self._setting = False
         self._target = 0
-        self._scroll = QVariantAnimation(self)
-        self._scroll.setDuration(180)
-        self._scroll.setEasingCurve(QEasingCurve.OutCubic)
-        self._scroll.valueChanged.connect(self._step)
+        self._position = self._velocity = 0.
+        self._scroll = ScrollMotion(self)
         self.verticalScrollBar().valueChanged.connect(self._external_scroll)
-        self.verticalScrollBar().sliderPressed.connect(self._scroll.stop)
+        self.verticalScrollBar().sliderPressed.connect(self.stop_scroll)
 
     def _step(self, value):
         self._setting = True
@@ -91,21 +121,59 @@ class OrbitScrollArea(QScrollArea):
         if not self._setting:
             self._scroll.stop()
             self._target = value
+            self._position, self._velocity = float(value), 0.
+
+    def stop_scroll(self, *, settle=False):
+        self._scroll.stop()
+        if settle:
+            self._step(self._target)
+        self._position = float(self.verticalScrollBar().value())
+        self._target, self._velocity = self._position, 0.
+
+    def _spring_step(self, elapsed):
+        bar = self.verticalScrollBar()
+        self._target = max(bar.minimum(), min(bar.maximum(), self._target))
+        offset = self._position - self._target
+        decay = exp(-22 * elapsed)
+        impulse = self._velocity + 22 * offset
+        self._position = self._target + (offset + impulse * elapsed) * decay
+        self._velocity = (self._velocity - 22 * impulse * elapsed) * decay
+        self._position = max(bar.minimum(), min(bar.maximum(), self._position))
+        self._step(self._position)
+        if abs(self._position - self._target) < .25 and abs(self._velocity) < 4:
+            self._step(self._target)
+            self.stop_scroll()
+
+    def hideEvent(self, event):
+        self.stop_scroll()
+        super().hideEvent(event)
 
     def wheelEvent(self, event):
-        delta = event.pixelDelta().y() or event.angleDelta().y() / 120 * 72
+        pixel_delta = event.pixelDelta().y()
+        stop_parent_scroll(self)
+        delta = pixel_delta or event.angleDelta().y() / 120 * 72
         if not delta or event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier) or QApplication.instance().property("animations") is False:
             super().wheelEvent(event)
             return
         bar = self.verticalScrollBar()
-        origin = self._target if self._scroll.state() == QVariantAnimation.Running else bar.value()
+        if pixel_delta:
+            # Precision trackpads already supply their own motion curve.
+            self.stop_scroll()
+            bar.setValue(round(bar.value() - pixel_delta))
+            event.accept()
+            return
+        running = self._scroll.state() == QAbstractAnimation.Running
+        origin = self._target if running else bar.value()
         self._target = max(bar.minimum(), min(bar.maximum(), round(origin - delta)))
-        self._scroll.stop()
-        # Respond immediately, then ease the remaining distance into place.
-        self._step(bar.value() + (self._target - bar.value()) * .22)
-        self._scroll.setStartValue(float(bar.value()))
-        self._scroll.setEndValue(float(self._target))
-        self._scroll.start()
+        if (self._target - self._position) * self._velocity < 0:
+            self._velocity = 0.
+        if not running:
+            self._position, self._velocity = float(bar.value()), 0.
+            if self._target == bar.value():
+                event.accept()
+                return
+            self._spring_step(.008)
+            self._scroll.start()
         event.accept()
 
 
@@ -119,7 +187,7 @@ class NumberInput(QSpinBox):
         option = QStyleOptionSpinBox()
         self.initStyleOption(option)
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
         clip = QPainterPath()
         clip.addRoundedRect(QRectF(self.rect()).adjusted(1, 1, -1, -1), 13, 13)
         p.setClipPath(clip)
@@ -153,6 +221,7 @@ class StudioCheckBox(QCheckBox):
     def __init__(self, *args):
         super().__init__(*args)
         self._checked = float(self.isChecked())
+        self._keyboard_focus = False
         self._motion = QVariantAnimation(self)
         self._motion.setDuration(200)
         self._motion.setEasingCurve(QEasingCurve.OutCubic)
@@ -169,13 +238,21 @@ class StudioCheckBox(QCheckBox):
     def hitButton(self, point):
         return self.rect().contains(point)
 
+    def focusInEvent(self, event):
+        self._keyboard_focus = event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason)
+        super().focusInEvent(event)
+
+    def mousePressEvent(self, event):
+        self._keyboard_focus = False
+        super().mousePressEvent(event)
+
     def paintEvent(self, event):
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
         if not self.isEnabled():
             p.setOpacity(.45)
         c, t = colors(), self._checked
-        rect = QRectF(1, (self.height() - 20) / 2, 20, 20)
+        rect = QRectF(3, (self.height() - 20) / 2, 20, 20)
         p.setBrush(mix(c["input"], c["primary"], t))
         p.setPen(QPen(mix(c["border"], c["primary"], t), 1))
         p.drawRoundedRect(rect, 6, 6)
@@ -187,7 +264,7 @@ class StudioCheckBox(QCheckBox):
         p.setOpacity(1 if self.isEnabled() else .45)
         p.setPen(QColor(c["text"]))
         p.drawText(self.rect().adjusted(32, 0, 0, 0), Qt.AlignVCenter, self.text())
-        if self.hasFocus() and not self.isDown():
+        if self.hasFocus() and self._keyboard_focus:
             p.setPen(QPen(QColor(c["accent"]), 1))
             p.setBrush(Qt.NoBrush)
             p.drawRoundedRect(rect.adjusted(-2, -2, 2, 2), 8, 8)
@@ -235,7 +312,7 @@ class OrbitTabBar(QTabBar):
 
     def paintEvent(self, event):
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
         c = colors()
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(c["selected"]))
@@ -264,7 +341,7 @@ class StudioTabs(QTabWidget):
         from studio_artwork import PageTransition
         if self._page_transition is None:
             self._page_transition = PageTransition(self.findChild(QStackedWidget))
-            self._page_transition._motion.setDuration(280)
+            self._page_transition._motion.setDuration(320)
         self._page_transition.finish()
         if previous < self.count():
             self._page_transition.start(self.widget(previous).grab())

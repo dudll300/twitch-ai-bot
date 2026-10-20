@@ -96,7 +96,7 @@ def main():
             window.settings_tabs.setCurrentIndex(2)
             QTest.qWait(30)
             assert window.settings_tabs._page_transition.isVisible()
-            QTest.qWait(300)
+            QTest.qWait(400)
             assert not window.settings_tabs._page_transition.isVisible()
             window.animations_control.setChecked(False)
             # Star animation is local and pauses in every required state.

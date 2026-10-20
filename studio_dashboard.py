@@ -226,7 +226,7 @@ class Dashboard(QWidget):
         if sent:
             self.last_reply.setText(sent["sent_text"])
             self.reply_meta.setText("В чат Twitch" + (" · @" + sent["viewer"] if sent["viewer"] else ""))
-            self.reply_origin.setText((sent.get("viewer") or "Orbit") + (" · вопрос через награду" if sent.get("kind") == "reward" else " · самостоятельная реплика"))
+            self.reply_origin.setText((sent.get("viewer") or "Twitch AI Bot") + (" · вопрос через награду" if sent.get("kind") == "reward" else " · самостоятельная реплика"))
             self.reply_question.setText(sent.get("question", ""))
             if sent.get("created"):
                 self.reply_time.setText(datetime.fromtimestamp(sent["created"]).strftime("%H:%M"))
@@ -246,7 +246,7 @@ class Dashboard(QWidget):
                 body = row["sent_text"] if row["status"] == "sent" else row["answer"] or row["reason"]
                 if body:
                     item = QListWidgetItem(body)
-                    author = "Orbit" if row["status"] == "sent" else "Orbit · " + names.get(row["status"], row["status"])
+                    author = "Twitch AI Bot" if row["status"] == "sent" else "Twitch AI Bot · " + names.get(row["status"], row["status"])
                     item.setData(Qt.UserRole + 1, dict(author=author, body=body, bot=row["status"] == "sent"))
                     self.conversation.addItem(item)
             self.conversation.verticalScrollBar().setValue(position)

@@ -15,7 +15,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt, QAbstractAnimation
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget
@@ -26,6 +26,7 @@ import testing
 from autonomous import AutoSettings, load_settings
 from configuration import env_content
 from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, scroll_page, Disclosure
+from studio_controls import OrbitScrollArea
 
 
 def wait_for(predicate, message="Timed out waiting for GUI worker"):
@@ -44,7 +45,14 @@ def wheel(widget, delta):
     event = QWheelEvent(QPointF(pos), QPointF(widget.mapToGlobal(pos)), QPoint(), QPoint(0, delta),
                         Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
     QApplication.sendEvent(widget, event)
-    QTest.qWait(210)  # Outer pages now ease the remaining wheel distance.
+    # Wait for the actual finite tail, rather than assuming one easing duration.
+    areas, parent = [], widget
+    while parent is not None:
+        if isinstance(parent, OrbitScrollArea):
+            areas.append(parent)
+        parent = parent.parentWidget()
+    QTest.qWait(20)
+    wait_for(lambda: all(area._scroll.state() == QAbstractAnimation.Stopped for area in areas), "Scroll motion did not settle")
     return event.isAccepted()
 
 

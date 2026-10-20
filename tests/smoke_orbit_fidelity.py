@@ -142,7 +142,7 @@ def main():
     app.setProperty("animations", True)
     wheel(area.viewport(), -120)
     assert 0 < area.verticalScrollBar().value() < 72
-    QTest.qWait(240)
+    QTest.qWait(440)
     assert area.verticalScrollBar().value() == 72
     app.setProperty("animations", False)
     wheel(area.viewport(), -120)

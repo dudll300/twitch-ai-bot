@@ -135,6 +135,7 @@ class SafetyPage(QWidget):
         rules_layout.setContentsMargins(0, 0, 0, 0)
         rules_layout.addWidget(settings)
         rules_layout.addWidget(Disclosure("Подробности защит", protection))
+        rules_layout.addStretch()
         tabs.addTab(rules, "Правила")
         tabs.addTab(test, "Проверка текста")
         layout.removeWidget(status)

@@ -76,7 +76,7 @@ class OrbitRowDelegate(QStyledItemDelegate):
         p.setPen(QColor(c["text"]))
         title = data.get("title", raw[0] if raw else "")
         if self.mode == "chat":
-            title = data.get("author", "Orbit") + ("  ·  BOT" if bot else "")
+            title = data.get("author", "Twitch AI Bot") + ("  ·  BOT" if bot else "")
         title = p.fontMetrics().elidedText(title, Qt.ElideRight, width)
         p.drawText(left, top + 15, title)
         font.setWeight(QFont.Normal)
