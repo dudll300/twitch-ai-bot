@@ -469,11 +469,24 @@ class Autonomous:
             if value not in self.consumed_ids:
                 self.consumed_ids.append(value)
 
-    def reserve(self, text, basis=()):
+    def reserve(self, text, basis=(), *, before_commit=None):
         with self._state_lock:
             now = self.clock()
             quota = [t for t in self.quota if now - t < 3600] + [now]
             self.write_quota(quota, self.requests, text)
+            # Storage can outlive the opportunity or a settings revision. Keep
+            # the in-memory reservation uncommitted until the last check; no
+            # Twitch write or preview has happened, so rollback is still safe.
+            if before_commit is not None:
+                try:
+                    before_commit()
+                except RequestCancelled:
+                    try:
+                        self.write_quota(self.quota, self.requests, self.last_text)
+                    except OSError:
+                        self.quota_error = True
+                        raise RequestCancelled(code='quota_storage_error') from None
+                    raise
             self.quota, self.last_text = quota, text
             self.recent_candidates.append((now, text))
             self.consume(basis)
@@ -664,14 +677,17 @@ class Autonomous:
                         check_basis(decision, pending.messages, pending.new_ids)
                         if redact_secret(decision.reply, self.cfg.get("AI_API_KEY", "")) != decision.reply:
                             raise ValueError("secret in reply")
-                        def valid():
+                        def valid(*, lease_reserved=False):
                             return (current() and not set(decision.basis).intersection(self.consumed_ids)
                                     and (not isinstance(local_bundle, LocalBundle)
                                          or self.local_manager.is_current(local_bundle.snapshot))
-                                    and (creative_card_id is None
+                                    and (creative_card_id is None or lease_reserved
                                          or self.local_manager.is_allowed(local_bundle, creative_card_id))
                                     and still_relevant(decision, pending.messages,
                                         self.buffer.fresh(self.clock(), self.settings), pending.new_ids, self.clock(), self.settings))
+                        def validate_reservation(*, lease_reserved=False):
+                            if not valid(lease_reserved=lease_reserved):
+                                raise RequestCancelled(code=cancellation_reason('cancelled'))
                         text = decision.reply
                         approval = None
                         if decision.action != "silent" and valid():
@@ -718,7 +734,7 @@ class Autonomous:
                                 self.event("skipped", reason=reason)
                             else:
                                 with publication_guard(text, approval, limit=min(self.settings.max_chars, 450), target=decision.target):
-                                    self.reserve(text, decision.basis)
+                                    self.reserve(text, decision.basis, before_commit=validate_reservation)
                                 self.event("preview", text, decision.reason,
                                            reason=("Творческая карточка в предпросмотре: " + redact_secret(
                                                creative_card_id, self.cfg.get("AI_API_KEY", ""))) if creative_card_id else "",
@@ -728,7 +744,9 @@ class Autonomous:
                             kwargs["approval"] = approval
                             stage = "autonomous_send"
                             def reserve_send():
-                                self.reserve(text, decision.basis)
+                                # The sender already holds the local-card lease;
+                                # it must not reject its own reservation as busy.
+                                self.reserve(text, decision.basis, before_commit=lambda: validate_reservation(lease_reserved=True))
                                 pending.request_trace.twitch_attempted = True
                             sent = await self.sender(text, valid, reserve_send, **kwargs)
                             if (sent and pending.generation == self.generation and self.connected
