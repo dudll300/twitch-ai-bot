@@ -280,7 +280,8 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
             history: tuple[tuple[str, str], ...] = (),
             personal_prompt: str = "", sender_role: str | None = None,
             viewer_context: str = "", local_bundle=None,
-            reject_local_service: bool = False, recent_context=(), history_times=(), history_recipients=()) -> str:
+            reject_local_service: bool = False, recent_context=(), history_times=(), history_recipients=(),
+            before_request=None) -> str:
     messages = build_messages(cfg, user, question, memory_data, user_id,
                               history=history, personal_prompt=personal_prompt,
                               sender_role=sender_role, viewer_context=viewer_context,
@@ -289,20 +290,22 @@ def call_ai(cfg: dict[str, str], user: str, question: str,
     exact_model = model or cfg["AI_MODEL"]
     if not usable_local_bundle(local_bundle):
         if reject_local_service:
-            return _plain_local_reply(request_completion(cfg, exact_model, messages, request_stage="generator"), cfg["AI_API_KEY"])
-        return send_messages(cfg, exact_model, messages)
+            return _plain_local_reply(request_completion(cfg, exact_model, messages, request_stage="generator",
+                                                       before_request=before_request), cfg["AI_API_KEY"])
+        return send_messages(cfg, exact_model, messages, before_request=before_request)
     if not local_bundle.candidate_ids:
-        content = request_completion(cfg, exact_model, messages, request_stage="generator")
+        content = request_completion(cfg, exact_model, messages, request_stage="generator", before_request=before_request)
         return _plain_local_reply(content, cfg["AI_API_KEY"], local_bundle)
     try:
-        content = request_completion(cfg, exact_model, messages, reject_truncated=True, request_stage="generator")
+        content = request_completion(cfg, exact_model, messages, reject_truncated=True, request_stage="generator",
+                                     before_request=before_request)
     except TruncatedAIError:
         raise LocalResultError("AI API обрезал ответ с локальным контекстом; результат отклонён.") from None
     return parse_local_reply(content, local_bundle, api_key=cfg["AI_API_KEY"])
 
 
-def send_messages(cfg: dict[str, str], model: str, messages: list[dict]) -> str:
-    content = request_completion(cfg, model, messages, request_stage="generator")
+def send_messages(cfg: dict[str, str], model: str, messages: list[dict], *, before_request=None) -> str:
+    content = request_completion(cfg, model, messages, request_stage="generator", before_request=before_request)
     check_candidate_source(content)
     answer = clean_text(redact_secret(content, cfg["AI_API_KEY"]), ANSWER_MAX_CHARS)
     if not answer:

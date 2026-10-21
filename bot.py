@@ -10,6 +10,7 @@ import time
 import urllib.request
 from collections import deque
 from dataclasses import replace
+from threading import Event
 
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
@@ -30,6 +31,7 @@ from safety import (SAFETY_REFUSAL, SafetyBlocked, SafetyReview, check_candidate
 from safety_settings import PolicyStore, policy_scope, current_policy, policy_binding
 from viewer_recognition import related_context
 from paths import data_dir
+from participation import RequestCancelled
 from rewards import RewardListener
 from twitch_auth import get_access_token
 
@@ -76,7 +78,9 @@ class AIModelRouter:
     def ask(self, cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             history: tuple[tuple[str, str], ...] = (), *, allow_creative=True, on_answer=None,
-            recent_context=(), history_times=(), history_recipients=()) -> str:
+            recent_context=(), history_times=(), history_recipients=(), cancelled=None) -> str:
+        if cancelled is not None and cancelled():
+            raise RequestCancelled()
         check_question(question)
         self.last_model = ""
         bundle = None
@@ -86,9 +90,12 @@ class AIModelRouter:
         try:
             answer = self._ask_models(cfg, user, question, memory_data, user_id, history, bundle,
                                       reject_local_service=not allow_creative,
-                                      recent_context=recent_context, history_times=history_times, history_recipients=history_recipients)
+                                      recent_context=recent_context, history_times=history_times,
+                                      history_recipients=history_recipients, cancelled=cancelled)
             if not allow_creative and is_local_service_output(answer):
                 raise LocalResultError("Некорректный обычный ответ после отмены локальной отсылки.")
+            if cancelled is not None and cancelled():
+                raise RequestCancelled()
             if on_answer is not None:
                 on_answer(answer, self.last_model)
             return answer
@@ -98,10 +105,16 @@ class AIModelRouter:
             print("Локальный контекст: некорректный результат; повторяю ответ без творческой отсылки.", flush=True)
             return self.ask(cfg, user, question, memory_data, user_id, history,
                             allow_creative=False, on_answer=on_answer,
-                            recent_context=recent_context, history_times=history_times, history_recipients=history_recipients)
+                            recent_context=recent_context, history_times=history_times,
+                            history_recipients=history_recipients, cancelled=cancelled)
 
     def _ask_models(self, cfg, user, question, memory_data, user_id, history, local_bundle,
-                    *, reject_local_service=False, recent_context=(), history_times=(), history_recipients=()):
+                    *, reject_local_service=False, recent_context=(), history_times=(), history_recipients=(), cancelled=None):
+        def before_request():
+            if cancelled():
+                raise RequestCancelled()
+            return AI_REQUEST_TIMEOUT_SECONDS
+
         primary = cfg["AI_MODEL"]
         backups = tuple(dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",")
                                       if name.strip() and name.strip() != primary))
@@ -120,6 +133,9 @@ class AIModelRouter:
         for model in models:
             try:
                 kwargs = {"model": model, "history": history}
+                if cancelled is not None:
+                    before_request()
+                    kwargs["before_request"] = before_request
                 if recent_context:
                     kwargs["recent_context"] = recent_context
                 if history_times:
@@ -306,6 +322,7 @@ class Bot:
             self._paid_busy = True
             record_id = None
             recorded_review = None
+            cancel = Event()
             scope = policy_scope(getattr(self, "safety_store", PolicyStore(ROOT)))
             scope.__enter__()
             try:
@@ -329,6 +346,7 @@ class Bot:
                     if getattr(self, "history", None) is not None and isinstance(self.ai_router, AIModelRouter):
                         kwargs["on_answer"] = generated
                     if isinstance(self.ai_router, AIModelRouter):
+                        kwargs["cancelled"] = cancel.is_set
                         if recent:
                             kwargs['recent_context'] = recent
                         if history_times:
@@ -413,6 +431,7 @@ class Bot:
                     self.history_recipients.pop(oldest, None)
                 print(f"Ответ отправлен для {user}", flush=True)
             except asyncio.CancelledError:
+                cancel.set()
                 await self.history_update(record_id, "cancelled", reason="Ответ прерван при остановке или разрыве соединения.")
                 print(f"Награда {redemption_id} от {user}: ответ прерван; проверьте возврат баллов вручную.", flush=True)
                 raise
@@ -446,6 +465,7 @@ class Bot:
                 except Exception as send_error:
                     await self.history_update(record_id, "send_error", reason=str(send_error))
             finally:
+                cancel.set()
                 scope.__exit__(None, None, None)
                 self._paid_busy = False
                 queue.task_done()
