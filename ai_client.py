@@ -7,6 +7,7 @@ import math
 import re
 import urllib.error
 import urllib.request
+import http_transport  # Install the application's credential-scoped redirects.
 
 from configuration import SYSTEM_PROMPT
 from local_context import LocalReply, LocalResultError

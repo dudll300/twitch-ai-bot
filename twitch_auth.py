@@ -6,6 +6,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import http_transport  # Also protect standalone OAuth validation and Helix calls.
 import webbrowser
 from pathlib import Path
 
