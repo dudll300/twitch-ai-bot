@@ -395,6 +395,8 @@ class Autonomous:
         with self._state_lock:
             event = moderation_event(line, self.cfg["TWITCH_CHANNEL"])
             if event is not None and self.connected:
+                if self.history_store is not None:
+                    self.history_store.note_moderation(self.cfg["TWITCH_CHANNEL"], event)
                 removed = self.buffer.moderate(event, self.clock())
                 self.output_fragments.clear(event.user_id or None)
                 active = self.pending or self.reviewing
@@ -619,6 +621,8 @@ class Autonomous:
                     "preview" if self.settings.mode == "preview" else "autonomous", review, record_id=record_id)
 
     async def tick(self):
+        if self.history_store is not None:
+            await asyncio.to_thread(self.history_store.flush_moderation)
         self.refresh()
         self.refresh_local()
         if self.pending is not None and self.pending.future.done():

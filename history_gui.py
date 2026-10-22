@@ -23,7 +23,7 @@ REASONS = {**REASON_NAMES, "answer": "Ответ на вопрос", "reaction":
            "no_reason": "Нет повода для участия", "offtopic": "Вне темы канала",
            "already_answered": "На этот повод уже ответили", "insufficient_context": "Недостаточно контекста"}
 EVENT_NAMES = {**STATUS_NAMES, "generating": "Запрос начат", "generated": "Сгенерировано",
-               "send_error": "Ошибка отправки"}
+               "send_error": "Ошибка отправки", "context_invalidated": "Исключено из AI-контекста после модерации"}
 
 
 def timestamp(value, *, short=False):

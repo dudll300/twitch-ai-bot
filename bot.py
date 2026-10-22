@@ -541,7 +541,7 @@ class Bot:
                             self.fragments.clear(event.user_id or None)
                             # Reward history is also a source of AI context, even
                             # when autonomous participation is disabled.
-                            if event.kind == "all":
+                            if event.kind in ("all", "uncertain"):
                                 self.histories.clear()
                                 self.history_times.clear()
                                 self.history_recipients.clear()
@@ -550,6 +550,7 @@ class Bot:
                                 self.histories.pop(key, None)
                                 self.history_times.pop(key, None)
                                 self.history_recipients.pop(key, None)
+                            await asyncio.to_thread(self.history.flush_moderation)
                     elif command == "NOTICE":
                         print("Twitch: " + line.split(" :", 1)[-1], flush=True)
 
