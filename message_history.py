@@ -40,6 +40,9 @@ CREATE TABLE IF NOT EXISTS events (
     time REAL NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_record ON events(record_id, seq);
+CREATE INDEX IF NOT EXISTS events_status_time_record ON events(status, time, record_id);
+CREATE INDEX IF NOT EXISTS events_record_status_time ON events(record_id, status, time);
+CREATE INDEX IF NOT EXISTS records_context_recipient ON records(channel COLLATE NOCASE, kind, status, viewer_id);
 CREATE TABLE IF NOT EXISTS safety_events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, time REAL NOT NULL, scenario TEXT NOT NULL,
     record_id TEXT, status TEXT NOT NULL, stage TEXT NOT NULL, reasons TEXT NOT NULL,
@@ -287,6 +290,39 @@ class MessageHistory:
     def recent_public_replies(self, channel, now):
         return self._read_publications(channel, now)
 
+    @staticmethod
+    def _publication_rows(connection, channel, now, recipient=None, *, limit=None):
+        # Narrow by the existing sent-event window before loading any JSON.
+        # Legacy rows without viewer_id still pass through the original basis
+        # validation, including ID-based matching after a login change.
+        kind_filter = "r.kind='autonomous'" if recipient is not None else "r.kind IN ('autonomous', 'reward')"
+        identity, identity_args = "", ()
+        if recipient is not None:
+            login, user_id = recipient
+            if user_id:
+                identity, identity_args = " AND (r.viewer_id=? OR r.viewer_id='')", (user_id,)
+            else:
+                identity, identity_args = " AND r.viewer_id='' AND r.viewer=? COLLATE NOCASE", (login,)
+        if limit is None:
+            limit = PUBLIC_CANDIDATE_LIMIT if recipient is None else -1
+        start = now - PERSONAL_REPLY_SECONDS
+        return connection.execute("""
+            WITH candidates AS (
+                SELECT r.seq, r.kind, r.viewer, r.viewer_id, r.sent_text,
+                       CASE WHEN r.kind='autonomous' THEN r.context ELSE NULL END AS context,
+                       r.mode, r.channel,
+                       (SELECT MIN(first.time) FROM events first
+                        WHERE first.record_id=r.id AND first.status='sent') AS sent_at
+                FROM records r
+                WHERE """ + kind_filter + """ AND r.status='sent' AND r.mode!='preview'
+                      AND r.channel=? COLLATE NOCASE """ + identity + """
+                      AND r.id IN (SELECT record_id FROM events
+                                   WHERE status='sent' AND time BETWEEN ? AND ?)
+            )
+            SELECT * FROM candidates WHERE sent_at BETWEEN ? AND ?
+            ORDER BY sent_at DESC, seq DESC LIMIT ?
+            """, (channel, *identity_args, start, now, start, now, limit))
+
     def _read_publications(self, channel, now, recipient=None):
         """Read successful publications by sent-event time, including older schemas.
 
@@ -297,19 +333,7 @@ class MessageHistory:
         def select(connection):
             if connection is None:
                 return []
-            # The cross-viewer scan is bounded. The existing personal lookup
-            # retains its full time window even in a busy reward-heavy session.
-            kind_filter = "r.kind='autonomous'" if recipient is not None else "r.kind IN ('autonomous', 'reward')"
-            rows = connection.execute("""
-                SELECT r.kind, r.viewer, r.viewer_id, r.sent_text,
-                       CASE WHEN r.kind='autonomous' THEN r.context ELSE NULL END AS context, r.mode, r.channel,
-                       MIN(e.time) AS sent_at
-                FROM records r JOIN events e ON e.record_id=r.id AND e.status='sent'
-                WHERE """ + kind_filter + """ AND r.status='sent' AND r.mode!='preview'
-                      AND lower(r.channel)=?
-                GROUP BY r.id HAVING sent_at BETWEEN ? AND ? ORDER BY sent_at DESC, r.seq DESC LIMIT ?
-                """, (channel.casefold(), now - PERSONAL_REPLY_SECONDS, now,
-                       PUBLIC_CANDIDATE_LIMIT if recipient is None else -1))
+            rows = self._publication_rows(connection, channel, now, recipient)
             result = []
             for row in rows:
                 try:
