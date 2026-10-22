@@ -85,7 +85,10 @@ def main():
             assert row._reveal_motion.state() == QAbstractAnimation.Running
             row.button.setChecked(False)
             row.button.setChecked(True)
-            QTest.qWait(300)
+            for _ in range(50):
+                if row._reveal_motion.state() == QAbstractAnimation.Stopped:
+                    break
+                QTest.qWait(20)
             assert row.content.isVisible() and row.reveal.maximumHeight() == 16777215
             row.button.setChecked(False)
             window.animations_control.setChecked(False)

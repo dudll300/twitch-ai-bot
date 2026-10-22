@@ -143,7 +143,7 @@ def main():
                     window.resize(size)
                     for index in range(len(gui.PAGES)):
                         window._navigate(index)
-                        QTest.qWait(420)
+                        QTest.qWait(window._transition._motion.duration() + 80)
                         app.processEvents()
                         assert window.width() <= size.width(), (theme, size_name, index, window.width())
                         assert window.height() <= size.height(), (theme, size_name, index, window.height())

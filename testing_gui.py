@@ -492,7 +492,10 @@ class TestingPage(QWidget):
         self._remaining = 0
         self._set_busy()
         self.diagnostic.invalidate()
-        self.modes.setCurrentIndex(index)
+        if not hasattr(self, "_mode_transition"):
+            from studio_artwork import PageTransition
+            self._mode_transition = PageTransition(self.modes, kind="tabs")
+        self._mode_transition.change(lambda: self.modes.setCurrentIndex(index), 1 if index else -1)
         self.run_button.setVisible(index == 0)
         self.status.setVisible(index == 0)
 

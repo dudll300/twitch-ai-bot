@@ -11,7 +11,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QAbstractAnimation
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -126,7 +126,7 @@ def main():
         from ui_widgets import Disclosure
         disclosure = next(row for row in page.findChildren(Disclosure) if row.content is page.timeline)
         disclosure.button.setChecked(True)
-        QTest.qWait(280)
+        wait_for(lambda: disclosure._reveal_motion.state() == QAbstractAnimation.Stopped, "Disclosure did not settle")
         assert page.timeline.mapTo(page.answer.parentWidget(), page.timeline.rect().topLeft()).y() > page.answer.geometry().bottom(), "Details overlap"
         assert page.timeline.geometry().bottom() < page.timeline.parentWidget().height(), "Details clipped"
         if "--screenshot" in sys.argv:

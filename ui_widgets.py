@@ -11,8 +11,9 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget,
                               QSplitter, QStackedWidget, QSizePolicy, QStyleOptionButton,
                               QStylePainter, QStyledItemDelegate, QLayout)
-from studio_controls import StudioScrollBar, OrbitScrollArea, colors, mix, animate, stop_parent_scroll
+from studio_controls import StudioScrollBar, OrbitScrollArea, colors, mix, stop_parent_scroll
 from studio_surfaces import GlowSurface
+from studio_motion import SpringMotion
 
 
 class StudioButton(QPushButton):
@@ -21,16 +22,14 @@ class StudioButton(QPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._hover = 0.0
-        self._hover_animation = QVariantAnimation(self)
-        self._hover_animation.setDuration(180)
-        self._hover_animation.setEasingCurve(QEasingCurve.OutCubic)
-        self._hover_animation.valueChanged.connect(self._advance_hover)
+        self._hover_animation = SpringMotion(self, 0., self._advance_hover, frequency=30)
         self._selected = float(self.isChecked())
-        self._selection_animation = QVariantAnimation(self)
-        self._selection_animation.setDuration(260)
-        self._selection_animation.setEasingCurve(QEasingCurve.OutCubic)
-        self._selection_animation.valueChanged.connect(self._advance_selection)
-        self.toggled.connect(lambda checked: animate(self._selection_animation, self._selected, float(checked)))
+        self._selection_animation = SpringMotion(self, self._selected, self._advance_selection)
+        self.toggled.connect(lambda checked: self._selection_animation.to(float(checked), immediate=not self.isVisible()))
+        self._press = 0.
+        self._press_motion = SpringMotion(self, 0., self._advance_press, frequency=36)
+        self.pressed.connect(lambda: self._press_motion.to(1.))
+        self.released.connect(lambda: self._press_motion.to(0.))
         self._keyboard_focus = False
         policy = self.sizePolicy()
         policy.setHorizontalPolicy(QSizePolicy.Preferred)
@@ -45,6 +44,10 @@ class StudioButton(QPushButton):
         self._selected = float(value)
         self.update()
 
+    def _advance_press(self, value):
+        self._press = value
+        self.update()
+
     def focusInEvent(self, event):
         self._keyboard_focus = event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason)
         super().focusInEvent(event)
@@ -53,14 +56,18 @@ class StudioButton(QPushButton):
         self._keyboard_focus = False
         super().mousePressEvent(event)
 
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        # Qt does not emit released() when a drag ends outside the hit area.
+        self._press_motion.to(0.)
+
+    def mouseMoveEvent(self, event):
+        super().mouseMoveEvent(event)
+        if event.buttons() & Qt.LeftButton:
+            self._press_motion.to(float(self.isDown()))
+
     def _animate_hover(self, target):
-        self._hover_animation.stop()
-        if QApplication.instance().property("animations") is False:
-            self._advance_hover(target)
-            return
-        self._hover_animation.setStartValue(self._hover)
-        self._hover_animation.setEndValue(target)
-        self._hover_animation.start()
+        self._hover_animation.to(target)
 
     def enterEvent(self, event):
         self._animate_hover(1.0)
@@ -69,6 +76,12 @@ class StudioButton(QPushButton):
     def leaveEvent(self, event):
         self._animate_hover(0.0)
         super().leaveEvent(event)
+
+    def hideEvent(self, event):
+        self._hover_animation.reset(0.)
+        self._press_motion.reset(0.)
+        self._selection_animation.finish()
+        super().hideEvent(event)
 
     def _text_layout(self, width):
         caption = self.text().replace("&&", "\0").replace("&", "").replace("\0", "&")
@@ -114,6 +127,10 @@ class StudioButton(QPushButton):
         option.icon = QIcon()
         painter = QPainter(self)
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform | QPainter.TextAntialiasing)
+        if self._press:
+            painter.translate(self.width() / 2, self.height() / 2 + self._press)
+            painter.scale(1 - .025 * self._press, 1 - .025 * self._press)
+            painter.translate(-self.width() / 2, -self.height() / 2)
         c, variant, hover = colors(), self.property("variant"), self._hover if self.isEnabled() else 0.
         primary = self.objectName() == "primary" or variant == "primary"
         foreground = QColor(c["text"])
@@ -128,6 +145,8 @@ class StudioButton(QPushButton):
         elif variant in ("nav", "quiet", "chip"):
             fill = QColor(c["selected"])
             fill.setAlphaF(min(1., self._selected * .92 + hover * .22))
+            if variant == "nav" and self.property("sharedNavPill"):
+                fill.setAlphaF(hover * .12)
             foreground = mix(c["muted"], c["accent"], max(self._selected, hover))
             if variant != "chip":
                 border = QColor(Qt.transparent)
@@ -625,10 +644,7 @@ class ToggleSwitch(QCheckBox):
         super().__init__(text)
         self._position = 0.0
         self._keyboard_focus = False
-        self._animation = QVariantAnimation(self)
-        self._animation.setDuration(240)
-        self._animation.setEasingCurve(QEasingCurve.OutCubic)
-        self._animation.valueChanged.connect(self._advance)
+        self._animation = SpringMotion(self, 0., self._advance, frequency=30)
         self.toggled.connect(self._animate)
 
     def _advance(self, value):
@@ -636,14 +652,11 @@ class ToggleSwitch(QCheckBox):
         self.update()
 
     def _animate(self, checked):
-        self._animation.stop()
-        if QApplication.instance().property("animations") is False:
-            self._advance(1.0 if checked else 0.0)
-            return
-        self._animation.setStartValue(self._position)
-        self._animation.setEndValue(1.0 if checked else 0.0)
-        self._animation.start()
+        self._animation.to(float(checked), immediate=not self.isVisible())
 
+    def hideEvent(self, event):
+        self._animation.finish()
+        super().hideEvent(event)
 
     def sizeHint(self):
         return QSize(58 + self.fontMetrics().horizontalAdvance(self.text()), 36)
@@ -823,11 +836,9 @@ class Disclosure(QWidget):
         reveal_layout.setContentsMargins(0, 0, 0, 0)
         reveal_layout.setSizeConstraint(QLayout.SetNoConstraint)
         reveal_layout.addWidget(content)
-        self._reveal_motion = QVariantAnimation(self)
-        self._reveal_motion.setDuration(240)
-        self._reveal_motion.setEasingCurve(QEasingCurve.OutCubic)
-        self._reveal_motion.valueChanged.connect(lambda value: self.reveal.setMaximumHeight(round(value)))
-        self._reveal_motion.finished.connect(self._finish_reveal)
+        self._content_limits = None
+        self._reveal_motion = SpringMotion(self, 0., lambda value: self.reveal.setMaximumHeight(max(0, round(value))), frequency=28, tolerance=.05)
+        self._reveal_motion.settled.connect(self._finish_reveal)
         layout.addWidget(self.button)
         layout.addWidget(self.reveal)
         self.button.toggled.connect(self.set_expanded)
@@ -836,25 +847,36 @@ class Disclosure(QWidget):
         self.set_expanded(expanded)
 
     def set_expanded(self, expanded):
-        self._reveal_motion.stop()
         motion = self.isVisible() and QApplication.instance().property("animations") is not False
         if motion:
             start = self.reveal.height() if self.reveal.isVisible() else 0
             self.content.show()
             self.reveal.show()
+            if self._content_limits is None:
+                self._content_limits = self.content.minimumHeight(), self.content.maximumHeight()
+            lower, upper = self._content_limits
+            self.content.setMinimumHeight(lower)
+            self.content.setMaximumHeight(upper)
             width = max(1, self.reveal.width())
             target = self.content.heightForWidth(width) if self.content.hasHeightForWidth() else self.content.sizeHint().height()
-            target = max(target, self.content.minimumSizeHint().height(), self.content.minimumHeight())
-            self._reveal_motion.setStartValue(float(start))
-            self._reveal_motion.setEndValue(float(target if expanded else 0))
-            self._reveal_motion.start()
+            target = min(upper, max(target, self.content.minimumSizeHint().height(), lower))
+            self.content.setFixedHeight(target)
+            if self._reveal_motion.state() != QVariantAnimation.Running:
+                self._reveal_motion.reset(float(start))
+            self._reveal_motion.to(float(target if expanded else 0))
         else:
+            self._reveal_motion.stop()
             self._finish_reveal()
         self.button.setText(self.title)
         self._update_icon()
         self.button.setAccessibleDescription("Развёрнуто" if expanded else "Свёрнуто")
 
     def _finish_reveal(self):
+        if self._content_limits is not None:
+            lower, upper = self._content_limits
+            self.content.setMinimumHeight(lower)
+            self.content.setMaximumHeight(upper)
+            self._content_limits = None
         expanded = self.button.isChecked()
         self.content.setVisible(expanded)
         self.reveal.setVisible(expanded)
@@ -864,6 +886,15 @@ class Disclosure(QWidget):
         self._reveal_motion.stop()
         self._finish_reveal()
         super().hideEvent(event)
+
+    def resizeEvent(self, event):
+        if event.size().width() != event.oldSize().width() and self._reveal_motion.state() == QVariantAnimation.Running:
+            QTimer.singleShot(0, self, self._retarget_reveal)
+        super().resizeEvent(event)
+
+    def _retarget_reveal(self):
+        if self._reveal_motion.state() == QVariantAnimation.Running:
+            self.set_expanded(self.button.isChecked())
 
     def _update_icon(self, *_):
         from studio_icons import studio_icon
@@ -922,7 +953,7 @@ class MasterDetail(QWidget):
         detail = QVBoxLayout(self.detail)
         detail.setContentsMargins(0, 0, 0, 0)
         self.back = QPushButton("← Назад к списку")
-        self.back.clicked.connect(lambda: self.stack.setCurrentIndex(0))
+        self.back.clicked.connect(lambda: self._show_pane(0))
         detail.addWidget(self.back)
         detail.addWidget(second, 1)
         self._layout.addWidget(self.splitter, 1)
@@ -960,7 +991,15 @@ class MasterDetail(QWidget):
 
     def show_detail(self):
         if self._small:
-            self.stack.setCurrentIndex(1)
+            self._show_pane(1)
+
+    def _show_pane(self, index):
+        if self.stack.currentIndex() == index:
+            return
+        if not hasattr(self, "_pane_transition"):
+            from studio_artwork import PageTransition
+            self._pane_transition = PageTransition(self.stack, kind="tabs")
+        self._pane_transition.change(lambda: self.stack.setCurrentIndex(index), 1 if index else -1)
 
     def restore_sizes(self, sizes):
         self._wide_sizes = sizes
@@ -971,8 +1010,13 @@ class MasterDetail(QWidget):
         return self._wide_sizes if self._small else self.splitter.sizes()
 
     def resizeEvent(self, event):
-        self.reflow(event.size().width() < self.threshold)
+        if self.isVisible():
+            self.reflow(event.size().width() < self.threshold)
         super().resizeEvent(event)
+
+    def showEvent(self, event):
+        self.reflow(self.width() < self.threshold)
+        super().showEvent(event)
 
     def minimumSizeHint(self):
         return QSize(0, 0)

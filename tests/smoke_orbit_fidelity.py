@@ -98,7 +98,7 @@ def main():
             QTest.qWait(30)
             assert window._transition.isVisible()
             window._navigate(gui.PAGE_HISTORY)
-            QTest.qWait(420)
+            QTest.qWait(window._transition._motion.duration() + 80)
             assert not window._transition.isVisible()
             window._navigate(gui.PAGE_BEHAVIOR)
             QTest.qWait(30)

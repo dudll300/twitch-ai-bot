@@ -20,9 +20,12 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 - Primary buttons use pale blue with dark ink. All colors come from semantic theme tokens.
 - Orbit is the visual direction; the top bar displays the product name Twitch AI Bot. Interactive movement is finite and all motion respects the animation preference.
 - Panels use a restrained diagonal gradient and a faint, continuous blue/violet halo. A cached 2x distance-field texture is stretched in nine slices, without stacked stroke bands or whole-widget graphics effects. Clip halos at scrolled edges; reserve canvas margins along visible panel edges and gaps. The compact icon rail opts out of these margins.
-- Header hover adds eased cursor parallax and a brighter halo; leaving or disabling motion resets it. Irregular stars cover the full header on every page, with independent sizes, brightness, phases and periods. Their timer stops when motion is disabled or the window is hidden/minimized.
+- Header hover uses continuous damped cursor parallax and a brighter halo; leaving or disabling motion resets it. Irregular stars cover the full header on every page, with independent sizes, brightness, phases and periods. Their timer stops when motion is disabled or the window is hidden/minimized. Captions crossfade separately over the live sky, with transparent snapshots and restored native labels at rest.
 - Numeric fields have a single integrated step rail with a divider and two native hit areas. Empty error messages always collapse. Captions and collapsed disclosures retain their natural height; only editors and lists absorb extra vertical room.
-- Disclosures reveal their content over 240 ms; inner tabs use transient 320 ms transitions. Page crossfades use opaque snapshots, a 380 ms ease-in/out and short travel, avoiding a dark dip at their midpoint. Reduced motion applies immediately, and rapid changes or hiding finish pending transitions.
+- `studio_motion.SpringMotion` uses analytic critically damped motion on Qt's frame clock. Retargeting preserves position and velocity; all springs settle exactly and have a finite 720 ms tail limit. Native button press/hover, switches, checkboxes, rail selection and inner-tab indicators share it. Hidden controls and reduced motion apply their final state directly. A press released outside its hit area must still return to rest.
+- Disclosures spring to their natural content height while clipping a stable content layout. Rapid reversal retains velocity; width changes retarget the height. At rest, restore the original height constraints so wrapped text remains responsive.
+- Main page entrances last 480 ms, with quintic easing, short upward travel, a restrained scale from .985 to 1 and up to six top-level visible card layers in spatial order. Offsets are staggered within the same duration. Inner tabs, compact list/detail navigation, testing and behavior modes use 360 ms directional transitions. Theme changes crossfade the actual old and new palettes over 360 ms, without deferring the preference or field changes.
+- Page snapshots remain opaque to avoid a dark dip at the midpoint. Resize/hide cancels the visible overlay; allow pending captures to use the final layout after caption wrapping. Rapid navigation starts from the displayed composite. The next click, wheel or key exposes native controls before handling the input. Use scoped, transient child event filters, never an application-wide Python event filter. Bind deferred captures and retargets to their QObject context so destruction cancels them. Release snapshots and filters on completion; settled text must be native and sharp. Reduced motion immediately finishes all pending transitions and springs.
 - Theme changes retain the shared selector tree and refresh cached palette brushes in parent order. Animation preferences never rebuild the application stylesheet. Verify actual painted colors after switching, not only the theme property.
 - Shared StudioButton wraps long captions and sizes their height; dropdowns use opaque, padded rows with a selection mark and native keyboard behavior.
 - Interface preferences expose theme and an animation toggle; do not expose animation durations.
@@ -31,7 +34,6 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 - The wheel never edits combos, numbers or tab selections, even when they have focus. Open catalogs still scroll. Outer pages use a critically damped scroll motion with continuous velocity between wheel events; precision trackpad pixels remain direct. Manual scroll changes, hiding and reduced motion cancel the tail. Native scrollbars retain their hit areas with a slim painted thumb.
 - Switches, checkboxes and buttons use antialiased floating-point geometry. Mouse selection has no extra focus outline; keyboard focus remains visible and stays inside the control bounds.
 - Step controls and checkmarks are drawn explicitly and use the shared palette. All numeric editors use NumberInput.
-- Page changes crossfade and move a short distance using transient snapshots. Remove the snapshot at completion so settled native text remains sharp. Rapid navigation and resize cancel previous transitions.
 - Text contrast target: at least 4.5:1. Important icons and focus indicators must remain visible in both themes.
 - Status uses text plus color. A gray or green pill alone must not carry the meaning.
 - Native drawn icons avoid missing glyphs. Use Qt palettes in custom-painted controls.
@@ -44,6 +46,7 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 - Responsive forms use two columns from content width 900.
 - MasterDetail switches to list/detail navigation below content width 760.
 - Reparented panes must be explicitly shown on return to the wide layout.
+- Hidden master/detail views defer responsive reparenting until show. A transition snapshot can deliver Qt's pending resize events to hidden descendants; those events must not rebuild the inactive pages.
 - Long editors remain scrollable. Never squeeze their labels and fields to make a large form fit.
 - Retain NoWheelComboBox and nested editor-to-page wheel handling.
 - Master/detail cards have a 20-pixel splitter gap; verify pane bounds as well as the overall window bounds.
@@ -68,7 +71,7 @@ The UI is Russian. Dark and light themes share semantic tokens in `studio_theme.
 
 ## Verification
 
-Run the existing unittest suite and GUI smoke checks, plus `tests/smoke_windows_studio.py`, `tests/smoke_orbit.py`, `tests/smoke_orbit_fidelity.py`, `tests/smoke_orbit_polish.py`, `tests/smoke_orbit_soft.py` and `tests/smoke_orbit_motion.py`.
+Run the existing unittest suite and GUI smoke checks, plus `tests/smoke_windows_studio.py`, `tests/smoke_orbit.py`, `tests/smoke_orbit_fidelity.py`, `tests/smoke_orbit_polish.py`, `tests/smoke_orbit_soft.py`, `tests/smoke_orbit_motion.py` and `tests/smoke_orbit_cinema.py`. Capture settled screens after motion completion. The cinema check exercises velocity continuity, rapid navigation, native input during transitions, press cancellation, disclosure resize, reduced motion and cleanup in both themes/layouts.
 Use `--screenshots` to capture every page in both themes at wide and compact sizes.
 Use QT_SCALE_FACTOR 1, 1.25 and 1.5 in separate processes for DPI checks.
 Windows packaged checks use `tests/smoke_package.py`; TWITCH_AI_TEST_EXE can select a candidate EXE.

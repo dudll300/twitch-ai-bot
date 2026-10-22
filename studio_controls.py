@@ -1,10 +1,11 @@
 """Orbit's native controls, input policy and finite motion. No service calls."""
 from math import exp
-from PySide6.QtCore import Qt, QRectF, QSize, QVariantAnimation, QEasingCurve, QPointF, QAbstractAnimation
+from PySide6.QtCore import Qt, QRectF, QSize, QPointF, QAbstractAnimation
 from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QCheckBox, QScrollBar, QScrollArea,
     QSpinBox, QStyle, QStyleOptionSlider, QStyleOptionSpinBox, QTabBar, QTabWidget, QStackedWidget,
     )
+from studio_motion import SpringMotion
 
 
 def colors():
@@ -15,16 +16,6 @@ def colors():
 def mix(a, b, amount):
     a, b = QColor(a), QColor(b)
     return QColor.fromRgbF(*(x + (y - x) * amount for x, y in zip(a.getRgbF(), b.getRgbF())))
-
-
-def animate(animation, start, end):
-    animation.stop()
-    animation.setStartValue(start)
-    animation.setEndValue(end)
-    if QApplication.instance().property("animations") is False:
-        animation.setCurrentTime(animation.duration())
-    else:
-        animation.start()
 
 
 def stop_parent_scroll(widget):
@@ -41,22 +32,23 @@ class StudioScrollBar(QScrollBar):
     def __init__(self, *args):
         super().__init__(*args)
         self._hover = 0.
-        self._motion = QVariantAnimation(self)
-        self._motion.setDuration(200)
-        self._motion.setEasingCurve(QEasingCurve.OutCubic)
-        self._motion.valueChanged.connect(self._advance)
+        self._motion = SpringMotion(self, 0., self._advance, frequency=30)
 
     def _advance(self, value):
         self._hover = float(value)
         self.update()
 
     def enterEvent(self, event):
-        animate(self._motion, self._hover, 1.)
+        self._motion.to(1.)
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        animate(self._motion, self._hover, 0.)
+        self._motion.to(0.)
         super().leaveEvent(event)
+
+    def hideEvent(self, event):
+        self._motion.reset(0.)
+        super().hideEvent(event)
 
     def paintEvent(self, event):
         if self.maximum() <= self.minimum():
@@ -222,11 +214,8 @@ class StudioCheckBox(QCheckBox):
         super().__init__(*args)
         self._checked = float(self.isChecked())
         self._keyboard_focus = False
-        self._motion = QVariantAnimation(self)
-        self._motion.setDuration(200)
-        self._motion.setEasingCurve(QEasingCurve.OutCubic)
-        self._motion.valueChanged.connect(self._advance)
-        self.toggled.connect(lambda checked: animate(self._motion, self._checked, float(checked)))
+        self._motion = SpringMotion(self, self._checked, self._advance, frequency=30)
+        self.toggled.connect(lambda checked: self._motion.to(float(checked), immediate=not self.isVisible()))
 
     def _advance(self, value):
         self._checked = float(value)
@@ -237,6 +226,10 @@ class StudioCheckBox(QCheckBox):
 
     def hitButton(self, point):
         return self.rect().contains(point)
+
+    def hideEvent(self, event):
+        self._motion.finish()
+        super().hideEvent(event)
 
     def focusInEvent(self, event):
         self._keyboard_focus = event.reason() in (Qt.TabFocusReason, Qt.BacktabFocusReason, Qt.ShortcutFocusReason)
@@ -277,14 +270,11 @@ class OrbitTabBar(QTabBar):
         self.setExpanding(False)
         self._keyboard_focus = False
         self._indicator = QRectF()
-        self._motion = QVariantAnimation(self)
-        self._motion.setDuration(260)
-        self._motion.setEasingCurve(QEasingCurve.OutCubic)
-        self._motion.valueChanged.connect(self._advance)
+        self._motion = SpringMotion(self, (0, 0, 0, 0), self._advance, frequency=27, tolerance=.04)
         self.currentChanged.connect(self._select)
 
     def _advance(self, rect):
-        self._indicator = rect
+        self._indicator = QRectF(*rect)
         self.update()
 
     def wheelEvent(self, event):
@@ -300,15 +290,19 @@ class OrbitTabBar(QTabBar):
 
     def _select(self, index):
         target = QRectF(self.tabRect(index)).adjusted(3, 4, -3, -4)
-        animate(self._motion, self._indicator if not self._indicator.isNull() else target, target)
+        self._motion.to((target.x(), target.y(), target.width(), target.height()), immediate=self._indicator.isEmpty() or not self.isVisible())
 
     def tabSizeHint(self, index):
         return QSize(self.fontMetrics().horizontalAdvance(self.tabText(index)) + 36, 48)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self._motion.stop()
-        self._indicator = QRectF(self.tabRect(self.currentIndex())).adjusted(3, 4, -3, -4)
+        self._select(self.currentIndex())
+        self._motion.finish()
+
+    def hideEvent(self, event):
+        self._motion.finish()
+        super().hideEvent(event)
 
     def paintEvent(self, event):
         p = QPainter(self)
@@ -340,8 +334,7 @@ class StudioTabs(QTabWidget):
             return
         from studio_artwork import PageTransition
         if self._page_transition is None:
-            self._page_transition = PageTransition(self.findChild(QStackedWidget))
-            self._page_transition._motion.setDuration(320)
-        self._page_transition.finish()
+            self._page_transition = PageTransition(self.findChild(QStackedWidget), kind="tabs")
         if previous < self.count():
-            self._page_transition.start(self.widget(previous).grab())
+            frame = self._page_transition.snapshot() if self._page_transition.isVisible() else self.widget(previous).grab()
+            self._page_transition.start(frame, 1 if index > previous else -1)

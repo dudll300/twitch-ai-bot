@@ -130,11 +130,17 @@ def main():
             app.sendEvent(header, QEnterEvent(QPointF(10, 10), QPointF(10, 10), QPointF(header.mapToGlobal(QPoint(10, 10)))))
             point = QPointF(header.width() * .9, header.height() * .8)
             app.sendEvent(header, QMouseEvent(QEvent.MouseMove, point, QPointF(header.mapToGlobal(point.toPoint())), Qt.NoButton, Qt.NoButton, Qt.NoModifier))
-            QTest.qWait(460)
+            for _ in range(60):
+                if header._motion.state() == QAbstractAnimation.Stopped and header._pointer_motion.state() == QAbstractAnimation.Stopped:
+                    break
+                QTest.qWait(20)
             assert header._shift > 3.9 and header._parallax.x() > .7
             assert header._motion.state() == QAbstractAnimation.Stopped
             app.sendEvent(header, QEvent(QEvent.Leave))
-            QTest.qWait(460)
+            for _ in range(60):
+                if header._motion.state() == QAbstractAnimation.Stopped and header._pointer_motion.state() == QAbstractAnimation.Stopped:
+                    break
+                QTest.qWait(20)
             assert header._shift == 0 and header._parallax == QPointF()
             app.sendEvent(header, QEnterEvent(QPointF(10, 10), QPointF(10, 10), QPointF(header.mapToGlobal(QPoint(10, 10)))))
             window.animations_control.setChecked(False)

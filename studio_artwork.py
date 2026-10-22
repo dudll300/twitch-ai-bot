@@ -1,24 +1,29 @@
 """Orbit's native, resolution independent page horizon and session heading."""
 from math import cos, sin, radians
 from random import Random
-from PySide6.QtCore import Qt, QRectF, QVariantAnimation, QEasingCurve, QTimer, QPointF, QEvent, QElapsedTimer
-from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient, QLinearGradient, QPixmap
+from PySide6.QtCore import Qt, QRectF, QRect, QVariantAnimation, QEasingCurve, QTimer, QPointF, QPoint, QEvent, QElapsedTimer
+from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient, QLinearGradient, QPixmap, QRegion
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QVBoxLayout, QSizePolicy, QWidget
 
 from studio_theme import PALETTES
 from ui_widgets import label
+from studio_motion import SpringMotion, enabled, smooth
 
 
 class PageTransition(QWidget):
     """A short composited transition, with crisp native text after completion."""
-    def __init__(self, parent):
+    def __init__(self, parent, kind="page"):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
         self._old, self._new = QPixmap(), QPixmap()
+        self.kind, self.direction = kind, 1
+        self._layers = []
+        self._caption_children = []
+        self._input_widgets = []
         self._progress, self._generation = 1., 0
         self._motion = QVariantAnimation(self)
-        self._motion.setDuration(380)
-        self._motion.setEasingCurve(QEasingCurve.InOutCubic)
+        self._motion.setDuration(480 if kind == "page" else 360)
+        self._motion.setEasingCurve(QEasingCurve.Linear)
         self._motion.valueChanged.connect(self._advance)
         self._motion.finished.connect(self.finish)
         parent.installEventFilter(self)
@@ -28,22 +33,87 @@ class PageTransition(QWidget):
         self._progress = float(value)
         self.update()
 
-    def start(self, previous):
+    def change(self, mutation, direction=1):
+        previous = self.snapshot() if self.parentWidget().isVisible() and enabled() else None
+        mutation()
+        if previous is not None:
+            self.start(previous, direction)
+
+    def start(self, previous, direction=1):
         self.finish()
+        self.direction = direction
         generation = self._generation
-        self._old = self._opaque(previous)
+        self._old = previous if self.kind == "caption" else self._opaque(previous)
         def capture():
             if generation != self._generation or not self.parentWidget().isVisible() or QApplication.instance().property("animations") is False:
                 return
-            self._new = self._opaque(self.parentWidget().grab())
+            incoming = self.snapshot()
+            self._new = incoming if self.kind == "caption" else self._opaque(incoming)
+            self._collect_layers()
+            if self.kind == "caption":
+                self._caption_children = [child for child in self.parentWidget().findChildren(QWidget)
+                                          if not child.isHidden() and child is not self]
+                for child in self._caption_children:
+                    child.installEventFilter(self)
             self.setGeometry(self.parentWidget().rect())
             self._progress = 0.
             self.raise_()
             self.show()
+            # A transition is presentation only. The very next input exposes
+            # native controls before they handle it, rather than hiding edits.
+            if self.kind != "caption":
+                self._input_widgets = [child for child in self.parentWidget().findChildren(QWidget)
+                                       if child is not self and child.isVisibleTo(self.parentWidget())]
+                for child in self._input_widgets:
+                    child.installEventFilter(self)
             self._motion.setStartValue(0.)
             self._motion.setEndValue(1.)
             self._motion.start()
-        QTimer.singleShot(0, capture)
+        QTimer.singleShot(0, self, capture)
+
+    def snapshot(self):
+        widget = self.parentWidget()
+        if self.kind != "caption":
+            if self.isVisible():
+                return self.grab()
+            return widget.grab()
+        # Render only the caption's children, leaving the moving sky visible.
+        ratio = widget.devicePixelRatioF()
+        result = QPixmap(round(widget.width() * ratio), round(widget.height() * ratio))
+        result.setDevicePixelRatio(ratio)
+        result.fill(Qt.transparent)
+        painter = QPainter(result)
+        widget.render(painter, QPoint(), QRegion(), QWidget.DrawChildren)
+        painter.end()
+        return result
+
+    def _collect_layers(self):
+        self._layers = []
+        if self.kind != "page":
+            return
+        parent = self.parentWidget()
+        candidates = []
+        for panel in parent.findChildren(QFrame, "card"):
+            if not panel.isVisibleTo(parent):
+                continue
+            ancestor = panel.parentWidget()
+            while ancestor is not None and ancestor is not parent and ancestor.objectName() != "card":
+                ancestor = ancestor.parentWidget()
+            if ancestor is not parent:
+                continue
+            visible = panel.visibleRegion().boundingRect()
+            if visible.isEmpty():
+                continue
+            origin = panel.mapTo(parent, visible.topLeft())
+            rect = QRect(origin, visible.size()).adjusted(-7, -7, 7, 7).intersected(parent.rect())
+            if rect.width() > 50 and rect.height() > 40:
+                candidates.append(rect)
+        ratio = self._new.devicePixelRatio()
+        for index, rect in enumerate(sorted(candidates, key=lambda r: (r.y() // 40, r.x()))[:6]):
+            pixels = QRect(round(rect.x() * ratio), round(rect.y() * ratio), round(rect.width() * ratio), round(rect.height() * ratio))
+            patch = self._new.copy(pixels)
+            patch.setDevicePixelRatio(ratio)
+            self._layers.append((QRectF(rect), patch, min(.25, index * .065)))
 
     @staticmethod
     def _opaque(snapshot):
@@ -60,22 +130,64 @@ class PageTransition(QWidget):
         self._generation += 1
         self._motion.stop()
         self.hide()
+        for child in self._input_widgets:
+            try:
+                child.removeEventFilter(self)
+            except RuntimeError:
+                pass  # An async list refresh may have removed a row widget.
+        self._input_widgets = []
+        for child in self._caption_children:
+            child.removeEventFilter(self)
+            child.update()
+        self._caption_children = []
         self._old, self._new = QPixmap(), QPixmap()
+        self._layers = []
 
     def eventFilter(self, watched, event):
-        if event.type() in (QEvent.Resize, QEvent.Hide):
+        if event.type() == QEvent.Paint and watched in self._caption_children:
+            # Keep native caption geometry and visibility intact while the
+            # transparent overlay paints the text over the live sky.
+            return True
+        if (watched is self.parentWidget() and (event.type() == QEvent.Hide or
+                (event.type() == QEvent.Resize and self.isVisible()))) or event.type() in (
+                QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.Wheel, QEvent.TouchBegin):
             self.finish()
         return False
 
     def paintEvent(self, event):
         p = QPainter(self)
         c = PALETTES[QApplication.instance().property("studioTheme") or "dark"]
-        p.fillRect(self.rect(), QColor(c["bg"]))
+        if self.kind != "caption":
+            p.fillRect(self.rect(), QColor(c["bg"]))
         p.setRenderHint(QPainter.SmoothPixmapTransform)
-        # A fully opaque base avoids the dark dip caused by fading both layers.
-        p.drawPixmap(QPointF(0, -3 * self._progress), self._old)
-        p.setOpacity(self._progress)
-        p.drawPixmap(QPointF(0, 6 * (1 - self._progress)), self._new)
+        progress = smooth(self._progress)
+        if self.kind == "caption":
+            p.setOpacity(1 - progress)
+        p.drawPixmap(QPointF(0, -3 * progress if self.kind in ("page", "caption") else 0), self._old)
+        if self._layers:
+            background = QRegion(self.rect())
+            for rect, _, _ in self._layers:
+                background -= QRegion(rect.toRect())
+            p.save()
+            p.setClipRegion(background)
+            p.setOpacity(progress)
+            p.drawPixmap(0, 0, self._new)
+            p.restore()
+            for rect, patch, delay in self._layers:
+                local = smooth((self._progress - delay) / (1 - delay))
+                p.setOpacity(progress)
+                p.fillRect(rect, QColor(c["bg"]))
+                p.save()
+                p.setOpacity(local)
+                center = rect.center()
+                p.translate(center.x(), center.y() + 16 * (1 - local))
+                p.scale(.985 + .015 * local, .985 + .015 * local)
+                p.drawPixmap(QPointF(-rect.width() / 2, -rect.height() / 2), patch)
+                p.restore()
+        else:
+            p.setOpacity(progress)
+            offset = QPointF(12 * self.direction * (1 - progress), 0) if self.kind == "tabs" else QPointF(0, 0 if self.kind == "theme" else 6 * (1 - progress))
+            p.drawPixmap(offset, self._new)
 
 
 class OrbitHeader(QFrame):
@@ -101,24 +213,21 @@ class OrbitHeader(QFrame):
         self._twinkle_timer.setInterval(33)
         self._twinkle_timer.timeout.connect(self._twinkle)
         self.setMouseTracking(True)
-        self._motion = QVariantAnimation(self)
-        self._motion.setDuration(420)
-        self._motion.setEasingCurve(QEasingCurve.OutCubic)
-        self._motion.valueChanged.connect(self._advance)
-        self._pointer_motion = QVariantAnimation(self)
-        self._pointer_motion.setDuration(240)
-        self._pointer_motion.setEasingCurve(QEasingCurve.OutCubic)
-        self._pointer_motion.valueChanged.connect(self._advance_pointer)
+        self._motion = SpringMotion(self, 0., self._advance, frequency=20)
+        self._pointer_motion = SpringMotion(self, (0, 0), self._advance_pointer, frequency=24)
         row = QHBoxLayout(self)
         row.setContentsMargins(14, 16, 14, 24)
         row.setSpacing(20)
-        copy = QVBoxLayout()
+        self.caption = QWidget()
+        copy = QVBoxLayout(self.caption)
+        copy.setContentsMargins(0, 0, 0, 0)
         copy.setSpacing(8)
         self.eyebrow = label("СТУДИЯ / ЭФИР", "eyebrow")
         copy.addWidget(self.eyebrow)
         copy.addWidget(title)
         copy.addWidget(description)
-        row.addLayout(copy, 1)
+        row.addWidget(self.caption, 1)
+        self.caption_transition = PageTransition(self.caption, kind="caption")
         self.stats = QFrame()
         metrics = QHBoxLayout(self.stats)
         metrics.setContentsMargins(0, 30, 0, 0)
@@ -134,10 +243,17 @@ class OrbitHeader(QFrame):
         for child in self.findChildren(QWidget):
             child.setAttribute(Qt.WA_TransparentForMouseEvents)
 
-    def set_page(self, title, stream=False):
+    def set_page(self, title, stream=False, description=None):
+        previous = self.caption_transition.snapshot() if self.title.text() != title and self.isVisible() and enabled() else None
+        self.caption_transition.finish()
+        self.title.setText(title)
+        if description is not None:
+            self.description.setText(description)
         self._stream = stream
         self.eyebrow.setText("СТУДИЯ / " + title.upper())
         self.stats.setVisible(stream and self.width() >= 650)
+        if previous is not None:
+            self.caption_transition.start(previous)
 
     def update_state(self, state):
         self.answers.setText(str(state.answers))
@@ -148,23 +264,15 @@ class OrbitHeader(QFrame):
         self.update()
 
     def _advance_pointer(self, value):
-        self._parallax = value
+        self._parallax = QPointF(*value)
         self.update()
 
     def _move_pointer(self, target):
-        self._pointer_motion.stop()
-        if QApplication.instance().property("animations") is False:
-            self._advance_pointer(QPointF())
-            return
-        self._pointer_motion.setStartValue(self._parallax)
-        self._pointer_motion.setEndValue(target)
-        self._pointer_motion.start()
+        self._pointer_motion.to((target.x(), target.y()) if enabled() else (0, 0))
 
     def reset_motion(self):
-        self._motion.stop()
-        self._pointer_motion.stop()
-        self._advance(0)
-        self._advance_pointer(QPointF())
+        self._motion.reset(0.)
+        self._pointer_motion.reset((0, 0))
         self.sync_star_motion()
 
     def sync_star_motion(self):
@@ -190,6 +298,8 @@ class OrbitHeader(QFrame):
 
     def hideEvent(self, event):
         self._twinkle_timer.stop()
+        self._motion.reset(0.)
+        self._pointer_motion.reset((0, 0))
         super().hideEvent(event)
 
     def eventFilter(self, watched, event):
@@ -204,13 +314,7 @@ class OrbitHeader(QFrame):
         super().mouseMoveEvent(event)
 
     def _move_horizon(self, value):
-        self._motion.stop()
-        if QApplication.instance().property("animations") is False:
-            self._advance(0)
-            return
-        self._motion.setStartValue(self._shift)
-        self._motion.setEndValue(float(value))
-        self._motion.start()
+        self._motion.to(float(value) if enabled() else 0.)
 
     def enterEvent(self, event):
         self._move_horizon(4.0)

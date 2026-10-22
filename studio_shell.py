@@ -21,6 +21,7 @@ SECTION_NAMES = {0: "Подключение", 1: "Поведение", 2: "Зр�
 
 from ui_widgets import StudioButton as QPushButton
 from studio_controls import StudioTabs as QTabWidget, OrbitScrollArea
+from studio_motion import SpringMotion
 
 class StudioShell:
     def _section_page(self, content, index):
@@ -91,29 +92,23 @@ class StudioShell:
         return tabs
 
     def _appearance_changed(self, *_):
+        from studio_artwork import PageTransition
         theme_changed = self.theme_control.currentData() != self._ui_state["theme"]
+        previous = self._theme_transition.snapshot() if theme_changed and self.animations_control.isChecked() and self.isVisible() else None
         self._ui_state.update(theme=self.theme_control.currentData(), animations=self.animations_control.isChecked())
         QApplication.instance().setProperty("animations", self._ui_state["animations"])
+        if theme_changed or not self._ui_state["animations"]:
+            for transition in self.findChildren(PageTransition):
+                transition.finish()
         if not self._ui_state["animations"]:
-            self._transition.finish()
+            for spring in self.findChildren(SpringMotion):
+                spring.finish()
             self.orbit_header.reset_motion()
             for area in self.findChildren(OrbitScrollArea):
                 area.stop_scroll(settle=True)
-            for disclosure in self.findChildren(Disclosure):
-                disclosure._reveal_motion.stop()
-                disclosure._finish_reveal()
-            for tabs in self.findChildren(QTabWidget):
-                transition = getattr(tabs, "_page_transition", None)
-                if transition is not None:
-                    transition.finish()
         else:
             self.orbit_header.sync_star_motion()
         if theme_changed:
-            self._transition.finish()
-            for tabs in self.findChildren(QTabWidget):
-                transition = getattr(tabs, "_page_transition", None)
-                if transition is not None:
-                    transition.finish()
             self.setUpdatesEnabled(False)
             try:
                 apply_theme(QApplication.instance(), self._ui_state["theme"])
@@ -121,6 +116,8 @@ class StudioShell:
             finally:
                 self.setUpdatesEnabled(True)
                 self.update()
+            if previous is not None:
+                self._theme_transition.start(previous)
         self._persist_preferences()
 
     def _refresh_icons(self):

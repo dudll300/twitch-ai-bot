@@ -29,6 +29,7 @@ from settings import load_settings, save_settings
 from studio_shell import StudioShell
 from studio_dashboard import Dashboard
 from studio_artwork import OrbitHeader, PageTransition
+from studio_motion import NavigationSurface
 from runtime_events import RuntimeState, PREFIX, activation_url
 from ui_state import load_ui_state
 from gui_theme import apply_theme
@@ -122,7 +123,8 @@ class MainWindow(StudioShell, QMainWindow):
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
         self.sidebar = SlidingSidebar(74)
-        side_contents = QWidget()
+        side_contents = NavigationSurface()
+        self.navigation_surface = side_contents
         panel_layout = QVBoxLayout(self.sidebar.panel)
         panel_layout.setContentsMargins(0, 0, 0, 0)
         panel_layout.addWidget(scroll_page(side_contents, ambient=False))
@@ -153,6 +155,7 @@ class MainWindow(StudioShell, QMainWindow):
         for index, (name, _) in enumerate(PAGES):
             button = QPushButton(name.replace("Самостоятельные реплики", "Самостоятельные\nреплики"))
             button.setProperty("variant", "nav")
+            button.setProperty("sharedNavPill", True)
             button.setIcon(studio_icon(nav_icons[index]))
             button.setIconSize(QSize(18, 18))
             button.setCheckable(True)
@@ -290,6 +293,7 @@ class MainWindow(StudioShell, QMainWindow):
         self.safety_page.test_requested.connect(self._test_security)
         self.safety_page.history_requested.connect(self._security_history)
         self._transition = PageTransition(self.pages)
+        self._theme_transition = PageTransition(body, kind="theme")
         content_layout.addWidget(self.pages, 1)
         main.addWidget(content, 1)
 
@@ -381,15 +385,14 @@ class MainWindow(StudioShell, QMainWindow):
         if index == PAGE_TESTING:
             self.testing_page.refresh_profiles()
         changed = self.pages.currentIndex() != index
-        previous = self.pages.grab() if changed and self.isVisible() and self._ui_state["animations"] else None
+        previous = self._transition.snapshot() if changed and self.isVisible() and self._ui_state["animations"] else None
         self.pages.setCurrentIndex(index)
+        self.nav_buttons[index].setChecked(True)
+        self.navigation_surface.select(self.nav_buttons[index])
+        self.orbit_header.set_page(PAGES[index][0], index == PAGE_ACTIVITY, PAGES[index][1])
+        self._refresh_workspace()
         if previous is not None:
             self._transition.start(previous)
-        self.nav_buttons[index].setChecked(True)
-        self.page_title.setText(PAGES[index][0])
-        self.page_description.setText(PAGES[index][1])
-        self.orbit_header.set_page(PAGES[index][0], index == PAGE_ACTIVITY)
-        self._refresh_workspace()
 
     def _test_credentials(self):
         saved_key = read_config(self._root / ".env").get("AI_API_KEY", "") if not self.api_key.text().strip() else ""
@@ -536,10 +539,22 @@ class MainWindow(StudioShell, QMainWindow):
                                             self.prompt.setPlainText)
         layout.addWidget(self.prompt_builder)
         self.prompt_builder.hide()
+        self._behavior_transition = None
         def mode_changed(index):
-            editor_columns.setVisible(index == 0)
-            self.prompt_builder.setVisible(index != 0)
-            self.prompt_builder.set_operation_mode("improve" if index == 2 else "create")
+            def apply():
+                editor_columns.setVisible(index == 0)
+                self.prompt_builder.setVisible(index != 0)
+                self.prompt_builder.set_operation_mode("improve" if index == 2 else "create")
+            if self._behavior_transition is None:
+                ancestor = page.parentWidget()
+                while ancestor is not None and not hasattr(ancestor, "viewport"):
+                    ancestor = ancestor.parentWidget()
+                if ancestor is not None:
+                    self._behavior_transition = PageTransition(ancestor.viewport(), kind="tabs")
+            if self._behavior_transition is not None:
+                self._behavior_transition.change(apply)
+            else:
+                apply()
         self.behavior_mode.currentIndexChanged.connect(mode_changed)
         return self._section_page(scroll_page(page), PAGE_BEHAVIOR)
 
