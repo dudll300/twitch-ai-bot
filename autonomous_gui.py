@@ -129,14 +129,11 @@ class AutonomousPage(QWidget):
             target.addWidget(field(title, spin), position // 2, position % 2)
             spin.valueChanged.connect(self._edited)
         options_layout.addLayout(grid)
-        self.advanced_button = QPushButton("Расширенные настройки")
-        self.advanced_button.setCheckable(True)
-        self.advanced_button.setProperty("variant", "quiet")
+        self.advanced_disclosure = Disclosure("Расширенные настройки", self.advanced_panel)
+        self.advanced_button = self.advanced_disclosure.button
         self.advanced_button.setAccessibleName("Показать расширенные настройки")
         self.advanced_button.toggled.connect(self._toggle_advanced)
-        options_layout.addWidget(self.advanced_button, 0, Qt.AlignLeft)
-        self.advanced_panel.hide()
-        options_layout.addWidget(self.advanced_panel)
+        options_layout.addWidget(self.advanced_disclosure)
         options_layout.addWidget(label(
             "Максимум за час задаётся вами. Предпросмотр учитывает те же паузы и лимиты. "
             "Вопросы по награде всегда имеют приоритет. AI расходует баланс API: выбор разговора — один запрос, "
@@ -215,8 +212,8 @@ class AutonomousPage(QWidget):
         self.autonomous_prompt.setPlainText(AutoSettings().autonomous_prompt)
 
     def _toggle_advanced(self, expanded):
-        self.advanced_panel.setVisible(expanded)
         self.advanced_button.setText("Скрыть расширенные настройки" if expanded else "Расширенные настройки")
+        self.advanced_disclosure.title = self.advanced_button.text()
         self.advanced_button.setAccessibleName("Скрыть расширенные настройки" if expanded else
                                                "Показать расширенные настройки")
 

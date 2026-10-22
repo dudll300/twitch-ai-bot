@@ -338,3 +338,30 @@ class StudioTabs(QTabWidget):
         if previous < self.count():
             frame = self._page_transition.snapshot() if self._page_transition.isVisible() else self.widget(previous).grab()
             self._page_transition.start(frame, 1 if index > previous else -1)
+
+
+class StudioStack(QStackedWidget):
+    """The same directional transition as StudioTabs, captured before mutation."""
+    def __init__(self, *args):
+        super().__init__(*args)
+        self._page_transition = None
+
+    def setCurrentIndex(self, index):
+        if index != self.currentIndex():
+            self.switch(index)
+
+    def switch(self, index, prepare=None, *, direction=None):
+        if not 0 <= index < self.count():
+            return
+        direction = direction if direction is not None else (1 if index >= self.currentIndex() else -1)
+        def apply():
+            if prepare is not None:
+                prepare()
+            QStackedWidget.setCurrentIndex(self, index)
+        if not self.isVisible() or QApplication.instance().property("animations") is False:
+            apply()
+            return
+        if self._page_transition is None:
+            from studio_artwork import PageTransition
+            self._page_transition = PageTransition(self, kind="tabs")
+        self._page_transition.change(apply, direction)

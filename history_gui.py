@@ -214,18 +214,16 @@ class HistoryPage(GlowSurface):
         details_layout.addLayout(copy_row)
         detail_layout.addWidget(details)
         context_card, context_layout = card("Контекст события")
-        self.context_button = QPushButton("Показать контекст")
-        self.context_button.setCheckable(True)
-        self.context_button.toggled.connect(self._toggle_context)
-        context_layout.addWidget(self.context_button)
         self.context = self._editor("Разговор, по которому сформирована реплика", 280)
-        context_layout.addWidget(self.context)
-        self.instructions_button = QPushButton("Показать инструкции запроса")
-        self.instructions_button.setCheckable(True)
-        self.instructions_button.toggled.connect(self._toggle_instructions)
-        context_layout.addWidget(self.instructions_button)
+        self.context_disclosure = Disclosure("Показать контекст", self.context)
+        self.context_button = self.context_disclosure.button
+        self.context_button.toggled.connect(self._toggle_context)
+        context_layout.addWidget(self.context_disclosure)
         self.instructions = self._editor("Инструкции, использованные при генерации", 260)
-        context_layout.addWidget(self.instructions)
+        self.instructions_disclosure = Disclosure("Показать инструкции запроса", self.instructions)
+        self.instructions_button = self.instructions_disclosure.button
+        self.instructions_button.toggled.connect(self._toggle_instructions)
+        context_layout.addWidget(self.instructions_disclosure)
         self.context_card = context_card
         detail_layout.addWidget(context_card)
         detail_layout.addStretch()
@@ -440,19 +438,21 @@ class HistoryPage(GlowSurface):
             instructions = "\n\n".join(message["content"] for message in context.get("request_messages", ())
                                         if message.get("role") == "system")
             self.instructions.setPlainText(instructions)
-            self.instructions_button.setVisible(bool(instructions))
+            self.instructions_disclosure.setVisible(bool(instructions))
         self._toggle_context(self.context_button.isChecked())
         self._toggle_instructions(self.instructions_button.isChecked())
         if previous is not None:
             self._detail_transition.start(previous)
 
     def _toggle_context(self, checked):
-        self.context.setVisible(checked)
-        self.context_button.setText("Скрыть контекст" if checked else "Показать контекст")
+        self.context_disclosure.title = "Скрыть контекст" if checked else "Показать контекст"
+        self.context_button.setText(self.context_disclosure.title)
+        self.context_button.setAccessibleName(self.context_disclosure.title)
 
     def _toggle_instructions(self, checked):
-        self.instructions.setVisible(checked)
-        self.instructions_button.setText("Скрыть инструкции запроса" if checked else "Показать инструкции запроса")
+        self.instructions_disclosure.title = "Скрыть инструкции запроса" if checked else "Показать инструкции запроса"
+        self.instructions_button.setText(self.instructions_disclosure.title)
+        self.instructions_button.setAccessibleName(self.instructions_disclosure.title)
 
     def shutdown(self):
         self._closed.set()

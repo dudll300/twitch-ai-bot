@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDia
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget,
                               QSplitter, QStackedWidget, QSizePolicy, QStyleOptionButton,
                               QStylePainter, QStyledItemDelegate, QLayout)
-from studio_controls import StudioScrollBar, OrbitScrollArea, colors, mix, stop_parent_scroll
+from studio_controls import StudioScrollBar, OrbitScrollArea, OrbitTabBar, colors, mix, stop_parent_scroll
 from studio_surfaces import GlowSurface
 from studio_motion import SpringMotion
 
@@ -87,7 +87,7 @@ class StudioButton(QPushButton):
         caption = self.text().replace("&&", "\0").replace("&", "").replace("\0", "&")
         layout = QTextLayout(caption, self.font())
         option = QTextOption()
-        option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        option.setWrapMode(QTextOption.NoWrap if self.property("variant") == "chip" else QTextOption.WordWrap)
         option.setAlignment(Qt.AlignLeft)
         layout.setTextOption(option)
         layout.beginLayout()
@@ -103,9 +103,14 @@ class StudioButton(QPushButton):
         return layout, height
 
     def minimumSizeHint(self):
+        if self.property("variant") == "chip":
+            return self.sizeHint()
         hint = super().minimumSizeHint()
-        limit = 62 if self.property("variant") == "chip" else 112
-        return QSize(min(hint.width(), limit) if self.text() else hint.width(), max(42, hint.height()))
+        if self.text():
+            widest = max((self.fontMetrics().horizontalAdvance(word) for word in self.text().replace("&", "").split()), default=0)
+            icon = self.iconSize().width() + 9 if not self.icon().isNull() else 0
+            return QSize(max(min(hint.width(), 112), widest + icon + 34), max(42, hint.height()))
+        return QSize(hint.width(), max(42, hint.height()))
 
     def sizeHint(self):
         hint = super().sizeHint()
@@ -475,29 +480,26 @@ def panel_badge(layout, badge):
 
 
 class SegmentedControl(QWidget):
-    """Show a small existing mode combo as explicit, animated tab buttons."""
+    """Keep the existing mode state behind the same tab bar as settings."""
     def __init__(self, combo):
         super().__init__()
-        self.combo, self.buttons = combo, []
+        self.combo = combo
         combo.setParent(self)
         row = QHBoxLayout(self)
         row.setContentsMargins(0, 0, 0, 0)
-        row.setSpacing(8)
+        self.bar = OrbitTabBar(self)
+        self.bar.setAccessibleName(combo.accessibleName())
         for index in range(combo.count()):
-            button = StudioButton(combo.itemText(index))
-            button.setProperty("variant", "chip")
-            button.setCheckable(True)
-            button.clicked.connect(lambda checked=False, value=index: combo.setCurrentIndex(value))
-            row.addWidget(button)
-            self.buttons.append(button)
+            self.bar.addTab(combo.itemText(index))
+        row.addWidget(self.bar)
         row.addStretch()
         combo.hide()
+        self.bar.currentChanged.connect(combo.setCurrentIndex)
         combo.currentIndexChanged.connect(self._sync)
         self._sync()
 
     def _sync(self, *_):
-        for index, button in enumerate(self.buttons):
-            button.setChecked(index == self.combo.currentIndex())
+        self.bar.setCurrentIndex(self.combo.currentIndex())
 
 
 def menu_icon():
@@ -837,7 +839,7 @@ class Disclosure(QWidget):
         reveal_layout.setSizeConstraint(QLayout.SetNoConstraint)
         reveal_layout.addWidget(content)
         self._content_limits = None
-        self._reveal_motion = SpringMotion(self, 0., lambda value: self.reveal.setMaximumHeight(max(0, round(value))), frequency=28, tolerance=.05)
+        self._reveal_motion = SpringMotion(self, 0., self._advance_reveal, frequency=28, tolerance=.05)
         self._reveal_motion.settled.connect(self._finish_reveal)
         layout.addWidget(self.button)
         layout.addWidget(self.reveal)
@@ -849,6 +851,7 @@ class Disclosure(QWidget):
     def set_expanded(self, expanded):
         motion = self.isVisible() and QApplication.instance().property("animations") is not False
         if motion:
+            self.reveal.setProperty("clipPanelGlow", True)
             start = self.reveal.height() if self.reveal.isVisible() else 0
             self.content.show()
             self.reveal.show()
@@ -872,6 +875,7 @@ class Disclosure(QWidget):
         self.button.setAccessibleDescription("Развёрнуто" if expanded else "Свёрнуто")
 
     def _finish_reveal(self):
+        self.reveal.setProperty("clipPanelGlow", False)
         if self._content_limits is not None:
             lower, upper = self._content_limits
             self.content.setMinimumHeight(lower)
@@ -881,6 +885,19 @@ class Disclosure(QWidget):
         self.content.setVisible(expanded)
         self.reveal.setVisible(expanded)
         self.reveal.setMaximumHeight(16777215 if expanded else 0)
+        self._refresh_glow()
+
+    def _advance_reveal(self, value):
+        self.reveal.setMaximumHeight(max(0, round(value)))
+        self._refresh_glow()
+
+    def _refresh_glow(self):
+        ancestor = self.parentWidget()
+        while ancestor is not None:
+            if isinstance(ancestor, GlowSurface):
+                ancestor.update()
+                break
+            ancestor = ancestor.parentWidget()
 
     def hideEvent(self, event):
         self._reveal_motion.stop()
@@ -948,6 +965,7 @@ class MasterDetail(QWidget):
         self.splitter = QSplitter(Qt.Horizontal)
         self.splitter.setHandleWidth(20)
         self.splitter.setChildrenCollapsible(False)
+        self.list_scroll = scroll_page(first, ambient=False)
         self.stack = QStackedWidget()
         self.detail = QWidget()
         detail = QVBoxLayout(self.detail)
@@ -963,6 +981,9 @@ class MasterDetail(QWidget):
         self.reflow(False)
 
     def reflow(self, small):
+        first_min, detail_min = self._pane_minimums()
+        self.list_scroll.setMinimumWidth(0 if small else first_min)
+        self.detail.setMinimumWidth(0 if small else detail_min)
         if small == self._small:
             return
         self._small = small
@@ -970,20 +991,20 @@ class MasterDetail(QWidget):
             sizes = self.splitter.sizes()
             if len(sizes) == 2 and all(sizes):
                 self._wide_sizes = sizes
-            self.first.setParent(None)
+            self.list_scroll.setParent(None)
             self.detail.setParent(None)
-            self.stack.addWidget(self.first)
+            self.stack.addWidget(self.list_scroll)
             self.stack.addWidget(self.detail)
             self.stack.setCurrentIndex(0)
         else:
-            self.stack.removeWidget(self.first)
+            self.stack.removeWidget(self.list_scroll)
             self.stack.removeWidget(self.detail)
-            self.splitter.addWidget(self.first)
+            self.splitter.addWidget(self.list_scroll)
             self.splitter.addWidget(self.detail)
             self.splitter.setStretchFactor(0, 1)
             self.splitter.setStretchFactor(1, 2)
             self.splitter.setSizes(self._wide_sizes)
-            self.first.show()
+            self.list_scroll.show()
             self.detail.show()
         self.back.setVisible(small)
         self.stack.setVisible(small)
@@ -1011,12 +1032,23 @@ class MasterDetail(QWidget):
 
     def resizeEvent(self, event):
         if self.isVisible():
-            self.reflow(event.size().width() < self.threshold)
+            self.reflow(self._needs_compact(event.size().width()))
         super().resizeEvent(event)
 
     def showEvent(self, event):
-        self.reflow(self.width() < self.threshold)
+        self.reflow(self._needs_compact(self.width()))
         super().showEvent(event)
+
+    def _needs_compact(self, width):
+        first_min, detail_min = self._pane_minimums()
+        return width < max(self.threshold, first_min + detail_min + self.splitter.handleWidth())
+
+    def _pane_minimums(self):
+        first = max(0, self.first.minimumSizeHint().width()) + self.list_scroll.verticalScrollBar().sizeHint().width()
+        second = max(0, self.detail.minimumSizeHint().width())
+        if isinstance(self.second, QScrollArea) and self.second.widget() is not None:
+            second = max(second, self.second.widget().minimumSizeHint().width() + self.second.verticalScrollBar().sizeHint().width())
+        return first, second
 
     def minimumSizeHint(self):
         return QSize(0, 0)

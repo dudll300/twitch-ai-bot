@@ -16,7 +16,7 @@ from PySide6.QtWidgets import QApplication, QStyle, QStyleOptionSpinBox, QStyleO
 import gui
 from studio_theme import PALETTES
 from studio_controls import NumberInput, OrbitScrollArea
-from ui_widgets import NoWheelComboBox, card
+from ui_widgets import NoWheelComboBox, MasterDetail, card
 
 
 def near(actual, expected):
@@ -77,14 +77,18 @@ def main():
                                     assert spin.rect().adjusted(2, 2, -2, -2).contains(rect), (spin.accessibleName(), rect)
                             for area in window.pages.currentWidget().findChildren(OrbitScrollArea):
                                 ancestor = area.parentWidget()
+                                pane_scroll = False
                                 while ancestor is not None and not isinstance(ancestor, OrbitScrollArea):
+                                    if isinstance(ancestor, MasterDetail):
+                                        pane_scroll = True
                                     ancestor = ancestor.parentWidget()
                                 if ancestor is not None:
                                     continue
                                 bar = area.verticalScrollBar()
                                 if area.isVisible() and bar.isVisible():
                                     right = bar.mapTo(window, QPoint(bar.width(), 0)).x()
-                                    assert window.width() - right <= 12, (index, window.width() - right)
+                                    boundary = area.mapTo(window, QPoint(area.width(), 0)).x() if pane_scroll else window.width()
+                                    assert 0 <= boundary - right <= 12, (index, boundary - right)
                         window._navigate(gui.PAGE_AUTONOMOUS)
                         app.processEvents()
                         mode = window.autonomous_page.mode

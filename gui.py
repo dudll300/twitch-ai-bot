@@ -30,6 +30,7 @@ from studio_shell import StudioShell
 from studio_dashboard import Dashboard
 from studio_artwork import OrbitHeader, PageTransition
 from studio_motion import NavigationSurface
+from studio_controls import StudioStack
 from runtime_events import RuntimeState, PREFIX, activation_url
 from ui_state import load_ui_state
 from gui_theme import apply_theme
@@ -534,29 +535,21 @@ class MainWindow(StudioShell, QMainWindow):
         companion_layout.addWidget(preview)
         companion_layout.addStretch()
         editor_columns = ResponsiveColumns(main, companion, threshold=850, ratios=(3, 2))
-        layout.addWidget(editor_columns, 1)
         self.prompt_builder = PromptBuilder(self._test_credentials, self.prompt.toPlainText,
                                             self.prompt.setPlainText)
-        layout.addWidget(self.prompt_builder)
-        self.prompt_builder.hide()
-        self._behavior_transition = None
+        self.behavior_pages = StudioStack()
+        self.behavior_pages.addWidget(scroll_page(editor_columns))
+        self.behavior_pages.addWidget(scroll_page(self.prompt_builder))
+        layout.addWidget(self.behavior_pages, 1)
+        self._behavior_mode_index = 0
         def mode_changed(index):
-            def apply():
-                editor_columns.setVisible(index == 0)
-                self.prompt_builder.setVisible(index != 0)
-                self.prompt_builder.set_operation_mode("improve" if index == 2 else "create")
-            if self._behavior_transition is None:
-                ancestor = page.parentWidget()
-                while ancestor is not None and not hasattr(ancestor, "viewport"):
-                    ancestor = ancestor.parentWidget()
-                if ancestor is not None:
-                    self._behavior_transition = PageTransition(ancestor.viewport(), kind="tabs")
-            if self._behavior_transition is not None:
-                self._behavior_transition.change(apply)
-            else:
-                apply()
+            direction = 1 if index > self._behavior_mode_index else -1
+            self._behavior_mode_index = index
+            self.behavior_pages.switch(0 if index == 0 else 1,
+                lambda: self.prompt_builder.set_operation_mode("improve" if index == 2 else "create"),
+                direction=direction)
         self.behavior_mode.currentIndexChanged.connect(mode_changed)
-        return self._section_page(scroll_page(page), PAGE_BEHAVIOR)
+        return self._section_page(page, PAGE_BEHAVIOR)
 
     def _build_activity(self):
         self.dashboard = Dashboard(self._root)

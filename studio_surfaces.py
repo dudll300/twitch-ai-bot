@@ -76,6 +76,10 @@ class GlowSurface(QWidget):
                 continue
             clip = QRectF(self.rect())
             for parent in chain:
+                if parent.property("clipPanelGlow"):
+                    origin = parent.mapTo(self, parent.rect().topLeft())
+                    visible = QRectF(origin.x(), origin.y(), parent.width(), parent.height()).adjusted(-24, -24, 24, 0)
+                    clip = clip.intersected(visible)
                 if not isinstance(parent, QAbstractScrollArea):
                     continue
                 viewport = parent.viewport()

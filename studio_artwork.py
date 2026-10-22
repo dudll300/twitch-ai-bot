@@ -22,7 +22,7 @@ class PageTransition(QWidget):
         self._input_widgets = []
         self._progress, self._generation = 1., 0
         self._motion = QVariantAnimation(self)
-        self._motion.setDuration(480 if kind == "page" else 360)
+        self._motion.setDuration(480 if kind == "page" else 220 if kind == "caption" else 360)
         self._motion.setEasingCurve(QEasingCurve.Linear)
         self._motion.valueChanged.connect(self._advance)
         self._motion.finished.connect(self.finish)
@@ -162,7 +162,7 @@ class PageTransition(QWidget):
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         progress = smooth(self._progress)
         if self.kind == "caption":
-            p.setOpacity(1 - progress)
+            p.setOpacity(1 - smooth(self._progress / .4))
         p.drawPixmap(QPointF(0, -3 * progress if self.kind in ("page", "caption") else 0), self._old)
         if self._layers:
             background = QRegion(self.rect())
@@ -185,7 +185,7 @@ class PageTransition(QWidget):
                 p.drawPixmap(QPointF(-rect.width() / 2, -rect.height() / 2), patch)
                 p.restore()
         else:
-            p.setOpacity(progress)
+            p.setOpacity(smooth((self._progress - .4) / .6) if self.kind == "caption" else progress)
             offset = QPointF(12 * self.direction * (1 - progress), 0) if self.kind == "tabs" else QPointF(0, 0 if self.kind == "theme" else 6 * (1 - progress))
             p.drawPixmap(offset, self._new)
 

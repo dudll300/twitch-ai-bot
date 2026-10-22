@@ -35,6 +35,7 @@ def comparison_worker(snapshot, pending, output, cancel):
 from ui_widgets import StudioButton as QPushButton
 from ui_widgets import SegmentedControl, ResponsiveColumns
 from studio_rows import ModelChoiceDelegate
+from studio_controls import StudioStack
 
 class TestingPage(QWidget):
     def __init__(self, get_credentials, get_snapshot, get_profiles, *, safety_store=None, get_answer_model=lambda: '', get_diagnostic_model=None):
@@ -191,17 +192,21 @@ class TestingPage(QWidget):
         self.mode.addItem('Проверка точного текста')
         self.mode.setAccessibleName('Режим тестирования')
         outer.addWidget(SegmentedControl(self.mode))
-        self.modes = QStackedWidget()
-        self.modes.addWidget(scroll_page(page))
+        self.modes = StudioStack()
+        comparison = QWidget()
+        comparison_layout = QVBoxLayout(comparison)
+        comparison_layout.setContentsMargins(0, 0, 0, 0)
+        comparison_layout.addWidget(scroll_page(page), 1)
+        self.modes.addWidget(comparison)
         self.diagnostic = DiagnosticPanel(safety_store or PolicyStore(data_dir()), get_credentials, get_diagnostic_model or get_answer_model)
         self.modes.addWidget(self.diagnostic)
         outer.addWidget(self.modes, 1)
         request_layout.removeItem(action_row)
         action_row.setStretch(0, 0)
         action_row.addStretch(1)
-        outer.addLayout(action_row)
+        comparison_layout.addLayout(action_row)
         request_layout.removeWidget(self.status)
-        outer.addWidget(self.status)
+        comparison_layout.addWidget(self.status)
         self.mode.currentIndexChanged.connect(self._mode_changed)
         # Provider errors and IDs are always plain text, never HTML.
         for widget in (self.status, self.catalog_status):
@@ -492,10 +497,7 @@ class TestingPage(QWidget):
         self._remaining = 0
         self._set_busy()
         self.diagnostic.invalidate()
-        if not hasattr(self, "_mode_transition"):
-            from studio_artwork import PageTransition
-            self._mode_transition = PageTransition(self.modes, kind="tabs")
-        self._mode_transition.change(lambda: self.modes.setCurrentIndex(index), 1 if index else -1)
+        self.modes.setCurrentIndex(index)
         self.run_button.setVisible(index == 0)
         self.status.setVisible(index == 0)
 

@@ -120,6 +120,7 @@ def main() -> None:
         assert not auto_page.advanced_panel.isHidden()
         auto_page.inputs["context_count"].setValue(31)
         auto_page.advanced_button.click()
+        wait_for(lambda: auto_page.advanced_panel.isHidden(), "Advanced settings did not finish collapsing")
         assert auto_page.advanced_panel.isHidden()
         auto_page.advanced_button.click()
         assert auto_page.inputs["context_count"].value() == 31

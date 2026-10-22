@@ -83,13 +83,16 @@ def main():
         assert page.context.isHidden()
         assert page.instructions.isHidden()
         page.context_button.click()
+        assert page.context_disclosure._reveal_motion.state() == QAbstractAnimation.Running
         assert not page.context.isHidden()
         assert "Наконец прошёл" in page.context.toPlainText()
         assert "Цель реплики" in page.context.toPlainText()
         page.instructions_button.click()
+        assert page.instructions_disclosure._reveal_motion.state() == QAbstractAnimation.Running
         assert "private-key" not in page.instructions.toPlainText()
         assert "ключ скрыт" in page.instructions.toPlainText()
         page.context_button.click()
+        wait_for(lambda: page.context_disclosure._reveal_motion.state() == QAbstractAnimation.Stopped, "Context did not collapse")
         assert page.context.isHidden()
 
         # A live refresh may still be running after the selected detail loads,
