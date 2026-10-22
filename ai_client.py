@@ -14,6 +14,7 @@ from local_context import LocalReply, LocalResultError
 from memory import context_for
 from reply_rules import CONTENT_SAFETY_RULE, ANSWER_LENGTH_RULE, ANSWER_MAX_CHARS, QUESTION_MAX_CHARS, upgrade_generated_prompt
 from privacy import PrivacyAnalysisLimit, PrivacyCheckError, PrivacyViolation, check_output, check_question, protected_messages, safe_history_text
+from reply_rules import TWITCH_PUBLICATION_RULE
 from safety import SafetyBlocked, check_candidate_source
 from safety_settings import link_prompt
 from recent_context import PUBLIC_REPLY_LIMIT
@@ -327,6 +328,12 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
     if trace is not None:
         trace.stage = request_stage + "_request"
     messages = protected_messages(messages)
+    # Add only to the outbound copy, after editable system instructions and
+    # before conversation data. Callers' previews/history never include it.
+    messages = [row for row in messages if not
+                (row['role'] == 'system' and row['content'] == TWITCH_PUBLICATION_RULE)]
+    position = next((index for index, row in enumerate(messages) if row['role'] != 'system'), len(messages))
+    messages.insert(position, {'role': 'system', 'content': TWITCH_PUBLICATION_RULE})
     for message in messages:
         try:
             check_output(message["content"])
