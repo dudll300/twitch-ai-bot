@@ -12,17 +12,13 @@ from typing import Awaitable, Callable
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake
 
-from twitch_auth import REDEMPTION_SCOPES, get_access_token, validate
+from twitch_auth import REDEMPTION_SCOPES, TemporaryTwitchError, get_access_token, validate
 from ai_client import http_error_detail
 
 
 API_URL = "https://api.twitch.tv/helix"
 WEBSOCKET_URL = "wss://eventsub.wss.twitch.tv/ws"
 REWARD_TITLE = "Вопрос ИИ"
-
-
-class TemporaryTwitchError(OSError):
-    """Reconnect EventSub after temporary Helix failures, keeping auth fatal."""
 
 
 def api_json(path: str, client_id: str, token: str, payload: dict | None = None) -> dict:

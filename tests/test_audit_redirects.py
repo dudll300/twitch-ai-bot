@@ -13,6 +13,7 @@ import rewards
 import testing
 import twitch_auth
 
+VALID_IDENTITY = b'{"client_id":"client","login":"helper","scopes":["chat:read","chat:edit"]}'
 
 class Response(io.BytesIO):
     def __init__(self, status, body=b"", location=""):
@@ -78,21 +79,22 @@ class AuthorizationRedirectTests(unittest.TestCase):
                 ("validate", lambda: twitch_auth.validate("synthetic-token"), "id.twitch.tv"),
                 ("helix", lambda: rewards.api_json("/users", "client", "synthetic-token"), "api.twitch.tv")):
             with self.subTest(name=name):
-                result, calls = self.chain(invoke, source=source, destination="https://outside.invalid/target", body=b'{}')
-                self.assertEqual(result, {})
+                result, calls = self.chain(invoke, source=source, destination="https://outside.invalid/target",
+                                          body=VALID_IDENTITY if name == 'validate' else b'{}')
+                self.assertIsInstance(result, dict)
                 self.assertNotIn("authorization", calls[1][2])
 
     def test_same_origin_redirect_retains_authentication(self):
         result, calls = self.chain(lambda: twitch_auth.validate("synthetic-token"), source="id.twitch.tv",
-            destination="https://id.twitch.tv:443/canonical", body=b'{}')
-        self.assertEqual(result, {})
+            destination="https://id.twitch.tv:443/canonical", body=VALID_IDENTITY)
+        self.assertEqual(result['login'], 'helper')
         self.assertEqual(calls[1][2]["authorization"], calls[0][2]["authorization"])
 
     def test_downgrade_or_port_change_removes_authentication(self):
         for destination in ("http://id.twitch.tv/target", "https://id.twitch.tv:444/target"):
             with self.subTest(destination=destination):
                 _, calls = self.chain(lambda: twitch_auth.validate("synthetic-token"), source="id.twitch.tv",
-                    destination=destination, body=b'{}')
+                    destination=destination, body=VALID_IDENTITY)
                 self.assertNotIn("authorization", calls[1][2])
 
 
