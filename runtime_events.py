@@ -28,7 +28,9 @@ def revision_id(value):
 def activation_url(value):
     try:
         parsed = urlsplit(value)
-        return value if parsed.scheme == "https" and parsed.hostname in ("twitch.tv", "www.twitch.tv") and parsed.path == "/activate" and not parsed.username else ""
+        return value if (parsed.scheme == "https" and parsed.hostname in ("twitch.tv", "www.twitch.tv")
+                         and parsed.path == "/activate" and parsed.username is None and parsed.password is None
+                         and parsed.port in (None, 443)) else ""
     except (ValueError, TypeError, AttributeError):
         return ""
 

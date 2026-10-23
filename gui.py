@@ -1,9 +1,8 @@
 """Desktop workspace for connection, behavior, viewer profiles and activity."""
 
-import codecs
-import html
 import json
 import sys
+from time import perf_counter
 from copy import deepcopy
 
 from PySide6.QtCore import QProcess, Qt, QTimer, QUrl, QSize
@@ -31,7 +30,8 @@ from studio_dashboard import Dashboard
 from studio_artwork import OrbitHeader, PageTransition
 from studio_motion import NavigationSurface
 from studio_controls import StudioStack
-from runtime_events import RuntimeState, PREFIX, activation_url
+from runtime_events import RuntimeState, PREFIX
+from process_output import ProcessLines
 from ui_state import load_ui_state
 from gui_theme import apply_theme
 from studio_icons import studio_icon
@@ -94,25 +94,23 @@ class MainWindow(StudioShell, QMainWindow):
         self._has_saved_key = bool(values.get("AI_API_KEY"))
         self._dirty = False
         self._saving = False
-        self._log_decoder = codecs.getincrementaldecoder("utf-8")()
         self._log_path = self._root / "bot-session.log"
-        self._log_offset = 0
-        self._output_tail = ""
-        self._auth_url = ""
-        self._auth_account = ""
-        self._question_count = 0
-        self._answer_count = 0
+        self._output = ProcessLines()
+        self._output_scheduled = self._draining_output = self._runtime_dirty = False
+        self._pipe_received = False
+        self._pending_finish = None
+        self._launch_failed = self._closing = False
 
         self.process = QProcess(self)
         self.process.started.connect(self._on_started)
         self.process.finished.connect(self._on_finished)
         self.process.errorOccurred.connect(self._on_process_error)
+        # One ordered pipe and one decoder, including native stderr writes.
+        self.process.setProcessChannelMode(QProcess.MergedChannels)
+        self.process.readyReadStandardOutput.connect(self._on_stdout_ready)
         self._kill_timer = QTimer(self)
         self._kill_timer.setSingleShot(True)
         self._kill_timer.timeout.connect(self._kill_if_running)
-        self._log_timer = QTimer(self)
-        self._log_timer.setInterval(250)
-        self._log_timer.timeout.connect(self._poll_log)
 
         body = QWidget()
         body.setObjectName("workspace")
@@ -562,9 +560,6 @@ class MainWindow(StudioShell, QMainWindow):
         self.questions_label = self.dashboard.metrics["questions"]
         self.answers_label = self.dashboard.metrics["answers"]
         self.auth_hint = self.dashboard.auth_hint
-        self.auth_hint.setObjectName("authHint")
-        self.auth_hint.setTextFormat(Qt.RichText)
-        self.auth_hint.setOpenExternalLinks(True)
         self.log = self.dashboard.log
         self.inspector_values = self.dashboard.inspector_values
         self.connection_pill = self.dashboard.connection_pill
@@ -603,10 +598,12 @@ class MainWindow(StudioShell, QMainWindow):
         self.dashboard.inspector_title.setText("Используется ботом" if self._running_gui else "Сохранённые настройки")
 
     def _set_status(self, text, state):
-        self.status.setText(text)
-        self.status.setProperty("state", state)
-        self.status.style().unpolish(self.status)
-        self.status.style().polish(self.status)
+        if self.status.text() != text:
+            self.status.setText(text)
+        if self.status.property("state") != state:
+            self.status.setProperty("state", state)
+            self.status.style().unpolish(self.status)
+            self.status.style().polish(self.status)
         self.connection_pill.setText(text)
 
     def _update_prompt_count(self):
@@ -757,7 +754,8 @@ class MainWindow(StudioShell, QMainWindow):
         }
 
     def _start(self) -> None:
-        if self.process.state() != QProcess.NotRunning or not self._save_all(for_start=True):
+        if (self._closing or self._pending_finish is not None or
+                self.process.state() != QProcess.NotRunning or not self._save_all(for_start=True)):
             return
         try:
             invalidate_tokens(self._root, self._active_values or self._saved_values, self._saved_values)
@@ -771,11 +769,9 @@ class MainWindow(StudioShell, QMainWindow):
             self.notice.setText("Не удалось создать журнал работы. Проверьте доступ к папке с данными приложения и повторите запуск.")
             self.notice.show()
             return
-        self._log_decoder = codecs.getincrementaldecoder("utf-8")()
-        self._log_offset = 0
-        self._output_tail = ""
-        self._auth_url = ""
-        self._auth_account = ""
+        self._output = ProcessLines()
+        self._pipe_received = self._launch_failed = False
+        self._runtime_dirty = False
         self._runtime = RuntimeState()
         self._stop_requested = False
         self._active_values = dict(self._saved_values)
@@ -783,10 +779,9 @@ class MainWindow(StudioShell, QMainWindow):
         self._pending_restart = False
         self.dashboard.session = ""
         self.dashboard.feed.clear()
-        self.auth_hint.setVisible(False)
+        self.auth_hint.reset()
         self._navigate(PAGE_ACTIVITY)
         self.autonomous_page.log.clear()
-        self._question_count = self._answer_count = 0
         self.questions_label.setText("0")
         self.answers_label.setText("0")
         self.log.clear()
@@ -794,16 +789,16 @@ class MainWindow(StudioShell, QMainWindow):
         self._set_status("Запускается…", "starting")
         self._set_running(True)
         self.process.setWorkingDirectory(str(self._root))
-        self._log_timer.start()
         if getattr(sys, "frozen", False):
-            self.process.start(sys.executable, ["--bot", str(self._log_path)])
+            self.process.start(sys.executable, ["--bot", str(self._log_path), "--pipe"])
         else:
-            self.process.start(sys.executable, ["-u", str(resource_path("app.py")), "--bot", str(self._log_path)])
+            self.process.start(sys.executable, ["-u", str(resource_path("app.py")), "--bot", str(self._log_path), "--pipe"])
 
     def _stop(self) -> None:
         if self.process.state() == QProcess.NotRunning:
             return
         self._stop_requested = True
+        self.auth_hint.reset()
         self._set_status("Останавливается…", "stopping")
         self.stop_button.setEnabled(False)
         self.process.terminate()
@@ -818,109 +813,134 @@ class MainWindow(StudioShell, QMainWindow):
 
     def _on_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
         self._kill_timer.stop()
-        self._poll_log()
-        self._log_timer.stop()
-        if self._output_tail:
-            self._append_log(self._output_tail)
-            self._output_tail = ""
+        self._on_stdout_ready()
+        if not self._pipe_received:
+            # Startup diagnostics only, if the worker could not open its pipe.
+            # Never poll or replay the archive alongside the live byte stream.
+            try:
+                self._output.feed(self._log_path.read_bytes())
+            except OSError:
+                pass
+        self._output.feed(b"", final=True)
+        self._pending_finish = exit_code, _status
+        self._drain_output()
+
+    def _finish_process(self, exit_code, exit_status):
         self.log.appendPlainText(f"Бот остановлен (код {exit_code}).")
         self._runtime.chat = self._runtime.eventsub = "disconnected"
         self._runtime.queue = 0
         self._runtime.processing = False
+        auth = self._runtime.auth
         expected_stop = self._stop_requested
-        failed = not expected_stop and (exit_code != 0 or _status == QProcess.ExitStatus.CrashExit)
+        failed = not expected_stop and (exit_code != 0 or exit_status == QProcess.ExitStatus.CrashExit)
         self._runtime.process = "error" if failed else "idle"
-        self._set_status("Ошибка процесса" if failed else "Остановлен", "error" if failed else "idle")
+        auth_failed = failed and auth.get("state") in ("required", "failed")
+        if auth_failed:
+            self.auth_hint.show_error(auth.get("reason"))
+        else:
+            self.auth_hint.reset()
+        self._runtime.auth = {}
+        text = ("Не удалось запустить" if self._launch_failed else "Ошибка авторизации" if auth_failed else
+                "Ошибка процесса" if failed else "Остановлен")
+        self._set_status(text, "error" if failed else "idle")
         self._set_running(False)
-        if self._restart_pending:
+        if self._restart_pending and not self._closing:
             self._restart_pending = False
-            QTimer.singleShot(0, self._start)
+            QTimer.singleShot(0, self, self._start)
 
     def _on_process_error(self, error: QProcess.ProcessError) -> None:
-        self._poll_log()
-        self.log.appendPlainText(f"Ошибка запуска бота: {self.process.errorString()}")
+        self._on_stdout_ready()
+        heading = "Ошибка запуска бота" if error == QProcess.FailedToStart else "Ошибка процесса"
+        self.log.appendPlainText(f"{heading}: {self.process.errorString()}")
         if error == QProcess.FailedToStart:
-            self._log_timer.stop()
-            self._set_status("Не удалось запустить", "error")
-            self._set_running(False)
+            self._launch_failed = True
+            self._on_finished(1, QProcess.NormalExit)
 
-    def _poll_log(self) -> None:
-        try:
-            with self._log_path.open("rb") as stream:
-                stream.seek(self._log_offset)
-                chunk = stream.read()
-                self._log_offset = stream.tell()
-        except OSError:
+    def _on_stdout_ready(self):
+        if not self.process.isOpen():
             return
+        chunk = bytes(self.process.readAllStandardOutput())
         if chunk:
-            self._consume(self._log_decoder.decode(chunk))
+            self._pipe_received = True
+            self._output.feed(chunk)
+            self._schedule_output()
 
     def _consume(self, text: str) -> None:
-        self._output_tail += text
-        while "\n" in self._output_tail:
-            line, self._output_tail = self._output_tail.split("\n", 1)
-            self._append_log(line.rstrip("\r"))
+        self._output.feed_text(text)
+        self._schedule_output()
+
+    def _schedule_output(self):
+        if not self._output_scheduled and not self._closing:
+            self._output_scheduled = True
+            QTimer.singleShot(0, self, self._drain_output)
+
+    def _drain_output(self):
+        self._output_scheduled = False
+        if self._closing or self._draining_output:
+            return
+        deadline = perf_counter() + .005
+        self._draining_output = True
+        try:
+            for _ in range(100):
+                if not self._output.lines:
+                    break
+                self._append_log(self._output.lines.popleft())
+                if perf_counter() >= deadline:
+                    break
+        finally:
+            self._draining_output = False
+        if self._runtime_dirty:
+            self._runtime_dirty = False
+            self._render_runtime()
+        if self._output.lines:
+            self._schedule_output()
+        elif self._pending_finish is not None:
+            result, self._pending_finish = self._pending_finish, None
+            self._finish_process(*result)
 
     def _append_log(self, line: str) -> None:
         if line.startswith(PREFIX):
             if self._runtime.consume(line):
-                self._render_runtime()
+                if self._draining_output:
+                    self._runtime_dirty = True
+                else:
+                    self._render_runtime()
             return
         if line.startswith("AUTO_EVENT "):
             try:
                 event = json.loads(line.removeprefix("AUTO_EVENT "))
-                if isinstance(event, dict):
+                fields = ("time", "status", "action", "text", "reason", "target")
+                if (isinstance(event, dict) and all(isinstance(event.get(key, ""), str) for key in fields)
+                        and isinstance(event.get("basis", []), list)
+                        and all(type(value) in (int, str) for value in event.get("basis", []))):
                     self.autonomous_page.push_event(event)
-            except ValueError:
+            except (ValueError, TypeError, RecursionError):
                 pass
             return
         self.log.appendPlainText(line)
-        if not self._runtime.session and line.startswith("Вопрос от ") and "принят" in line:
-            self._question_count += 1
-            self.questions_label.setText(str(self._question_count))
-        elif not self._runtime.session and line.startswith("Ответ отправлен для "):
-            self._answer_count += 1
-            self.answers_label.setText(str(self._answer_count))
-        elif line.startswith("Жду вопросов по награде "):
-            if not self._runtime.session:
-                self._set_status("Чат не подтверждён", "starting")
-            self.auth_hint.hide()
-        if line.startswith("Откройте ссылку и войдите в Twitch под аккаунтом "):
-            self._set_status("Ожидает входа в Twitch", "starting")
-            self._auth_account = line.removeprefix("Откройте ссылку и войдите в Twitch под аккаунтом ").rstrip(":")
-        elif activation_url(line):
-            self._auth_url = activation_url(line)
-        elif line.startswith("Код: ") and self._auth_url:
-            url = html.escape(self._auth_url, quote=True)
-            code = html.escape(line[5:].strip())
-            account = html.escape(self._auth_account or "нужным аккаунтом")
-            self.auth_hint.setText(f'Подтвердите вход под аккаунтом {account}: <a href="{url}">открыть Twitch</a>. Код: <b>{code}</b>')
-            self.auth_hint.setVisible(True)
 
     def _render_runtime(self):
         state = self._runtime
+        auth = state.auth
         if self._stop_requested:
             self._set_status("Останавливается…", "stopping")
+        elif auth.get("state") == "required":
+            self._set_status("Ожидает входа в Twitch", "starting")
+        elif auth.get("state") == "failed":
+            self._set_status("Ошибка авторизации", "error")
         elif state.chat == "ready" and state.eventsub == "ready":
             self._set_status("Бот работает", "running")
         elif state.chat in ("disconnected", "error") or state.eventsub in ("disconnected", "error"):
             self._set_status("Связь прервана", "error")
         else:
             self._set_status("Подключается…", "starting")
-        auth = state.auth
-        if auth.get("state") == "required":
-            role = "владельца канала" if auth.get("role") == "broadcaster" else "бота"
-            url = html.escape(str(auth.get("url", "")), quote=True)
-            self.auth_hint.setText(f'Войдите под аккаунтом {role}: <b>{html.escape(str(auth.get("account", "")))}</b>. <a href="{url}">Открыть Twitch</a>. Код: <b>{html.escape(str(auth.get("code", "")))}</b>')
-            expires = auth.get("expires_in")
-            if type(expires) is int and expires > 0:
-                self.auth_hint.setText(self.auth_hint.text() + f". Срок кода: {max(1, expires // 60)} мин.")
-            self.auth_hint.show()
-        elif auth.get("state") == "complete":
-            self.auth_hint.hide()
+        if self._stop_requested or auth.get("state") not in ("required", "failed"):
+            self.auth_hint.reset()
+        elif auth.get("state") == "required":
+            if self.auth_hint.show_auth(auth) and self.dashboard.isVisible():
+                QTimer.singleShot(0, self.dashboard, self.dashboard.reveal_auth)
         elif auth.get("state") == "failed":
-            self.auth_hint.setText("Время входа истекло. Запустите бота снова." if auth.get("reason") == "expired" else "Выбран другой аккаунт Twitch. Повторите вход под указанным аккаунтом.")
-            self.auth_hint.show()
+            self.auth_hint.show_error(auth.get("reason"))
         self._update_changes()
         self._refresh_workspace()
 
@@ -942,10 +962,11 @@ class MainWindow(StudioShell, QMainWindow):
                 event.ignore()
                 return
         self._restart_pending = False
+        self._closing = True
         self._ui_state.update(width=self.width(), height=self.height())
         self._ui_state["splitters"] = {name: view.saved_sizes() for name, view in self._detail_views.items()}
         self._persist_preferences()
-        self._log_timer.stop()
+        self.auth_hint.reset()
         if self.process.state() != QProcess.NotRunning:
             self.process.kill()
             self.process.waitForFinished(1000)

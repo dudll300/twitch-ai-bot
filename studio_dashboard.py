@@ -10,6 +10,7 @@ from message_history import MessageHistory, HistoryReadError
 from ui_widgets import card, label, scroll_page, ScrollPlainTextEdit, Disclosure, ResponsiveColumns
 from ui_widgets import panel_badge, ScrollListWidget
 from studio_rows import OrbitRowDelegate
+from studio_auth import AuthNotificationBanner
 
 
 from ui_widgets import StudioButton as QPushButton
@@ -41,6 +42,8 @@ class Dashboard(QWidget):
         button.clicked.connect(self.setup_requested.emit)
         setup.addWidget(button)
         layout.addWidget(self.setup_card)
+        self.auth_hint = AuthNotificationBanner()
+        layout.addWidget(self.auth_hint)
         conversation, box = card("Разговор с ботом")
         box.setContentsMargins(0, 0, 0, 0)
         box.setSpacing(0)
@@ -114,9 +117,6 @@ class Dashboard(QWidget):
             self.metrics[key] = label("0", "statValue")
             self.metrics[key].setParent(self)
             self.metrics[key].hide()
-        self.auth_hint = label("", "caption", True)
-        self.auth_hint.hide()
-        layout.addWidget(self.auth_hint)
         inspector, box = card("Сохранённые настройки")
         self.inspector_title = box.title_label
         self.inspector_values = {}
@@ -150,7 +150,8 @@ class Dashboard(QWidget):
         self.log.setAccessibleName("Технический журнал работы")
         self.log.document().setMaximumBlockCount(2000)
         layout.addWidget(Disclosure("Технический журнал", self.log))
-        outer.addWidget(scroll_page(page))
+        self.scroll = scroll_page(page)
+        outer.addWidget(self.scroll)
         self._timer = QTimer(self)
         self._timer.setInterval(1500)
         self._timer.timeout.connect(self.refresh)
@@ -159,6 +160,20 @@ class Dashboard(QWidget):
         self._poll.setInterval(100)
         self._poll.timeout.connect(self._drain)
         self._poll.start()
+
+    def reveal_auth(self):
+        if self.auth_hint.isVisible():
+            self.scroll._manual_scroll()
+            self.scroll.ensureWidgetVisible(self.auth_hint, 0, 16)
+
+    @staticmethod
+    def _state_label(widget, text, state):
+        if widget.text() != text:
+            widget.setText(text)
+        if widget.property("state") != state:
+            widget.setProperty("state", state)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
 
     def update_state(self, state):
         if state.session != self.session:
@@ -174,10 +189,8 @@ class Dashboard(QWidget):
         captions = {"unknown": "Ещё не проверено", "connecting": "Подключение…", "ready": "Подключено", "disconnected": "Связь прервана", "error": "Ошибка"}
         for key in ("chat", "eventsub"):
             value = getattr(state, key)
-            self.states[key].setText(captions.get(value, "Ещё не проверено"))
-            self.states[key].setProperty("state", "sent" if value == "ready" else "error" if value in ("error", "disconnected") else "idle")
-            self.states[key].style().unpolish(self.states[key])
-            self.states[key].style().polish(self.states[key])
+            self._state_label(self.states[key], captions.get(value, "Ещё не проверено"),
+                              "sent" if value == "ready" else "error" if value in ("error", "disconnected") else "idle")
         ai = {"unknown": "Ещё не проверен", "pending": "Получаем ответ…", "success": "Последний запрос успешен", "error": "Ошибка последнего запроса", "cancelled": "Запрос отменён до отправки"}
         suffix = " · " + state.ai_model if state.ai_model else ""
         if state.ai_time and state.ai in ("success", "error"):
@@ -185,10 +198,8 @@ class Dashboard(QWidget):
                 suffix += " · " + datetime.fromtimestamp(state.ai_time).strftime("%H:%M:%S")
             except (ValueError, OverflowError, OSError):
                 pass
-        self.states["ai"].setText(ai.get(state.ai, "Ещё не проверен") + suffix)
-        self.states["ai"].setProperty("state", "sent" if state.ai == "success" else "error" if state.ai == "error" else "idle")
-        self.states["ai"].style().unpolish(self.states["ai"])
-        self.states["ai"].style().polish(self.states["ai"])
+        self._state_label(self.states["ai"], ai.get(state.ai, "Ещё не проверен") + suffix,
+                          "sent" if state.ai == "success" else "error" if state.ai == "error" else "idle")
         for key in self.metrics:
             self.metrics[key].setText(str(getattr(state, key)))
         self.processing.setText("Обрабатывается вопрос" if state.processing else "Ожидание новых вопросов")

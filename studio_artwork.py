@@ -19,10 +19,12 @@ class TransitionEvents(QObject):
         self._owner = ref(owner)
 
     def eventFilter(self, watched, event):
+        # Keep the borrowed event inside the native callback.
+        kind = QEvent.type(event)
         owner = self._owner()
-        if owner is None or not isValid(owner) or not isValid(watched) or not isValid(event):
+        if owner is None or not isValid(owner) or not isValid(watched):
             return False
-        return owner._filter_event(watched, event)
+        return owner._filter_event(watched, kind)
 
 
 class PageTransition(QWidget):
@@ -180,8 +182,7 @@ class PageTransition(QWidget):
         self._old, self._new = QPixmap(), QPixmap()
         self._layers = []
 
-    def _filter_event(self, watched, event):
-        kind = event.type()
+    def _filter_event(self, watched, kind):
         if kind == QEvent.Paint and any(watched is child for child in self._caption_children):
             # Keep native caption geometry and visibility intact while the
             # transparent overlay paints the text over the live sky.

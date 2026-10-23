@@ -6,12 +6,19 @@ import unittest
 from unittest.mock import patch
 import io
 
-from runtime_events import PREFIX, RuntimeState, UiEventEmitter, revision_id, install_ui_events
+from runtime_events import PREFIX, RuntimeState, UiEventEmitter, revision_id, install_ui_events, activation_url
 from message_history import MessageHistory
 from ui_state import load_ui_state, save_ui_state
 
 
 class RuntimeTests(unittest.TestCase):
+    def test_activation_links_reject_userinfo_and_nonstandard_ports(self):
+        for value in ("https://@twitch.tv/activate", "https://:secret@twitch.tv/activate",
+                      "https://twitch.tv:444/activate", "https://twitch.tv:bad/activate",
+                      "https://twitch.tv.evil.example/activate", "http://twitch.tv/activate"):
+            self.assertEqual(activation_url(value), "")
+        self.assertEqual(activation_url("https://www.twitch.tv:443/activate"), "https://www.twitch.tv:443/activate")
+
     def test_behavior_save_is_independent_of_invalid_connection_data(self):
         from settings import save_settings
         with tempfile.TemporaryDirectory() as directory:

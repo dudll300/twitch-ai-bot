@@ -22,6 +22,7 @@ from profiles import load_profiles
 from autonomous import load_settings as load_auto_settings
 from ui_widgets import StudioQuestionDialog, russian_question
 from prompt_builder import compose_prompt
+from runtime_events import UiEventEmitter
 
 
 def wait_for(predicate, message, seconds=3):
@@ -80,11 +81,14 @@ def main() -> None:
         assert values["AI_API_KEY"] == "sk-test"
         assert window.api_key.text() == ""
         assert (root / "prompt.txt").read_text(encoding="utf-8").strip() == "Новый промпт"
-        window._log_path = root / "bot-session.log"
-        window._log_path.write_text("GUI_LOG_TEST\n", encoding="utf-8")
-        window._poll_log()
-        assert "GUI_LOG_TEST" in window.log.toPlainText()
+        window._consume("GUI_LOG_TEST\n")
+        wait_for(lambda: "GUI_LOG_TEST" in window.log.toPlainText(), "Pipe log did not render")
+        previous_state = window.status.property("state")
         window._append_log("Жду вопросов по награде Ask AI")
+        assert window.status.property("state") == previous_state
+        lines = []
+        UiEventEmitter("fixture", lines.append).emit("lifecycle", state="starting")
+        window._append_log(lines[0])
         assert window.status.property("state") == "starting"
         assert window.connection_pill.text() == window.status.text()
         window.reset_prompt.click()
@@ -231,6 +235,14 @@ def main() -> None:
         window._set_running(False)
         window._append_log("Вопрос от viewer принят (в очереди: 1)")
         window._append_log("Ответ отправлен для viewer")
+        assert window.questions_label.text() == window.answers_label.text() == "0"
+        lines = []
+        emitter = UiEventEmitter("counter-fixture", lines.append)
+        emitter.emit("lifecycle", state="starting")
+        emitter.emit("queue", size=1, phase="queued")
+        emitter.emit("reply", state="sent", record_id="fixture")
+        for line in lines:
+            window._append_log(line)
         assert window.questions_label.text() == "1"
         assert window.answers_label.text() == "1"
         window.resize(1000, 720)

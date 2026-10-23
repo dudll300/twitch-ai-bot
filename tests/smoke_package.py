@@ -54,6 +54,25 @@ def main() -> None:
         assert "WORKER_READY" in log_path.read_text(encoding="utf-8")
         assert (data / "memory.json").exists()
 
+        # Windowed PyInstaller has no Python stdout object. Test the inherited
+        # Windows pipe with both subprocess and the GUI's actual QProcess API.
+        piped = subprocess.run([str(EXE), "--bot", str(log_path), "--pipe", "--self-test"],
+                               env=env, capture_output=True, timeout=30)
+        assert piped.returncode == 0, piped.stderr.decode("utf-8", errors="replace")
+        assert b"WORKER_READY" in piped.stdout
+        from PySide6.QtCore import QCoreApplication, QProcess, QProcessEnvironment
+        application = QCoreApplication.instance() or QCoreApplication([])
+        process = QProcess()
+        environment = QProcessEnvironment.systemEnvironment()
+        for key, value in env.items():
+            environment.insert(key, value)
+        process.setProcessEnvironment(environment)
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        process.start(str(EXE), ["--bot", str(log_path), "--pipe", "--self-test"])
+        assert process.waitForFinished(30000), process.errorString()
+        assert process.exitCode() == 0
+        assert b"WORKER_READY" in bytes(process.readAllStandardOutput())
+
         dictionary = data / "local-context.json"
         dictionary.write_text("{ damaged dictionary", encoding="utf-8")
         degraded = subprocess.run([str(EXE), "--bot", str(log_path), "--self-test"], env=env, timeout=30)
@@ -68,6 +87,9 @@ def main() -> None:
         invalid = subprocess.run([str(EXE), "--bot", str(log_path), "--self-test"], env=env, timeout=30)
         assert invalid.returncode == 1
         assert "profiles.json" in log_path.read_text(encoding="utf-8")
+        invalid_pipe = subprocess.run([str(EXE), "--bot", str(log_path), "--pipe", "--self-test"], env=env, capture_output=True, timeout=30)
+        assert invalid_pipe.returncode == 1
+        assert "profiles.json" in invalid_pipe.stdout.decode("utf-8")
         invalid_path.write_bytes(saved_profiles)
 
         gui = subprocess.run([str(EXE), "--self-test-gui"], env=env, timeout=30)
