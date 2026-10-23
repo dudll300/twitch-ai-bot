@@ -121,6 +121,22 @@ class AuthResilienceTests(unittest.TestCase):
         for call in http.call_args_list[1:]:
             self.assertEqual(parse_qs(call.args[0].data.decode())['device_code'], ['synthetic-device'])
 
+    def test_device_poll_retains_grant_after_network_timeout_reset_and_temporary_http(self):
+        device = dict(verification_uri='https://www.twitch.tv/activate', user_code='synthetic-code',
+                      device_code='synthetic-device', interval=5, expires_in=60)
+        for error in (urllib.error.URLError('SYNTHETIC_SECRET_ERROR'), TimeoutError('SYNTHETIC_SECRET_ERROR'),
+                      ConnectionResetError('SYNTHETIC_SECRET_ERROR'), failure(429), failure(503)):
+            with self.subTest(error=type(error).__name__), \
+                    patch('urllib.request.urlopen', side_effect=[response(device), error,
+                          response(dict(access_token='new-token'))]) as http, \
+                    patch.object(auth.webbrowser, 'open') as browser, patch.object(auth.time, 'sleep'), \
+                    patch.object(auth.time, 'monotonic', side_effect=[0, 1, 2]):
+                self.assertEqual(auth.authorize_device('client', auth.SCOPES, 'helper')['access_token'], 'new-token')
+                self.assertEqual(http.call_count, 3)
+                browser.assert_called_once()
+                for call in http.call_args_list[1:]:
+                    self.assertEqual(parse_qs(call.args[0].data.decode())['device_code'], ['synthetic-device'])
+
 
 class AuthReconnectTests(unittest.IsolatedAsyncioTestCase):
     async def test_bot_reuses_existing_reconnect_loop_after_corrupt_validation(self):

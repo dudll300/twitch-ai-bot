@@ -21,7 +21,7 @@ import uuid
 
 from ai_client import RequestTrace, clean_text, redact_secret
 from privacy import FragmentGuard, PrivacyAnalysisLimit, PrivacyCheckError, PrivacyViolation, unsafe_question
-from irc import moderation_event
+from irc import moderation_event, parse_irc
 from safety_settings import PolicyStore, policy_scope, run_with_policy, current_policy
 from safety import SafetyBlocked, SafetyReview, review_candidate, validate_publication, publication_guard
 from local_context import LocalBundle, LocalResultError
@@ -177,15 +177,12 @@ class ChatBuffer:
     def add_irc(self, line, channel, bot_name, now, settings):
         self.deleted = OrderedDict((key, at) for key, at in self.deleted.items() if now - at <= 300)
         self.cutoffs = OrderedDict((key, row) for key, row in self.cutoffs.items() if now - row[0] <= 300)
-        tags = {}
-        if line.startswith("@"):
-            tag_text, _, line = line.partition(" ")
-            tags = dict(part.split("=", 1) if "=" in part else (part, "") for part in tag_text[1:].split(";"))
-        header, separator, text = line.partition(" :")
-        parts = header.split()
-        if not separator or len(parts) != 3 or parts[1] != "PRIVMSG" or parts[2].casefold() != "#" + channel.casefold():
+        message = parse_irc(line)
+        if (message is None or message.malformed or message.command != "PRIVMSG"
+                or message.channel != channel.casefold() or len(message.params) != 1):
             return False
-        author = parts[0].lstrip(":").split("!", 1)[0].casefold()
+        tags, text = message.tags, message.text
+        author = message.prefix.split("!", 1)[0].casefold()
         if not re.fullmatch(r"[a-z0-9_]{1,25}", author) or author == bot_name.casefold() or tags.get("custom-reward-id"):
             return False
         try:

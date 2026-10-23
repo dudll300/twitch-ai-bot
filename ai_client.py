@@ -22,6 +22,17 @@ from recent_context import PUBLIC_REPLY_LIMIT
 AI_REQUEST_TIMEOUT_SECONDS = 20
 
 
+def completion_limit_parameter(model):
+    """Known Chat Completions o-series IDs, not arbitrary 'r1' substrings.
+
+    DeepSeek and generic compatible providers keep their existing max_tokens
+    contract. Preserve the exact model ID and the caller's token budget.
+    """
+    return ("max_completion_tokens" if re.fullmatch(
+        r"(?:openai/)?(?:o1(?:-mini|-preview)?|o3(?:-mini)?|o4-mini)(?:-\d{4}-\d{2}-\d{2})?",
+        model, re.I) else "max_tokens")
+
+
 @dataclass
 class RequestTrace:
     """Safe phase/counters only; never retains request or response content."""
@@ -343,7 +354,7 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
     payload = {
         "model": model,
         "messages": messages,
-        "max_tokens": max_tokens,
+        completion_limit_parameter(model): max_tokens,
         "stream": False,
     }
     request = urllib.request.Request(
@@ -390,11 +401,18 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         raise TemporaryAIError("AI API вернул некорректный JSON") from None
     try:
         choice = data["choices"][0]
-        answer = choice["message"]["content"]
+        message = choice["message"]
+        if not isinstance(message, dict):
+            raise TypeError
+        answer = message.get("content")
     except (KeyError, IndexError, TypeError):
         raise TemporaryAIError("AI API вернул некорректный ответ") from None
-    if not isinstance(answer, str) or not answer.strip():
+    if answer is None or isinstance(answer, str) and not answer.strip():
+        if choice.get("finish_reason") == "length":
+            raise TruncatedAIError("AI API исчерпал лимит токенов до готового ответа.")
         raise TemporaryAIError("AI API вернул пустой ответ")
+    if not isinstance(answer, str):
+        raise TemporaryAIError("AI API вернул некорректный ответ")
     if trace is not None:
         trace.stage = request_stage + "_response"
     try:
@@ -406,6 +424,10 @@ def request_completion(cfg: dict[str, str], model: str, messages: list[dict], *,
         exc = PrivacyViolation()
         exc.stage = request_stage + "_response"
         raise exc
+    if re.match(r"\s*<think(?:\s[^>]*)?>", answer, re.I):
+        # Never publish or silently strip internal reasoning. Existing callers
+        # may use their ordinary bounded fallback; no extra call is added here.
+        raise TemporaryAIError("AI API вернул рассуждения вместо готового ответа.")
     if reject_truncated and choice.get("finish_reason") == "length":
         raise TruncatedAIError("AI API обрезал результат. Повторите генерацию с более короткими пожеланиями.")
     return answer

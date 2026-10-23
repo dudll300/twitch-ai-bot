@@ -25,7 +25,7 @@ from message_history import MessageHistory
 from recent_context import for_reward, references_public_reply
 from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
 from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, check_question, safe_history_text, unsafe_question
-from irc import moderation_event
+from irc import moderation_event, parse_irc, pong_payload
 from safety import (SAFETY_REFUSAL, SafetyBlocked, SafetyReview, check_candidate_source,
                     local_review, validate_publication, publication_guard)
 from safety_settings import PolicyStore, policy_scope, current_policy, policy_binding
@@ -59,12 +59,8 @@ def config() -> dict[str, str]:
 
 
 def irc_command(line: str) -> str:
-    parts = line.split()
-    if parts and parts[0].startswith("@"):
-        parts.pop(0)
-    if parts and parts[0].startswith(":"):
-        parts.pop(0)
-    return parts[0] if parts else ""
+    message = parse_irc(line)
+    return message.command if message is not None else ""
 
 
 class AIModelRouter:
@@ -527,12 +523,16 @@ class Bot:
             async def read_chat() -> None:
                 while raw := await reader.readline():
                     line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                    command = irc_command(line)
+                    message = parse_irc(line)
+                    if message is None or message.malformed and message.command not in ("CLEARMSG", "CLEARCHAT"):
+                        continue
+                    command = message.command
                     if command == "PING":
-                        await self.send(writer, "PONG " + line[5:])
+                        if payload := pong_payload(message):
+                            await self.send(writer, "PONG " + payload)
                     elif command == "RECONNECT":
                         return
-                    elif command == "NOTICE" and "Login authentication failed" in line:
+                    elif command == "NOTICE" and "Login authentication failed" in message.text:
                         raise RuntimeError("Twitch отклонил OAuth-токен")
                     elif command in ("PRIVMSG", "CLEARMSG", "CLEARCHAT"):
                         self.autonomous.receive(line)
@@ -552,7 +552,7 @@ class Bot:
                                 self.history_recipients.pop(key, None)
                             await asyncio.to_thread(self.history.flush_moderation)
                     elif command == "NOTICE":
-                        print("Twitch: " + line.split(" :", 1)[-1], flush=True)
+                        print("Twitch: " + message.text, flush=True)
 
             reader_task = asyncio.create_task(read_chat())
             done, _ = await asyncio.wait((reader_task, rewards_task, autonomous_task), return_when=asyncio.FIRST_COMPLETED)

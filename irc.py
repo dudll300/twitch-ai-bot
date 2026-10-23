@@ -25,6 +25,7 @@ class IRCMessage:
     text: str
     tags: dict
     malformed: bool = False
+    params: tuple[str, ...] = ()
 
 
 def parse_irc(line):
@@ -47,10 +48,18 @@ def parse_irc(line):
             return None
     head, _, text = line.partition(" :")
     parts = head.split()
-    if not parts:
+    if not parts or not re.fullmatch(r"[A-Za-z]+|[0-9]{3}", parts[0]):
         return None
-    channel = parts[1][1:].casefold() if len(parts) == 2 and parts[1].startswith("#") else ""
-    return IRCMessage(parts[0], channel, prefix, text, tags, malformed)
+    command, params = parts[0].upper(), tuple(parts[1:])
+    channel = next((login(part[1:]) for part in params if part.startswith("#")), "")
+    if command == "JOIN" and not params and text.startswith("#"):
+        channel = login(text[1:])
+    return IRCMessage(command, channel, prefix, text, tags, malformed, params)
+
+
+def pong_payload(message):
+    """PING's parsed payload works with tags, prefixes and either IRC form."""
+    return ":" + message.text if message.text else " ".join(message.params)
 
 
 @dataclass(frozen=True)

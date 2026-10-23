@@ -21,6 +21,22 @@ WEBSOCKET_URL = "wss://eventsub.wss.twitch.tv/ws"
 REWARD_TITLE = "Вопрос ИИ"
 
 
+class SubscriptionRevokedError(RuntimeError):
+    """An explicit permission/account/version change requires user action."""
+
+
+def event_message(raw):
+    try:
+        message = json.loads(raw)
+    except (ValueError, TypeError):
+        raise TemporaryTwitchError("EventSub вернул повреждённый пакет.") from None
+    if (not isinstance(message, dict) or not isinstance(message.get("metadata"), dict)
+            or not isinstance(message["metadata"].get("message_type"), str)
+            or not isinstance(message.get("payload"), dict)):
+        raise TemporaryTwitchError("EventSub вернул неверный формат пакета.")
+    return message
+
+
 def api_json(path: str, client_id: str, token: str, payload: dict | None = None) -> dict:
     request = urllib.request.Request(
         API_URL + path,
@@ -34,10 +50,13 @@ def api_json(path: str, client_id: str, token: str, payload: dict | None = None)
     )
     try:
         with urllib.request.urlopen(request, timeout=15) as response:
-            return json.load(response)
+            result = json.load(response)
+            if not isinstance(result, dict):
+                raise ValueError
+            return result
     except urllib.error.HTTPError as exc:
         message = f"Twitch API вернул HTTP {exc.code}{http_error_detail(exc, token)}"
-        error = TemporaryTwitchError if exc.code in (408, 429, 500, 502, 503, 504) else RuntimeError
+        error = TemporaryTwitchError if exc.code in (408, 429) or 500 <= exc.code <= 599 else RuntimeError
         raise error(message) from None
     except (ValueError, http.client.HTTPException):
         raise TemporaryTwitchError("Twitch API вернул повреждённый ответ.") from None
@@ -80,11 +99,17 @@ class RewardListener:
             raise RuntimeError("Twitch не вернул ID аккаунта владельца канала.")
 
     async def _welcome(self, websocket) -> tuple[str, int]:
-        message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=15))
+        message = event_message(await asyncio.wait_for(websocket.recv(), timeout=15))
         if message.get("metadata", {}).get("message_type") != "session_welcome":
-            raise RuntimeError("EventSub не прислал подтверждение подключения.")
-        session = message["payload"]["session"]
-        return session["id"], max(10, int(session.get("keepalive_timeout_seconds") or 10))
+            raise TemporaryTwitchError("EventSub не прислал подтверждение подключения.")
+        session = message["payload"].get("session")
+        if not isinstance(session, dict) or not isinstance(session.get("id"), str) or not session["id"]:
+            raise TemporaryTwitchError("EventSub вернул неверные данные сессии.")
+        keepalive = session.get("keepalive_timeout_seconds")
+        keepalive = 10 if keepalive is None else keepalive
+        if type(keepalive) is not int or not 1 <= keepalive <= 600:
+            raise TemporaryTwitchError("EventSub вернул неверное время ожидания.")
+        return session["id"], max(10, keepalive)
 
     def _remember_redemption(self, redemption_id: str) -> bool:
         if redemption_id in self.seen_ids:
@@ -97,9 +122,17 @@ class RewardListener:
 
     async def handle_notification(self, payload: dict) -> None:
         event = payload.get("event", {})
-        if event.get("reward", {}).get("title", "").strip().casefold() != self.reward_title.casefold():
+        if not isinstance(event, dict) or not isinstance(event.get("reward", {}), dict):
+            raise TemporaryTwitchError("EventSub вернул неверный формат награды.")
+        title = event.get("reward", {}).get("title", "")
+        if not isinstance(title, str):
+            raise TemporaryTwitchError("EventSub вернул неверный формат награды.")
+        if title.strip().casefold() != self.reward_title.casefold():
             return
         redemption_id = event.get("id", "")
+        if (not isinstance(redemption_id, str) or not isinstance(event.get("user_login", ""), str)
+                or not isinstance(event.get("user_input", ""), str)):
+            raise TemporaryTwitchError("EventSub вернул неверные данные награды.")
         if not redemption_id or not self._remember_redemption(redemption_id):
             return
         login = event.get("user_login", "").lower()
@@ -121,23 +154,26 @@ class RewardListener:
             )
             print(f"Жду вопросов по награде «{self.reward_title}».", flush=True)
             while True:
-                message = json.loads(await asyncio.wait_for(websocket.recv(), timeout=keepalive + 10))
+                message = event_message(await asyncio.wait_for(websocket.recv(), timeout=keepalive + 10))
                 kind = message.get("metadata", {}).get("message_type")
                 if kind == "notification":
                     await self.handle_notification(message.get("payload", {}))
                 elif kind == "session_reconnect":
-                    reconnect_url = message["payload"]["session"]["reconnect_url"]
+                    session = message["payload"].get("session")
+                    if not isinstance(session, dict) or not isinstance(session.get("reconnect_url"), str) or not session["reconnect_url"]:
+                        raise TemporaryTwitchError("EventSub вернул неверные данные переподключения.")
+                    reconnect_url = session["reconnect_url"]
                     replacement = await connect(reconnect_url, ping_interval=None)
                     try:
                         _, keepalive = await self._welcome(replacement)
-                    except Exception:
+                    except BaseException:
                         await replacement.close()
                         raise
                     await websocket.close()
                     websocket = replacement
                     print("EventSub переподключён.", flush=True)
                 elif kind == "revocation":
-                    raise RuntimeError("Twitch отозвал подписку на награду; проверьте разрешения аккаунта владельца канала.")
+                    raise SubscriptionRevokedError("Twitch отозвал подписку на награду; проверьте разрешения аккаунта владельца канала.")
         finally:
             await websocket.close()
 
