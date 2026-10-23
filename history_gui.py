@@ -204,7 +204,8 @@ class HistoryPage(GlowSurface):
         details_layout.addWidget(self.notice_label)
         details_layout.addWidget(self.notice)
         self.timeline = plain("", "muted")
-        details_layout.addWidget(Disclosure("Ход обработки", self.timeline))
+        self.timeline_disclosure = Disclosure("Ход обработки", self.timeline)
+        details_layout.addWidget(self.timeline_disclosure)
         copy_row = QHBoxLayout()
         self.copy_buttons = []
         for title, editor in (("Копировать вопрос", self.question), ("Копировать ответ", self.answer)):
@@ -415,16 +416,10 @@ class HistoryPage(GlowSurface):
         self.notice.clear()
         for widget in (self.question, self.question_label, self.notice, self.notice_label, self.context_card):
             widget.hide()
-        self.context_button.setChecked(False)
-        self.instructions_button.setChecked(False)
 
     def _render(self, row):
         changed = self._detail_id != row["id"]
         previous = self._detail_transition.snapshot() if changed and self.isVisible() and QApplication.instance().property("animations") is not False else None
-        if changed:
-            for disclosure in (self.context_disclosure, self.instructions_disclosure):
-                disclosure.button.setChecked(False)
-                disclosure._reveal_motion.finish()
         self._detail_id = row["id"]
         for button in self.copy_buttons:
             button.setEnabled(True)
@@ -468,6 +463,9 @@ class HistoryPage(GlowSurface):
                                         if message.get("role") == "system")
             self.instructions.setPlainText(instructions)
             self.instructions_disclosure.setVisible(bool(instructions))
+        else:
+            self.context.clear()
+            self.instructions.clear()
         self._toggle_context(self.context_button.isChecked())
         self._toggle_instructions(self.instructions_button.isChecked())
         if previous is not None:

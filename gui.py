@@ -19,7 +19,7 @@ from configuration import AI_FALLBACK_MODELS, FIELDS, normalize, read_config, in
 from gui_theme import STYLE
 from history_gui import HistoryPage
 from local_context_gui import LocalContextPage
-from model_catalog_gui import ModelCatalogControl
+from model_catalog_gui import ModelCatalogControl, FallbackModelControl
 from paths import data_dir, resource_path
 from profiles import ProfileError, save_profiles
 from profiles_gui import ProfilesEditor
@@ -477,15 +477,16 @@ class MainWindow(StudioShell, QMainWindow):
         self.api_key.setPlaceholderText("Ключ сохранён" if self._has_saved_key else "Ключ вашего AI-сервиса")
         self.model_catalog = ModelCatalogControl(values.get("AI_MODEL", AI_FALLBACK_MODELS[0]), self._test_credentials)
         self.model = self.model_catalog.combo
-        self.fallback_models = QLineEdit(values.get("AI_FALLBACK_MODELS", ""))
-        self.fallback_models.setPlaceholderText("model-a, model-b")
+        self.fallback_models = FallbackModelControl(values.get("AI_FALLBACK_MODELS", ""))
+        self.model_catalog.models_changed.connect(self.fallback_models.replace_models)
         for caption, widget in (("Base URL", self.base_url), ("API-ключ", self.api_key),
                                 ("Основная модель", self.model_catalog), ("Запасные модели · необязательно", self.fallback_models)):
             if widget is self.fallback_models:
-                ai_layout.addWidget(Disclosure("Запасные модели · необязательно", field(caption, widget)))
+                self.fallback_disclosure = Disclosure("Запасные модели · необязательно", widget)
+                ai_layout.addWidget(self.fallback_disclosure)
             else:
                 ai_layout.addWidget(field(caption, widget))
-        self.fallback_models.setToolTip("Модели вызываются по порядку при сбоях основной. Введите ID через запятую.")
+        self.fallback_models.setToolTip("Запасные модели вызываются по порядку при сбоях основной. Выберите их галочками или добавьте свой ID.")
         ai_layout.addStretch()
         ai_layout.addWidget(label("Ключ хранится только на этом компьютере.", "muted", True))
         grid.addWidget(ResponsiveColumns(ai, twitch), 0, 0, 1, 2)

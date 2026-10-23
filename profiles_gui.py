@@ -21,6 +21,8 @@ from studio_rows import OrbitRowDelegate
 from ui_widgets import panel_badge
 from studio_surfaces import GlowSurface
 from studio_icons import studio_icon
+from studio_artwork import PageTransition
+from studio_motion import enabled as motion_enabled
 
 class ProfilesEditor(GlowSurface):
     changed = Signal()
@@ -34,6 +36,7 @@ class ProfilesEditor(GlowSurface):
         self._loading = False
         self._editable = True
         self._removed = []
+        self._detail_index = None
         try:
             self.rows = load_profiles(path)
         except ProfileError as exc:
@@ -170,6 +173,7 @@ class ProfilesEditor(GlowSurface):
             "muted", True))
         self.stack.addWidget(scroll_page(editor, ambient=False))
         self.master_detail = MasterDetail(left, self.stack)
+        self._detail_transition = PageTransition(self.stack)
         columns.addWidget(self.master_detail, 1)
         outer.addLayout(columns, 1)
         for widget in (self.login, self.user_id, self.aliases):
@@ -199,6 +203,7 @@ class ProfilesEditor(GlowSurface):
 
     def _rebuild(self, selected):
         self.list.blockSignals(True)
+        self.list.itemDelegate().selection.reset()
         self.list.clear()
         for row in self.rows:
             item = QListWidgetItem(self._item_text(row))
@@ -206,15 +211,21 @@ class ProfilesEditor(GlowSurface):
             self.list.addItem(item)
         self.list.setCurrentRow(selected)
         self.list.blockSignals(False)
+        self.list.itemDelegate().selection.select(selected, immediate=True)
         self.count.setText(f"Зрители · {len(self.rows)}")
         self._select(selected)
         self._filter()
 
     def _select(self, index):
+        previous = self._detail_transition.snapshot() if (index != self._detail_index and
+            self.stack.isVisible() and motion_enabled()) else None
+        self._detail_index = index
         if hasattr(self, "master_detail") and index >= 0:
             self.master_detail.show_detail()
         if index < 0 or index >= len(self.rows):
             self.stack.setCurrentIndex(0)
+            if previous is not None:
+                self._detail_transition.start(previous)
             return
         self._loading = True
         row = self.rows[index]
@@ -227,6 +238,8 @@ class ProfilesEditor(GlowSurface):
         self._loading = False
         self._update_caption()
         self.stack.setCurrentIndex(1)
+        if previous is not None:
+            self._detail_transition.start(previous)
 
     def _update_caption(self):
         self.editor_title.setText(self.login.text().strip() or ("ID " + self.user_id.text().strip() if self.user_id.text().strip() else "Новый профиль"))

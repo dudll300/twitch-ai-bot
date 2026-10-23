@@ -1,6 +1,6 @@
 """Readable native event and conversation rows, matching the Orbit prototype."""
 from PySide6.QtCore import Qt, QSize, QRectF, QPointF, QObject, QEvent, QTimer
-from PySide6.QtGui import QPainter, QPen, QColor, QFont, QTextLayout, QTextOption
+from PySide6.QtGui import QPainter, QPen, QColor, QFont, QTextLayout, QTextOption, QRegion
 from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QAbstractItemView
 from studio_controls import colors
 from studio_motion import SpringMotion
@@ -17,8 +17,11 @@ class RowSelectionMotion(QObject):
         view.viewport().installEventFilter(self)
 
     def _advance(self, values):
+        offset = self.view.verticalScrollBar().value()
+        previous = self.rect.translated(0, -offset).adjusted(-2, -2, 2, 2).toAlignedRect()
         self.rect = QRectF(*values)
-        self.view.viewport().update()
+        current = self.rect.translated(0, -offset).adjusted(-2, -2, 2, 2).toAlignedRect()
+        self.view.viewport().update(QRegion(previous) | QRegion(current))
 
     def reset(self):
         self.motion.reset((0, 0, 0, 0))
@@ -77,7 +80,7 @@ class OrbitRowDelegate(QStyledItemDelegate):
     def __init__(self, parent, mode="record"):
         super().__init__(parent)
         self.mode = mode
-        self.selection = RowSelectionMotion(parent) if mode == "record" else None
+        self.selection = RowSelectionMotion(parent) if mode in ("record", "profile") else None
 
     def sizeHint(self, option, index):
         data = index.data(Qt.UserRole + 1) or {}

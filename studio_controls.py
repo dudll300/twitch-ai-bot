@@ -97,6 +97,9 @@ class OrbitScrollArea(QScrollArea):
         super().__init__()
         self.setVerticalScrollBar(StudioScrollBar(Qt.Vertical, self))
         self.setHorizontalScrollBar(StudioScrollBar(Qt.Horizontal, self))
+        # Reserve a stable gutter; revealing content must not narrow the page
+        # and rewrap every label halfway through its height animation.
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self._setting = False
         self._target = 0
         self._position = self._velocity = 0.

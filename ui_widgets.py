@@ -841,6 +841,7 @@ class Disclosure(QWidget):
         reveal_layout.addWidget(content)
         self._content_limits = None
         self._visibility_pending = False
+        self._retarget_pending = False
         self._follow_area = None
         self._reveal_motion = SpringMotion(self, 0., self._advance_reveal, frequency=28, tolerance=.05)
         self._reveal_motion.settled.connect(self._finish_reveal)
@@ -850,6 +851,21 @@ class Disclosure(QWidget):
         QApplication.instance().paletteChanged.connect(self._update_icon)
         self.button.setChecked(expanded)
         self.set_expanded(expanded)
+
+    def _natural_height(self, width):
+        lower, upper = self._content_limits or (self.content.minimumHeight(), self.content.maximumHeight())
+        hint = self.content.heightForWidth(width) if self.content.hasHeightForWidth() else self.content.sizeHint().height()
+        return min(upper, max(hint, self.content.minimumSizeHint().height(), lower))
+
+    def sizeHint(self):
+        hint = super().sizeHint()
+        if hasattr(self, "_content_limits") and not self.reveal.isHidden():
+            # Maximum vertical policy must use the wrapped height at the actual
+            # width, not the child's unwrapped preferred width. Otherwise Qt
+            # shrinks the panel as soon as animation's fixed height is released.
+            body = min(self._natural_height(max(1, self.width())) + 8, self.reveal.maximumHeight())
+            hint.setHeight(self.button.sizeHint().height() + body)
+        return hint
 
     def set_expanded(self, expanded):
         motion = self.isVisible() and QApplication.instance().property("animations") is not False
@@ -872,9 +888,12 @@ class Disclosure(QWidget):
             lower, upper = self._content_limits
             self.content.setMinimumHeight(lower)
             self.content.setMaximumHeight(upper)
-            width = max(1, self.reveal.width())
-            target = self.content.heightForWidth(width) if self.content.hasHeightForWidth() else self.content.sizeHint().height()
-            target = min(upper, max(target, self.content.minimumSizeHint().height(), lower))
+            # A never-shown child still has QWidget's default 640px width.
+            # Measure wrapped content at the actual disclosure width first.
+            width = max(1, self.contentsRect().width())
+            self.reveal.resize(width, self.reveal.height())
+            self.content.ensurePolished()
+            target = self._natural_height(width)
             self.content.setFixedHeight(target)
             if self._reveal_motion.state() != QVariantAnimation.Running:
                 self._reveal_motion.reset(float(start))
@@ -930,11 +949,14 @@ class Disclosure(QWidget):
         super().hideEvent(event)
 
     def resizeEvent(self, event):
-        if event.size().width() != event.oldSize().width() and self._reveal_motion.state() == QVariantAnimation.Running:
+        if (event.size().width() != event.oldSize().width() and
+                self._reveal_motion.state() == QVariantAnimation.Running and not self._retarget_pending):
+            self._retarget_pending = True
             QTimer.singleShot(0, self, self._retarget_reveal)
         super().resizeEvent(event)
 
     def _retarget_reveal(self):
+        self._retarget_pending = False
         if self._reveal_motion.state() == QVariantAnimation.Running:
             self.set_expanded(self.button.isChecked())
 

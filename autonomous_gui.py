@@ -2,7 +2,7 @@
 
 from dataclasses import asdict
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QAbstractSpinBox, QGridLayout, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QAbstractSpinBox, QFrame, QGridLayout, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from autonomous import AutoSettings, MINIMUM_VALUES, load_settings, save_settings, validate_settings
 from participation import PARTICIPATION
@@ -95,7 +95,16 @@ class AutonomousPage(QWidget):
         self.reset_prompt_button = QPushButton("Вернуть стандартные инструкции")
         self.reset_prompt_button.setProperty("variant", "quiet")
         self.reset_prompt_button.clicked.connect(self.reset_prompt)
-        instructions_layout.addWidget(self.reset_prompt_button, 0, Qt.AlignLeft)
+        prompt_footer = QWidget()
+        footer_layout = QVBoxLayout(prompt_footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(16)
+        self.prompt_rule = QFrame()
+        self.prompt_rule.setObjectName("rule")
+        self.prompt_rule.setFixedHeight(1)
+        footer_layout.addWidget(self.prompt_rule)
+        footer_layout.addWidget(self.reset_prompt_button, 0, Qt.AlignLeft)
+        instructions_layout.addWidget(prompt_footer)
         instructions_layout.addWidget(label(
             "Изменения текста и числовых параметров применяются вместе по кнопке «Сохранить и применить». "
             "До 10 000 символов; пустое поле оставляет обязательные правила приложения. "
@@ -170,7 +179,8 @@ class AutonomousPage(QWidget):
         left_box.addWidget(options)
         left_box.addStretch()
         right_box.addWidget(journal)
-        right_box.addWidget(Disclosure("Инструкции самостоятельного участия", instructions))
+        self.instructions_disclosure = Disclosure("Инструкции самостоятельного участия", instructions)
+        right_box.addWidget(self.instructions_disclosure)
         right_box.addStretch()
         layout.addWidget(ResponsiveColumns(left, right, threshold=850))
         outer.addWidget(scroll_page(content))

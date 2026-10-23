@@ -1,13 +1,28 @@
 """Orbit's native, resolution independent page horizon and session heading."""
 from math import cos, sin, radians, floor, ceil
 from random import Random
-from PySide6.QtCore import Qt, QRectF, QRect, QVariantAnimation, QEasingCurve, QTimer, QPointF, QPoint, QEvent, QElapsedTimer
+from weakref import ref
+from PySide6.QtCore import Qt, QRectF, QRect, QVariantAnimation, QEasingCurve, QTimer, QPointF, QPoint, QEvent, QElapsedTimer, QObject
 from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient, QLinearGradient, QPixmap, QRegion
 from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QVBoxLayout, QSizePolicy, QWidget
+from shiboken6 import isValid
 
 from studio_theme import PALETTES
 from ui_widgets import label
 from studio_motion import SpringMotion, enabled, smooth
+
+
+class TransitionEvents(QObject):
+    """Keep native event-filter lifetime separate from the painted QWidget."""
+    def __init__(self, owner):
+        super().__init__(owner)
+        self._owner = ref(owner)
+
+    def eventFilter(self, watched, event):
+        owner = self._owner()
+        if owner is None or not isValid(owner) or not isValid(watched) or not isValid(event):
+            return False
+        return owner._filter_event(watched, event)
 
 
 class PageTransition(QWidget):
@@ -29,7 +44,8 @@ class PageTransition(QWidget):
         self._motion.setEasingCurve(QEasingCurve.Linear)
         self._motion.valueChanged.connect(self._advance)
         self._motion.finished.connect(self.finish)
-        parent.installEventFilter(self)
+        self._events_filter = TransitionEvents(self)
+        parent.installEventFilter(self._events_filter)
         self.hide()
 
     def _advance(self, value):
@@ -54,12 +70,12 @@ class PageTransition(QWidget):
             self._caption_children = [child for child in self.parentWidget().findChildren(QWidget)
                                       if not child.isHidden() and child is not self]
             for child in self._caption_children:
-                child.installEventFilter(self)
+                child.installEventFilter(self._events_filter)
         else:
             self._input_widgets = [child for child in self.parentWidget().findChildren(QWidget)
                                    if child is not self and child.isVisibleTo(self.parentWidget())]
             for child in self._input_widgets:
-                child.installEventFilter(self)
+                child.installEventFilter(self._events_filter)
         # Keep the outgoing frame on screen while native layouts settle. Hiding
         # it until the deferred capture can flash the destination for one frame.
         self.raise_()
@@ -70,12 +86,12 @@ class PageTransition(QWidget):
             self._capturing = True
             self.hide()
             for child in self._caption_children:
-                child.removeEventFilter(self)
+                child.removeEventFilter(self._events_filter)
             try:
                 incoming = self.snapshot()
             finally:
                 for child in self._caption_children:
-                    child.installEventFilter(self)
+                    child.installEventFilter(self._events_filter)
                 self._capturing = False
                 self._capture_pending = False
             if generation != self._generation or not self.parentWidget().isVisible():
@@ -153,27 +169,28 @@ class PageTransition(QWidget):
         self.hide()
         for child in self._input_widgets:
             try:
-                child.removeEventFilter(self)
+                child.removeEventFilter(self._events_filter)
             except RuntimeError:
                 pass  # An async list refresh may have removed a row widget.
         self._input_widgets = []
         for child in self._caption_children:
-            child.removeEventFilter(self)
+            child.removeEventFilter(self._events_filter)
             child.update()
         self._caption_children = []
         self._old, self._new = QPixmap(), QPixmap()
         self._layers = []
 
-    def eventFilter(self, watched, event):
-        if event.type() == QEvent.Paint and watched in self._caption_children:
+    def _filter_event(self, watched, event):
+        kind = event.type()
+        if kind == QEvent.Paint and any(watched is child for child in self._caption_children):
             # Keep native caption geometry and visibility intact while the
             # transparent overlay paints the text over the live sky.
             return True
-        if watched is self.parentWidget() and event.type() == QEvent.Resize and (self._capture_pending or self._capturing):
+        if watched is self.parentWidget() and kind == QEvent.Resize and (self._capture_pending or self._capturing):
             self.setGeometry(self.parentWidget().rect())
             return False
-        if (watched is self.parentWidget() and (event.type() == QEvent.Hide or
-                (event.type() == QEvent.Resize and self.isVisible()))) or event.type() in (
+        if (watched is self.parentWidget() and (kind == QEvent.Hide or
+                (kind == QEvent.Resize and self.isVisible()))) or kind in (
                 QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.Wheel, QEvent.TouchBegin):
             self.finish()
         return False
@@ -358,9 +375,16 @@ class OrbitHeader(QFrame):
 
     def showEvent(self, event):
         super().showEvent(event)
-        if self._star_window is not self.window():
-            self._star_window = self.window()
-            self._star_window.installEventFilter(self)
+        window = self.window().windowHandle()
+        if self._star_window is not window:
+            if self._star_window is not None:
+                try:
+                    self._star_window.windowStateChanged.disconnect(self._window_state_changed)
+                except RuntimeError:
+                    pass
+            self._star_window = window
+            if window is not None:
+                window.windowStateChanged.connect(self._window_state_changed)
         self.sync_star_motion()
 
     def hideEvent(self, event):
@@ -369,10 +393,10 @@ class OrbitHeader(QFrame):
         self._pointer_motion.reset((0, 0))
         super().hideEvent(event)
 
-    def eventFilter(self, watched, event):
-        if watched is self._star_window and event.type() == QEvent.WindowStateChange:
-            QTimer.singleShot(0, self.sync_star_motion)
-        return False
+    def _window_state_changed(self, *_):
+        # Observe just the native state signal instead of routing every main
+        # window event through a Python filter (including native teardown).
+        QTimer.singleShot(0, self, self.sync_star_motion)
 
     def mouseMoveEvent(self, event):
         point = event.position()
