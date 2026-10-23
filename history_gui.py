@@ -206,11 +206,13 @@ class HistoryPage(GlowSurface):
         self.timeline = plain("", "muted")
         details_layout.addWidget(Disclosure("Ход обработки", self.timeline))
         copy_row = QHBoxLayout()
+        self.copy_buttons = []
         for title, editor in (("Копировать вопрос", self.question), ("Копировать ответ", self.answer)):
             button = QPushButton(title)
             button.setIcon(studio_icon("copy", size=16))
             button.clicked.connect(lambda checked=False, source=editor: QApplication.clipboard().setText(source.toPlainText()))
             copy_row.addWidget(button)
+            self.copy_buttons.append(button)
         details_layout.addLayout(copy_row)
         detail_layout.addWidget(details)
         context_card, context_layout = card("Контекст события")
@@ -274,6 +276,8 @@ class HistoryPage(GlowSurface):
         self._cancel[category] = Event()
         self._tokens[category] += 1
         self._tasks.put((category, self._tokens[category], args, self._cancel[category]))
+        if category == "detail":
+            self._poll.setInterval(16)
 
     def refresh(self, *, reset=False):
         if self._closed.is_set():
@@ -328,28 +332,31 @@ class HistoryPage(GlowSurface):
                 if error:
                     self.hint.setText("История недоступна. Сохранённые файлы не изменены.")
                     continue
+                rows_changed = self._rows != result["rows"]
                 self._rows, self._more = result["rows"], result["more"]
-                selected = self._selected
-                self.entries.blockSignals(True)
-                old_scroll = self.entries.verticalScrollBar().value()
-                self.entries.clear()
-                select_index = 0
-                for index, row in enumerate(self._rows):
-                    source = "Награда" if row["kind"] == "reward" else "Самостоятельная реплика"
-                    target = " · @" + row["viewer"] if row["viewer"] else ""
-                    body = row["answer"] or row["sent_text"] or row["question"] or REASONS.get(row["reason"], row["reason"])
-                    body = " ".join(body.split())
-                    item = QListWidgetItem(f"{timestamp(row['created'])} · {source}{target}\n"
-                                           f"{STATUS_NAMES.get(row['status'], row['status'])}\n{body[:140]}")
-                    item.setData(Qt.UserRole, row["id"])
-                    item.setData(Qt.UserRole + 1, dict(time=timestamp(row["created"], short=True)[:5],
-                        title=" ".join((row["question"] or row["answer"] or row["sent_text"] or REASONS.get(row["reason"], row["reason"]) or STATUS_NAMES.get(row["status"], row["status"])).split()),
-                        subtitle=" · ".join(part for part in (row["viewer"], source, STATUS_NAMES.get(row["status"], row["status"])) if part),
-                        date=timestamp(row["created"]).split(" ")[0]))
-                    self.entries.addItem(item)
-                    if row["id"] == selected:
-                        select_index = index
-                self.entries.blockSignals(False)
+                if rows_changed:
+                    selected = self._selected
+                    self.entries.blockSignals(True)
+                    self.entries.itemDelegate().selection.reset()
+                    old_scroll = self.entries.verticalScrollBar().value()
+                    self.entries.clear()
+                    select_index = 0
+                    for index, row in enumerate(self._rows):
+                        source = "Награда" if row["kind"] == "reward" else "Самостоятельная реплика"
+                        target = " · @" + row["viewer"] if row["viewer"] else ""
+                        body = row["answer"] or row["sent_text"] or row["question"] or REASONS.get(row["reason"], row["reason"])
+                        body = " ".join(body.split())
+                        item = QListWidgetItem(f"{timestamp(row['created'])} · {source}{target}\n"
+                                               f"{STATUS_NAMES.get(row['status'], row['status'])}\n{body[:140]}")
+                        item.setData(Qt.UserRole, row["id"])
+                        item.setData(Qt.UserRole + 1, dict(time=timestamp(row["created"], short=True)[:5],
+                            title=" ".join((row["question"] or row["answer"] or row["sent_text"] or REASONS.get(row["reason"], row["reason"]) or STATUS_NAMES.get(row["status"], row["status"])).split()),
+                            subtitle=" · ".join(part for part in (row["viewer"], source, STATUS_NAMES.get(row["status"], row["status"])) if part),
+                            date=timestamp(row["created"]).split(" ")[0]))
+                        self.entries.addItem(item)
+                        if row["id"] == selected:
+                            select_index = index
+                    self.entries.blockSignals(False)
                 self.newer.setEnabled(len(self._cursors) > 1)
                 self.older.setEnabled(self._more)
                 self.page_label.setText(f"Страница {len(self._cursors)}")
@@ -358,14 +365,24 @@ class HistoryPage(GlowSurface):
                 self.reset_filters.setVisible(not self._rows and bool(self.kind.currentData() or self.status.currentData() or self.search.text().strip()))
                 self.hint.setVisible(not self._rows)
                 if self._rows:
-                    self.entries.setCurrentRow(select_index)
-                    self.entries.verticalScrollBar().setValue(old_scroll)
+                    if rows_changed:
+                        self.entries.setCurrentRow(select_index)
+                        self.entries.verticalScrollBar().setValue(old_scroll)
+                    else:
+                        # A background refresh must not reset the travelling
+                        # selection when the visible rows have not changed.
+                        self._selection(self.entries.currentItem())
                 else:
                     self._selected = None
                     self._cancel["detail"].set()
                     self._clear_detail()
-            elif result is not None and result["id"] == self._selected:
-                self._render(result)
+            else:
+                self._poll.setInterval(100)
+                if error or result is None:
+                    self._clear_detail()
+                    self.badge.setText("Запись недоступна" if not error else "Не удалось загрузить")
+                elif result["id"] == self._selected:
+                    self._render(result)
 
     def _reset_filters(self):
         self.kind.setCurrentIndex(0)
@@ -377,12 +394,17 @@ class HistoryPage(GlowSurface):
         if item is None:
             return
         record_id = item.data(Qt.UserRole)
-        if record_id != self._selected:
-            self._clear_detail()
+        if record_id != self._detail_id:
+            self.badge.setText("Загрузка…")
+            for button in self.copy_buttons:
+                button.setEnabled(False)
         self._selected = record_id
         self._request("detail", record_id=record_id)
 
     def _clear_detail(self):
+        self._detail_transition.finish()
+        for button in self.copy_buttons:
+            button.setEnabled(False)
         self._detail_id = None
         self.badge.setText("Выберите запись")
         self.meta.clear()
@@ -397,8 +419,15 @@ class HistoryPage(GlowSurface):
         self.instructions_button.setChecked(False)
 
     def _render(self, row):
-        previous = self._detail_transition.parentWidget().grab() if self._detail_id != row["id"] and self.isVisible() and QApplication.instance().property("animations") is not False else None
+        changed = self._detail_id != row["id"]
+        previous = self._detail_transition.snapshot() if changed and self.isVisible() and QApplication.instance().property("animations") is not False else None
+        if changed:
+            for disclosure in (self.context_disclosure, self.instructions_disclosure):
+                disclosure.button.setChecked(False)
+                disclosure._reveal_motion.finish()
         self._detail_id = row["id"]
+        for button in self.copy_buttons:
+            button.setEnabled(True)
         self.badge.setText(STATUS_NAMES.get(row["status"], row["status"]))
         self.badge.setProperty("state", row["status"])
         self.badge.style().unpolish(self.badge)

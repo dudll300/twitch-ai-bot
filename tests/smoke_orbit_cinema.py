@@ -98,6 +98,7 @@ def main():
                     window.animations_control.setChecked(True)
                     window._navigate(gui.PAGE_HISTORY)
                     wait_for(window._transition.isVisible, f"Page transition never started: {theme}, {size}")
+                    wait_for(lambda: not window._transition._capture_pending, "Page capture did not settle")
                     assert window._transition._layers, "Native cards must participate in the entrance"
                     QTest.qWait(96)
                     current = window._transition.snapshot().toImage().convertToFormat(QImage.Format_RGBA8888)

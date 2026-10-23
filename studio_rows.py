@@ -1,8 +1,58 @@
 """Readable native event and conversation rows, matching the Orbit prototype."""
-from PySide6.QtCore import Qt, QSize, QRectF, QPointF
+from PySide6.QtCore import Qt, QSize, QRectF, QPointF, QObject, QEvent, QTimer
 from PySide6.QtGui import QPainter, QPen, QColor, QFont, QTextLayout, QTextOption
-from PySide6.QtWidgets import QStyledItemDelegate, QStyle
+from PySide6.QtWidgets import QStyledItemDelegate, QStyle, QAbstractItemView
 from studio_controls import colors
+from studio_motion import SpringMotion
+
+
+class RowSelectionMotion(QObject):
+    """A travelling native row surface, on the same spring as the icon rail."""
+    def __init__(self, view):
+        super().__init__(view)
+        self.view, self.rect = view, QRectF()
+        self.motion = SpringMotion(self, (0, 0, 0, 0), self._advance, frequency=25, tolerance=.04)
+        view.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        view.currentRowChanged.connect(self.select)
+        view.viewport().installEventFilter(self)
+
+    def _advance(self, values):
+        self.rect = QRectF(*values)
+        self.view.viewport().update()
+
+    def reset(self):
+        self.motion.reset((0, 0, 0, 0))
+
+    def select(self, row, *, immediate=False):
+        item = self.view.item(row) if row >= 0 else None
+        if item is None:
+            self.reset()
+            return
+        rect = QRectF(self.view.visualItemRect(item))
+        rect.translate(0, self.view.verticalScrollBar().value())
+        self.motion.to((rect.x(), rect.y(), rect.width(), rect.height()),
+                       immediate=immediate or self.rect.isEmpty() or not self.view.isVisible())
+
+    def eventFilter(self, watched, event):
+        if event.type() == QEvent.Resize:
+            QTimer.singleShot(0, self, lambda: self.select(self.view.currentRow()))
+        elif event.type() == QEvent.Hide:
+            self.motion.finish()
+        return False
+
+    def paint(self, painter, bounds):
+        rect = self.rect.translated(0, -self.view.verticalScrollBar().value()).adjusted(1, 1, -1, -1)
+        if rect.isEmpty() or not rect.intersects(QRectF(bounds)):
+            return
+        c = colors()
+        painter.save()
+        painter.setClipRect(bounds, Qt.IntersectClip)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(c["selected"]))
+        painter.drawRoundedRect(rect, 12, 12)
+        painter.setPen(QPen(QColor(c["accent"]), 2, Qt.SolidLine, Qt.RoundCap))
+        painter.drawLine(QPointF(rect.left(), rect.top() + 12), QPointF(rect.left(), rect.bottom() - 12))
+        painter.restore()
 
 
 def text_layout(text, font, width):
@@ -27,6 +77,7 @@ class OrbitRowDelegate(QStyledItemDelegate):
     def __init__(self, parent, mode="record"):
         super().__init__(parent)
         self.mode = mode
+        self.selection = RowSelectionMotion(parent) if mode == "record" else None
 
     def sizeHint(self, option, index):
         data = index.data(Qt.UserRole + 1) or {}
@@ -45,9 +96,13 @@ class OrbitRowDelegate(QStyledItemDelegate):
         raw = str(index.data() or "").splitlines()
         selected = bool(option.state & QStyle.State_Selected)
         bot = data.get("bot", False)
-        if selected or bot or option.state & QStyle.State_MouseOver:
+        if self.selection is not None:
+            if option.state & QStyle.State_MouseOver and not selected:
+                p.fillRect(rect, QColor(c["raised"]))
+            self.selection.paint(p, rect)
+        elif selected or bot or option.state & QStyle.State_MouseOver:
             p.fillRect(rect, QColor(c["selected"] if selected or bot else c["raised"]))
-        if selected or bot:
+        if (selected or bot) and self.selection is None:
             p.fillRect(rect.left(), rect.top(), 2, rect.height(), QColor(c["accent"]))
         p.setPen(QPen(QColor(c["border"]), 1))
         p.drawLine(rect.bottomLeft(), rect.bottomRight())

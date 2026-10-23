@@ -53,11 +53,19 @@ def _draw_halo(painter, rect, image):
 
 
 class GlowSurface(QWidget):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.setAttribute(Qt.WA_OpaquePaintEvent)
+
     def paintEvent(self, event):
-        super().paintEvent(event)
+        from studio_theme import PALETTES
+        theme = QApplication.instance().property("studioTheme") or "dark"
         painter = QPainter(self)
+        # Halos extend beyond child bounds. Always erase their previous pixels,
+        # including after native scroll-copy and a child's move/hide/resize.
+        painter.fillRect(event.rect(), QColor(PALETTES[theme]["bg"]))
         painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
-        image = _halo(QApplication.instance().property("studioTheme") or "dark")
+        image = _halo(theme)
         for panel in self.findChildren(QFrame, "card"):
             if not panel.isVisibleTo(self):
                 continue

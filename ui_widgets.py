@@ -826,7 +826,7 @@ class Disclosure(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setSpacing(0)
         self.button = QPushButton()
         self.button.setProperty("variant", "quiet")
         self.button.setCheckable(True)
@@ -835,10 +835,13 @@ class Disclosure(QWidget):
         self.title = title
         self.reveal = QWidget()
         reveal_layout = QVBoxLayout(self.reveal)
-        reveal_layout.setContentsMargins(0, 0, 0, 0)
+        # Include the gap in the reveal itself so it never pops in/out by 8px.
+        reveal_layout.setContentsMargins(0, 8, 0, 0)
         reveal_layout.setSizeConstraint(QLayout.SetNoConstraint)
         reveal_layout.addWidget(content)
         self._content_limits = None
+        self._visibility_pending = False
+        self._follow_area = None
         self._reveal_motion = SpringMotion(self, 0., self._advance_reveal, frequency=28, tolerance=.05)
         self._reveal_motion.settled.connect(self._finish_reveal)
         layout.addWidget(self.button)
@@ -850,6 +853,15 @@ class Disclosure(QWidget):
 
     def set_expanded(self, expanded):
         motion = self.isVisible() and QApplication.instance().property("animations") is not False
+        if self.isVisible() and (self._reveal_motion.state() != QVariantAnimation.Running or
+                                 expanded != getattr(self, "_follow_expanded", None)):
+            area = self.parentWidget()
+            while area is not None and not isinstance(area, OrbitScrollArea):
+                area = area.parentWidget()
+            self._follow_area = area
+            if area is not None:
+                area.follow_reveal(self)
+        self._follow_expanded = expanded
         if motion:
             self.reveal.setProperty("clipPanelGlow", True)
             start = self.reveal.height() if self.reveal.isVisible() else 0
@@ -866,7 +878,7 @@ class Disclosure(QWidget):
             self.content.setFixedHeight(target)
             if self._reveal_motion.state() != QVariantAnimation.Running:
                 self._reveal_motion.reset(float(start))
-            self._reveal_motion.to(float(target if expanded else 0))
+            self._reveal_motion.to(float(target + 8 if expanded else 0))
         else:
             self._reveal_motion.stop()
             self._finish_reveal()
@@ -886,10 +898,22 @@ class Disclosure(QWidget):
         self.reveal.setVisible(expanded)
         self.reveal.setMaximumHeight(16777215 if expanded else 0)
         self._refresh_glow()
+        self._schedule_visibility()
 
     def _advance_reveal(self, value):
         self.reveal.setMaximumHeight(max(0, round(value)))
         self._refresh_glow()
+        self._schedule_visibility()
+
+    def _schedule_visibility(self):
+        if not self._visibility_pending:
+            self._visibility_pending = True
+            QTimer.singleShot(0, self, self._sync_visibility)
+
+    def _sync_visibility(self):
+        self._visibility_pending = False
+        if self._follow_area is not None:
+            self._follow_area.reveal_frame(self, self.button.isChecked())
 
     def _refresh_glow(self):
         ancestor = self.parentWidget()
@@ -900,6 +924,7 @@ class Disclosure(QWidget):
             ancestor = ancestor.parentWidget()
 
     def hideEvent(self, event):
+        self._follow_area = None
         self._reveal_motion.stop()
         self._finish_reveal()
         super().hideEvent(event)

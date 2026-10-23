@@ -1,5 +1,5 @@
 """Orbit's native, resolution independent page horizon and session heading."""
-from math import cos, sin, radians
+from math import cos, sin, radians, floor, ceil
 from random import Random
 from PySide6.QtCore import Qt, QRectF, QRect, QVariantAnimation, QEasingCurve, QTimer, QPointF, QPoint, QEvent, QElapsedTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QRadialGradient, QLinearGradient, QPixmap, QRegion
@@ -15,11 +15,14 @@ class PageTransition(QWidget):
     def __init__(self, parent, kind="page"):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents)
+        self.setAttribute(Qt.WA_OpaquePaintEvent, kind != "caption")
         self._old, self._new = QPixmap(), QPixmap()
         self.kind, self.direction = kind, 1
         self._layers = []
         self._caption_children = []
         self._input_widgets = []
+        self._capture_pending = False
+        self._capturing = False
         self._progress, self._generation = 1., 0
         self._motion = QVariantAnimation(self)
         self._motion.setDuration(480 if kind == "page" else 220 if kind == "caption" else 360)
@@ -44,28 +47,45 @@ class PageTransition(QWidget):
         self.direction = direction
         generation = self._generation
         self._old = previous if self.kind == "caption" else self._opaque(previous)
+        self._capture_pending = True
+        self._progress = 0.
+        self.setGeometry(self.parentWidget().rect())
+        if self.kind == "caption":
+            self._caption_children = [child for child in self.parentWidget().findChildren(QWidget)
+                                      if not child.isHidden() and child is not self]
+            for child in self._caption_children:
+                child.installEventFilter(self)
+        else:
+            self._input_widgets = [child for child in self.parentWidget().findChildren(QWidget)
+                                   if child is not self and child.isVisibleTo(self.parentWidget())]
+            for child in self._input_widgets:
+                child.installEventFilter(self)
+        # Keep the outgoing frame on screen while native layouts settle. Hiding
+        # it until the deferred capture can flash the destination for one frame.
+        self.raise_()
+        self.show()
         def capture():
             if generation != self._generation or not self.parentWidget().isVisible() or QApplication.instance().property("animations") is False:
                 return
-            incoming = self.snapshot()
-            self._new = incoming if self.kind == "caption" else self._opaque(incoming)
-            self._collect_layers()
-            if self.kind == "caption":
-                self._caption_children = [child for child in self.parentWidget().findChildren(QWidget)
-                                          if not child.isHidden() and child is not self]
+            self._capturing = True
+            self.hide()
+            for child in self._caption_children:
+                child.removeEventFilter(self)
+            try:
+                incoming = self.snapshot()
+            finally:
                 for child in self._caption_children:
                     child.installEventFilter(self)
+                self._capturing = False
+                self._capture_pending = False
+            if generation != self._generation or not self.parentWidget().isVisible():
+                return
+            self._new = incoming if self.kind == "caption" else self._opaque(incoming)
+            self._collect_layers()
             self.setGeometry(self.parentWidget().rect())
             self._progress = 0.
             self.raise_()
             self.show()
-            # A transition is presentation only. The very next input exposes
-            # native controls before they handle it, rather than hiding edits.
-            if self.kind != "caption":
-                self._input_widgets = [child for child in self.parentWidget().findChildren(QWidget)
-                                       if child is not self and child.isVisibleTo(self.parentWidget())]
-                for child in self._input_widgets:
-                    child.installEventFilter(self)
             self._motion.setStartValue(0.)
             self._motion.setEndValue(1.)
             self._motion.start()
@@ -129,6 +149,7 @@ class PageTransition(QWidget):
     def finish(self):
         self._generation += 1
         self._motion.stop()
+        self._capture_pending = False
         self.hide()
         for child in self._input_widgets:
             try:
@@ -148,6 +169,9 @@ class PageTransition(QWidget):
             # Keep native caption geometry and visibility intact while the
             # transparent overlay paints the text over the live sky.
             return True
+        if watched is self.parentWidget() and event.type() == QEvent.Resize and (self._capture_pending or self._capturing):
+            self.setGeometry(self.parentWidget().rect())
+            return False
         if (watched is self.parentWidget() and (event.type() == QEvent.Hide or
                 (event.type() == QEvent.Resize and self.isVisible()))) or event.type() in (
                 QEvent.MouseButtonPress, QEvent.KeyPress, QEvent.Wheel, QEvent.TouchBegin):
@@ -161,6 +185,9 @@ class PageTransition(QWidget):
             p.fillRect(self.rect(), QColor(c["bg"]))
         p.setRenderHint(QPainter.SmoothPixmapTransform)
         progress = smooth(self._progress)
+        if self.kind == "tabs":
+            self._paint_replacement(p, progress)
+            return
         if self.kind == "caption":
             p.setOpacity(1 - smooth(self._progress / .4))
         p.drawPixmap(QPointF(0, -3 * progress if self.kind in ("page", "caption") else 0), self._old)
@@ -186,8 +213,48 @@ class PageTransition(QWidget):
                 p.restore()
         else:
             p.setOpacity(smooth((self._progress - .4) / .6) if self.kind == "caption" else progress)
-            offset = QPointF(12 * self.direction * (1 - progress), 0) if self.kind == "tabs" else QPointF(0, 0 if self.kind == "theme" else 6 * (1 - progress))
+            offset = QPointF(0, 0 if self.kind == "theme" else 6 * (1 - progress))
             p.drawPixmap(offset, self._new)
+
+    def _paint_replacement(self, painter, progress):
+        """Replace stationary chrome through a soft edge, without doubled text.
+
+        Only the 24px seam blends; the rest is one opaque, unscaled native frame.
+        A small seam patch avoids allocating a full-size opacity mask each frame.
+        """
+        painter.drawPixmap(0, 0, self._old)
+        if self._new.isNull():
+            return
+        width, height, feather = self.width(), self.height(), 24
+        edge = (width + 2 * feather) * progress - feather
+        forward = self.direction >= 0
+        if not forward:
+            edge = width - edge
+        start, end = edge - feather / 2, edge + feather / 2
+        solid = QRectF(0, 0, max(0, start), height) if forward else QRectF(end, 0, max(0, width - end), height)
+        painter.save()
+        painter.setClipRect(solid, Qt.IntersectClip)
+        painter.drawPixmap(0, 0, self._new)
+        painter.restore()
+        left, right = max(0, floor(start)), min(width, ceil(end))
+        if right <= left:
+            return
+        ratio = self._new.devicePixelRatio()
+        crop = self._new.copy(QRect(round(left * ratio), 0, round((right - left) * ratio), self._new.height()))
+        # Native opaque captures can have no alpha plane. Masking them directly
+        # would multiply their RGB to black instead of exposing the old frame.
+        patch = QPixmap(crop.size())
+        patch.setDevicePixelRatio(ratio)
+        patch.fill(Qt.transparent)
+        mask = QLinearGradient(start - left, 0, end - left, 0)
+        mask.setColorAt(0, QColor(0, 0, 0, 255 if forward else 0))
+        mask.setColorAt(1, QColor(0, 0, 0, 0 if forward else 255))
+        blend = QPainter(patch)
+        blend.drawPixmap(0, 0, crop)
+        blend.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        blend.fillRect(QRectF(0, 0, right - left, height), mask)
+        blend.end()
+        painter.drawPixmap(QPointF(left, 0), patch)
 
 
 class OrbitHeader(QFrame):

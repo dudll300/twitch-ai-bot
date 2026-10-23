@@ -1,6 +1,6 @@
 """Orbit's native controls, input policy and finite motion. No service calls."""
 from math import exp
-from PySide6.QtCore import Qt, QRectF, QSize, QPointF, QAbstractAnimation
+from PySide6.QtCore import Qt, QRectF, QSize, QPointF, QAbstractAnimation, QPoint
 from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QCheckBox, QScrollBar, QScrollArea,
     QSpinBox, QStyle, QStyleOptionSlider, QStyleOptionSpinBox, QTabBar, QTabWidget, QStackedWidget,
@@ -23,7 +23,7 @@ def stop_parent_scroll(widget):
     parent = widget.parentWidget()
     while parent is not None:
         if isinstance(parent, OrbitScrollArea):
-            parent.stop_scroll()
+            parent._manual_scroll()
         parent = parent.parentWidget()
 
 
@@ -101,8 +101,36 @@ class OrbitScrollArea(QScrollArea):
         self._target = 0
         self._position = self._velocity = 0.
         self._scroll = ScrollMotion(self)
+        self._reveal_owner = None
+        self._reveal_anchor = 0
         self.verticalScrollBar().valueChanged.connect(self._external_scroll)
-        self.verticalScrollBar().sliderPressed.connect(self.stop_scroll)
+        self.verticalScrollBar().sliderPressed.connect(self._manual_scroll)
+        self.verticalScrollBar().actionTriggered.connect(self._manual_scroll)
+
+    def _manual_scroll(self):
+        self._reveal_owner = None
+        self.stop_scroll()
+
+    def follow_reveal(self, widget):
+        self.stop_scroll()
+        self._reveal_owner = widget
+        self._reveal_anchor = widget.mapTo(self.viewport(), QPoint()).y()
+
+    def reveal_frame(self, widget, expanding):
+        if self._reveal_owner is not widget or not widget.isVisible():
+            return
+        top = widget.mapTo(self.widget(), QPoint()).y()
+        bar = self.verticalScrollBar()
+        if expanding:
+            height = min(widget.height(), max(1, self.viewport().height() - 32))
+            margin = min(16, max(0, widget.reveal.height() / 5))
+            desired = max(bar.value(), round(top + height - self.viewport().height() + margin))
+            desired = min(desired, max(bar.value(), top - 16))
+        else:
+            desired = top - self._reveal_anchor
+        self._step(max(bar.minimum(), min(bar.maximum(), round(desired))))
+        self._position = float(bar.value())
+        self._target, self._velocity = self._position, 0.
 
     def _step(self, value):
         self._setting = True
@@ -137,10 +165,12 @@ class OrbitScrollArea(QScrollArea):
             self.stop_scroll()
 
     def hideEvent(self, event):
+        self._reveal_owner = None
         self.stop_scroll()
         super().hideEvent(event)
 
     def wheelEvent(self, event):
+        self._reveal_owner = None
         pixel_delta = event.pixelDelta().y()
         stop_parent_scroll(self)
         delta = pixel_delta or event.angleDelta().y() / 120 * 72
@@ -167,6 +197,10 @@ class OrbitScrollArea(QScrollArea):
             self._spring_step(.008)
             self._scroll.start()
         event.accept()
+
+    def keyPressEvent(self, event):
+        self._manual_scroll()
+        super().keyPressEvent(event)
 
 
 class NumberInput(QSpinBox):
@@ -323,20 +357,36 @@ class OrbitTabBar(QTabBar):
 class StudioTabs(QTabWidget):
     def __init__(self, *args):
         super().__init__(*args)
-        self.setTabBar(OrbitTabBar(self))
         self._last_page = -1
         self._page_transition = None
+        self._prepared_frame = None
+        bar = OrbitTabBar(self)
+        # Connect before QTabWidget connects its native page-changing slot.
+        # The current stack still contains the outgoing page at this point.
+        bar.currentChanged.connect(self._prepare_transition)
+        self.setTabBar(bar)
         self.currentChanged.connect(self._transition_page)
+
+    def _prepare_transition(self, index):
+        self._prepared_frame = None
+        if self._last_page < 0 or index == self._last_page or not self.isVisible() or QApplication.instance().property("animations") is False:
+            return
+        from studio_artwork import PageTransition
+        if self._page_transition is None:
+            self._page_transition = PageTransition(self.findChild(QStackedWidget), kind="tabs")
+        self._prepared_frame = self._page_transition.snapshot()
 
     def _transition_page(self, index):
         previous, self._last_page = self._last_page, index
+        frame, self._prepared_frame = self._prepared_frame, None
         if previous < 0 or previous == index or not self.isVisible() or QApplication.instance().property("animations") is False:
             return
         from studio_artwork import PageTransition
         if self._page_transition is None:
             self._page_transition = PageTransition(self.findChild(QStackedWidget), kind="tabs")
         if previous < self.count():
-            frame = self._page_transition.snapshot() if self._page_transition.isVisible() else self.widget(previous).grab()
+            if frame is None:
+                frame = self._page_transition.snapshot() if self._page_transition.isVisible() else self.widget(previous).grab()
             self._page_transition.start(frame, 1 if index > previous else -1)
 
 
