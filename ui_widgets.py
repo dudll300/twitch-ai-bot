@@ -1,10 +1,11 @@
 """Small layout primitives shared by the desktop pages."""
 
 import re
+from math import ceil
 
 from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve, QTimer, QRectF, QPointF, QPropertyAnimation, QEvent, QObject
 from PySide6.QtGui import (QColor, QIcon, QPainter, QPen, QPixmap, QPalette, QTransform,
-                          QTextLayout, QTextOption, QPainterPath, QRegion, QLinearGradient, QTextCursor)
+                          QTextLayout, QTextOption, QPainterPath, QRegion, QLinearGradient, QTextCursor, QFontMetricsF)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                               QFrame, QGridLayout, QHBoxLayout, QLabel, QListView, QListWidget,
                               QMessageBox, QTextEdit, QPushButton, QScrollArea, QScrollBar, QAbstractItemView,
@@ -437,10 +438,20 @@ class NoWheelComboBox(QComboBox):
         if self.sizeAdjustPolicy() == QComboBox.AdjustToContents:
             option = QStyleOptionComboBox()
             self.initStyleOption(option)
-            option.rect.setWidth(hint.width())
-            field = self.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, self)
-            text = max((self.fontMetrics().horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
-            hint.setWidth(max(hint.width(), text + hint.width() - field.width() + 6))
+            option.rect.setSize(hint)
+            # :focus has different stylesheet padding. Reserve the larger
+            # chrome before focus changes, when Qt need not relayout the row.
+            chrome = 0
+            for focused in (False, True):
+                if focused:
+                    option.state |= QStyle.State_HasFocus
+                else:
+                    option.state &= ~QStyle.State_HasFocus
+                field = self.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, self)
+                chrome = max(chrome, hint.width() - field.width())
+            metrics = QFontMetricsF(self.font(), self)
+            text = max((metrics.horizontalAdvance(self.itemText(i)) for i in range(self.count())), default=0)
+            hint.setWidth(max(hint.width(), ceil(text) + chrome + 6))
         return hint
 
     def minimumSizeHint(self):
