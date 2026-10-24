@@ -1,5 +1,7 @@
 """Twitch public-client device authorization with local token refresh."""
 
+from runtime_events import emit_ui
+
 import json
 import http.client
 import os
@@ -132,6 +134,7 @@ def authorize_device(client_id: str, scopes: set[str], expected_login: str) -> d
     scope_text = " ".join(sorted(scopes))
     device = post_form("/device", {"client_id": client_id, "scopes": scope_text})
     uri = device["verification_uri"]
+    emit_ui("auth", state="required", account=expected_login, role="broadcaster" if scopes == REDEMPTION_SCOPES else "bot", url=uri, code=device["user_code"], expires_in=int(device.get("expires_in", 1800)))
     print(f"Откройте ссылку и войдите в Twitch под аккаунтом {expected_login}:", flush=True)
     print(uri, flush=True)
     print("Код: " + device["user_code"], flush=True)
@@ -165,6 +168,7 @@ def authorize_device(client_id: str, scopes: set[str], expected_login: str) -> d
                 interval += 5
                 continue
             raise RuntimeError(f"Авторизация Twitch не завершилась (HTTP {exc.code})") from None
+    emit_ui("auth", state="failed", account=expected_login, reason="expired")
     raise RuntimeError("Время авторизации Twitch истекло; запустите бота снова")
 
 
@@ -207,8 +211,10 @@ def get_access_token(client_id: str, expected_login: str, path: Path,
         if info is None:
             raise RuntimeError("Twitch не подтвердил новый токен")
     if info.get("client_id") != client_id or info.get("login", "").lower() != expected_login.lower():
+        emit_ui("auth", state="failed", account=expected_login, reason="wrong_account")
         raise RuntimeError(f"Twitch авторизован не под аккаунтом {expected_login} или другим приложением")
     if not required_scopes.issubset(set(info.get("scopes", []))):
         raise RuntimeError("Токен Twitch не содержит разрешения: " + ", ".join(sorted(required_scopes)))
     save_tokens(path, tokens)
+    emit_ui("auth", state="complete", account=expected_login, role="broadcaster" if required_scopes == REDEMPTION_SCOPES else "bot")
     return tokens["access_token"]

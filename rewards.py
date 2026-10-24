@@ -1,5 +1,7 @@
 """Receive questions from one Twitch Channel Points reward over EventSub."""
 
+from runtime_events import emit_ui
+
 import asyncio
 import http.client
 import json
@@ -145,6 +147,7 @@ class RewardListener:
         await self.on_question(login, user_id, question, redemption_id)
 
     async def _listen(self, token: str) -> None:
+        emit_ui("eventsub", state="connecting")
         websocket = await connect(WEBSOCKET_URL, ping_interval=None)
         try:
             session_id, keepalive = await self._welcome(websocket)
@@ -152,6 +155,7 @@ class RewardListener:
                 subscribe, self.client_id, token, self.broadcaster_id,
                 session_id,
             )
+            emit_ui("eventsub", state="ready")
             print(f"Жду вопросов по награде «{self.reward_title}».", flush=True)
             while True:
                 message = event_message(await asyncio.wait_for(websocket.recv(), timeout=keepalive + 10))
@@ -159,6 +163,7 @@ class RewardListener:
                 if kind == "notification":
                     await self.handle_notification(message.get("payload", {}))
                 elif kind == "session_reconnect":
+                    emit_ui("eventsub", state="connecting")
                     session = message["payload"].get("session")
                     if not isinstance(session, dict) or not isinstance(session.get("reconnect_url"), str) or not session["reconnect_url"]:
                         raise TemporaryTwitchError("EventSub вернул неверные данные переподключения.")
@@ -171,10 +176,12 @@ class RewardListener:
                         raise
                     await websocket.close()
                     websocket = replacement
+                    emit_ui("eventsub", state="ready")
                     print("EventSub переподключён.", flush=True)
                 elif kind == "revocation":
                     raise SubscriptionRevokedError("Twitch отозвал подписку на награду; проверьте разрешения аккаунта владельца канала.")
         finally:
+            emit_ui("eventsub", state="disconnected")
             await websocket.close()
 
     async def run(self) -> None:

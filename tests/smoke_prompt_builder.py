@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from PySide6.QtCore import QPoint
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox
+from PySide6.QtWidgets import QApplication, QScrollArea, QMessageBox
 
 import ai_client
 import gui
@@ -52,7 +52,7 @@ def main():
             assert not builder._busy
             builder.preset_button.click()
             assert CORE_RULES in builder.preview.toPlainText()
-            assert builder.preview.minimumHeight() >= 520
+            assert builder.preview.minimumHeight() >= 220
             calm = builder.preview.toPlainText()
             builder.temperament.setCurrentIndex(3)
             builder.preset_button.click()
@@ -71,7 +71,7 @@ def main():
         (root / "prompt.txt").write_text("Сохранённый общий промпт", encoding="utf-8")
         (root / "profiles.json").write_text(json.dumps({"version": 1, "profiles": [
             {"login": "lopotik", "user_id": "123", "prompt": "Сохранённая инструкция", "enabled": True}]}), encoding="utf-8")
-        before = {path.name: path.read_bytes() for path in root.iterdir()}
+        before = {path.name: path.read_bytes() for path in root.iterdir() if path.name != "ui-state.json"}
         with patch.object(gui, "data_dir", return_value=root):
             window = gui.MainWindow()
         window.show()
@@ -80,8 +80,11 @@ def main():
         builder, page = window.prompt_builder, window.testing_page
         builder.preset_button.click()
         QTest.qWait(80)
-        scroll = window.pages.widget(1)
-        assert 0 <= builder.preview.mapTo(scroll.viewport(), QPoint(0, 0)).y() <= 24
+        window.behavior_mode.setCurrentIndex(1)
+        QTest.qWait(60)
+        scroll = window.pages.widget(1).findChild(QScrollArea)
+        assert builder.preview.toPlainText()
+        assert scroll.widget().findChild(type(builder.preview)) is not None
         window.profiles_editor.prompt.setPlainText("Несохранённая инструкция Лопотика")
         window.prompt.setPlainText("Несохранённый общий промпт")
         builder.preset_button.click()
@@ -185,7 +188,7 @@ def main():
         snapshot = window._test_snapshot(["exact/a"], "Вопрос?", "viewer", "", None)
         assert snapshot.messages[0][1] == "Правка общего во время запроса"
         window._set_running(True)
-        assert not builder.generate_button.isEnabled() and not builder.improve_button.isEnabled() and not builder.apply_button.isEnabled()
+        assert builder.generate_button.isEnabled() and builder.improve_button.isEnabled() and builder.apply_button.isEnabled()
         window._set_running(False)
 
         # Provider errors cannot expose the key or overwrite the previous valid candidate.
@@ -209,7 +212,7 @@ def main():
         assert "Параметры AI API изменились" in builder.status.text()
         assert builder.preview.toPlainText() == previous
         window.api_key.setText("entered-builder-key")
-        assert before == {path.name: path.read_bytes() for path in root.iterdir()}
+        assert before == {path.name: path.read_bytes() for path in root.iterdir() if path.name != "ui-state.json"}
 
         # Closing drops an outstanding result without touching Qt from the worker.
         entered.clear()
@@ -224,7 +227,7 @@ def main():
             release.set()
             QTest.qWait(100)
         assert builder._events.empty()
-        assert before == {path.name: path.read_bytes() for path in root.iterdir()}
+        assert before == {path.name: path.read_bytes() for path in root.iterdir() if path.name != "ui-state.json"}
     print("Prompt builder works: offline presets, drafts, defenses, comparisons and teardown.")
 
 

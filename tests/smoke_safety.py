@@ -46,8 +46,8 @@ def main():
         window.show()
         page = window.safety_page
         window._navigate(gui.PAGE_SAFETY)
-        assert window.pages.currentWidget() is page
-        assert window.nav_buttons[gui.PAGE_SAFETY].text() == 'Безопасность'
+        assert window.pages.currentWidget().isAncestorOf(page)
+        assert window.nav_buttons[gui.PAGE_SAFETY].accessibleName() == 'Безопасность'
         assert 'ещё не выполнялась' in page.last_review.text()
         assert 'Локальные проверки: действуют' in page.state.text()
         assert 'Награды: без AI-оценки' in page.state.text()
@@ -122,6 +122,10 @@ def main():
                 assert diagnostic.result.text() == new_result
         finally:
             release.set()
+        # Finish any periodic query before asserting the explicit refresh of
+        # the records below; otherwise an older empty result can win the race.
+        page._timer.stop()
+        wait_for(lambda: not page._loading)
         journal = MessageHistory(root)
         record_id = journal.add('reward', 'rejected', question='Привет')
         journal.safety_event('reward', SafetyReview('error', '', ('review_unavailable',), ai_attempted=True, model='review/manual'), record_id=record_id)
@@ -166,7 +170,8 @@ def main():
         for instance in (window, damaged):
             instance._dirty = False
             instance.safety_page._fill(instance.safety_page.applied.settings)
-            instance.close()
+            with patch.object(gui, 'russian_question', return_value=gui.QMessageBox.Discard):
+                instance.close()
         print('Security GUI: drafts, live apply, errors, exact diagnosis, cancellation and navigation passed.')
 
 

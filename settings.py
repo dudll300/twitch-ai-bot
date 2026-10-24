@@ -23,17 +23,18 @@ def load_settings(root: Path | None = None) -> tuple[dict[str, str], str]:
 
 
 def save_settings(values: dict[str, str], prompt: str, root: Path | None = None, *,
-                  allow_incomplete: bool = False) -> None:
+                  allow_incomplete: bool = False, sections=("connection", "behavior"),
+                  invalidate_auth: bool = True) -> None:
     root = root or data_dir()
     previous = read_config(root / ".env")
     clean = dict(previous)
-    for name, _label in FIELDS:
+    for name, _label in (FIELDS if "connection" in sections else ()):
         value = values.get(name, DEFAULTS.get(name, ""))
         if name == "AI_API_KEY" and not value.strip():
             value = previous.get(name, "")
         clean[name] = "" if allow_incomplete and not value.strip() else normalize(name, value)
     prompt = upgrade_generated_prompt(prompt.strip())
-    if len(prompt) > 20000:
+    if "behavior" in sections and len(prompt) > 20000:
         raise ValueError("Промпт должен содержать не более 20000 символов.")
 
     root.mkdir(parents=True, exist_ok=True)
@@ -42,10 +43,13 @@ def save_settings(values: dict[str, str], prompt: str, root: Path | None = None,
     prompt_path = root / "prompt.txt"
     prompt_tmp = root / "prompt.tmp"
     content = env_content(clean)
-    env_tmp.write_text(content, encoding="utf-8")
-    prompt_tmp.write_text(prompt + "\n", encoding="utf-8")
-    os.replace(env_tmp, env_path)
-    os.replace(prompt_tmp, prompt_path)
-    if sys.platform != "win32":
-        env_path.chmod(0o600)
-    invalidate_tokens(root, previous, clean)
+    if "connection" in sections:
+        env_tmp.write_text(content, encoding="utf-8")
+        os.replace(env_tmp, env_path)
+        if sys.platform != "win32":
+            env_path.chmod(0o600)
+        if invalidate_auth:
+            invalidate_tokens(root, previous, clean)
+    if "behavior" in sections:
+        prompt_tmp.write_text(prompt + "\n", encoding="utf-8")
+        os.replace(prompt_tmp, prompt_path)

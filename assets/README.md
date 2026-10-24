@@ -19,3 +19,11 @@ python assets/generate_icon.py
 
 The generator uses PySide6 and Python's standard library. It needs no extra
 dependencies or external tools.
+
+## Interface font
+
+`fonts/Nunito.ttf` is the rounded variable Nunito family, including Cyrillic,
+bundled from the official Google Fonts repository (`ofl/nunito/Nunito[wght].ttf`).
+It is registered by Qt at startup and included in the Windows executable.
+`fonts/Nunito-OFL.txt` contains its SIL Open Font License and attribution.
+The previous Onest font and `fonts/OFL.txt` are retained for earlier concepts.

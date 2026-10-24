@@ -5,7 +5,7 @@ from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 ICON_NAMES = (
     "sparkles", "plug", "sliders", "users", "messages", "activity", "flask",
-    "book", "play", "stop", "save", "folder", "arrow-right", "history",
+    "book", "play", "stop", "save", "folder", "arrow-right", "history", "restart", "shield", "copy",
 )
 
 
@@ -41,7 +41,19 @@ def studio_icon(name: str, color: str = "#98A0B0", size: int = 20) -> QIcon:
                   (x, y + extent), (x - extent * .3, y + extent * .3),
                   (x - extent, y), (x - extent * .3, y - extent * .3)), close=True)
 
-    if name == "sparkles":
+    if name == "copy":
+        painter.drawRoundedRect(QRectF(8, 7, 12, 14), 2, 2)
+        polyline(((15, 3), (4, 3), (4, 16)))
+    elif name == "restart":
+        path = QPainterPath()
+        path.arcMoveTo(QRectF(4, 4, 16, 16), 60)
+        path.arcTo(QRectF(4, 4, 16, 16), 60, 290)
+        painter.drawPath(path)
+        polyline(((19, 2), (19, 8), (13, 8)))
+    elif name == "shield":
+        polyline(((12, 2), (21, 6), (19, 15), (12, 22), (5, 15), (3, 6)), close=True)
+        polyline(((8, 11), (11, 14), (16, 9)))
+    elif name == "sparkles":
         sparkle(13.5, 13.5, 6.7)
         line(5.5, 3, 5.5, 8)
         line(3, 5.5, 8, 5.5)

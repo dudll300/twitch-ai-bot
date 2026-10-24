@@ -1,5 +1,7 @@
 """Small Twitch IRC bot for an OpenAI-compatible chat API (Python 3.10+)."""
 
+from runtime_events import emit_ui
+
 import asyncio
 import json
 import os
@@ -315,6 +317,7 @@ class Bot:
     async def worker(self, writer: asyncio.StreamWriter, queue: asyncio.Queue) -> None:
         while True:
             user, user_id, question, redemption_id = await queue.get()
+            emit_ui("queue", size=queue.qsize(), phase="started")
             self._paid_busy = True
             record_id = None
             recorded_review = None
@@ -425,6 +428,7 @@ class Bot:
                     del self.histories[oldest]
                     self.history_times.pop(oldest, None)
                     self.history_recipients.pop(oldest, None)
+                emit_ui("reply", state="sent", record_id=record_id or "")
                 print(f"Ответ отправлен для {user}", flush=True)
             except asyncio.CancelledError:
                 cancel.set()
@@ -465,8 +469,10 @@ class Bot:
                 scope.__exit__(None, None, None)
                 self._paid_busy = False
                 queue.task_done()
+                emit_ui("queue", size=queue.qsize(), phase="finished")
 
     async def connection(self) -> None:
+        emit_ui("chat", state="connecting")
         access_token = await asyncio.to_thread(
             get_access_token, self.cfg["TWITCH_CLIENT_ID"], self.cfg["TWITCH_BOT_NAME"],
             ROOT / ".twitch_token.json",
@@ -492,6 +498,7 @@ class Bot:
                     raise
                 await self.history_update(record_id, "error", sent_text=notice)
                 return
+            emit_ui("queue", size=queue.qsize(), phase="queued")
             print(f"Вопрос от {user} принят (в очереди: {queue.qsize()})", flush=True)
 
         listener = RewardListener(
@@ -530,6 +537,11 @@ class Bot:
                     if command == "PING":
                         if payload := pong_payload(message):
                             await self.send(writer, "PONG " + payload)
+                    elif command in ("366", "ROOMSTATE") and message.channel == self.cfg["TWITCH_CHANNEL"].casefold():
+                        emit_ui("chat", state="ready")
+                    elif (command == "JOIN" and message.channel == self.cfg["TWITCH_CHANNEL"].casefold()
+                          and message.prefix.split("!", 1)[0].casefold() == self.cfg["TWITCH_BOT_NAME"].casefold()):
+                        emit_ui("chat", state="ready")
                     elif command == "RECONNECT":
                         return
                     elif command == "NOTICE" and "Login authentication failed" in message.text:
@@ -559,6 +571,8 @@ class Bot:
             for task in done:
                 task.result()
         finally:
+            emit_ui("chat", state="disconnected")
+            emit_ui("eventsub", state="disconnected")
             self.autonomous.disconnect()
             self.fragments.clear()
             self.histories.clear()
@@ -592,6 +606,7 @@ class Bot:
                     await self.connection()
                     print("Соединение закрыто; повтор через 5 секунд", flush=True)
                 except (OSError, asyncio.IncompleteReadError) as exc:
+                    emit_ui("chat", state="error")
                     print(f"Ошибка соединения: {exc}", flush=True)
                 await asyncio.sleep(5)
         finally:

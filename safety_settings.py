@@ -1,4 +1,5 @@
 """Immutable request policies, atomic storage and cross-process publication lock."""
+from runtime_events import emit_ui
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, asdict
@@ -93,6 +94,7 @@ class PolicyStore:
         with self.lock:
             try:
                 if not self.path.exists():
+                    emit_ui("settings", section="safety", version="default-v1")
                     return Policy()
                 if self.path.stat().st_size > 32768:
                     raise ValueError()
@@ -109,7 +111,9 @@ class PolicyStore:
                 if not isinstance(revision, str) or (revision and not re.fullmatch('[0-9a-f]{32}', revision)):
                     raise ValueError()
                 settings = validate_settings(raw)
-                return Policy(settings, hashlib.sha256(content).hexdigest())
+                version = hashlib.sha256(content).hexdigest()
+                emit_ui("settings", section="safety", version=version)
+                return Policy(settings, version)
             except (OSError, ValueError, TypeError, AttributeError, RecursionError):
                 return Policy(error="Ошибка загрузки настроек безопасности. Исправьте и примените настройки; публикация остановлена.", version='invalid')
 
