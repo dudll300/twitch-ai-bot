@@ -382,7 +382,7 @@ class OrbitHeader(QFrame):
         return (4 * sin(seconds * 2 * pi / 31),
                 2.5 * sin(seconds * 2 * pi / 23),
                 .65 * sin(seconds * 2 * pi / 37),
-                .5 - .5 * cos(seconds * 2 * pi / 19),
+                .5 - .5 * cos(seconds * 2 * pi / 9),
                 seconds * 2)
 
     def showEvent(self, event):
@@ -453,16 +453,21 @@ class OrbitHeader(QFrame):
         p.translate(width - 225 + dx * 9 + sway_x, -67 + self._shift + dy * 5 + sway_y)
         p.rotate(-10 + dx * 1.4 + tilt)
         p.scale(310, 165)
-        halo = QRadialGradient(0, .12, 1.25)
+        # A broad corona breathes outside the horizon, while the actual body
+        # keeps its geometry. Use translucent gradients rather than blur effects.
+        halo = QRadialGradient(0, .12, 1.35 + .035 * breath)
         halo.setColorAt(0, QColor(Qt.transparent))
-        halo.setColorAt(.70, QColor(Qt.transparent))
+        halo.setColorAt(.58, QColor(Qt.transparent))
+        secondary = QColor(colors["glowSecondary"])
+        secondary.setAlpha(round(15 + 12 * breath))
+        halo.setColorAt(.72, secondary)
         glow = QColor(colors["glow"])
-        glow.setAlpha(round(65 + 70 * hover + 8 * breath))
+        glow.setAlpha(round(70 + 45 * hover + 44 * breath))
         halo.setColorAt(.83, glow)
         halo.setColorAt(1, QColor(Qt.transparent))
         p.setPen(Qt.NoPen)
         p.setBrush(halo)
-        p.drawEllipse(QRectF(-1.3, -1.3, 2.6, 2.6))
+        p.drawEllipse(QRectF(-1.42, -1.42, 2.84, 2.84))
         gradient = QRadialGradient(0, .2, 1.12)
         stops = ((0, "#02050B" if theme == "dark" else "#F7FAFF"),
                  (.47, "#02050B" if theme == "dark" else "#F7FAFF"),
@@ -476,12 +481,41 @@ class OrbitHeader(QFrame):
         p.setOpacity(.95 if width >= 800 else .6)
         p.setBrush(gradient)
         p.drawEllipse(QRectF(-1, -1, 2, 2))
+        # The crescent itself emits light as well; its pulse is independent of
+        # the satellite and mouse hover, and never changes caption geometry.
+        emission = QRadialGradient(0, .2, 1.12)
+        emission.setColorAt(0, QColor(Qt.transparent))
+        emission.setColorAt(.55, QColor(Qt.transparent))
+        rim = QColor(colors["accent"])
+        rim.setAlpha(round((12 + 42 * breath) * (1 if theme == "dark" else .65)))
+        emission.setColorAt(.705, rim)
+        rim.setAlpha(round(8 + 20 * breath))
+        emission.setColorAt(.78, rim)
+        emission.setColorAt(.91, QColor(Qt.transparent))
+        emission.setColorAt(1, QColor(Qt.transparent))
+        p.setBrush(emission)
+        p.drawEllipse(QRectF(-1, -1, 2, 2))
         p.restore()
         p.save()
         p.translate(width - 220 + dx * 4 + sway_x * .65, 39 + self._shift + dy * 3 + sway_y * .65)
         p.rotate(-15 + tilt * .4)
+        p.save()
+        p.scale(290, 79)
+        ring_glow = QRadialGradient(0, 0, 1.2)
+        ring_glow.setColorAt(0, QColor(Qt.transparent))
+        ring_glow.setColorAt(.73, QColor(Qt.transparent))
+        aura = QColor(colors["glow"])
+        aura.setAlpha(round((20 + 32 * breath) * (1 if theme == "dark" else .65)))
+        ring_glow.setColorAt(1 / 1.2, aura)
+        ring_glow.setColorAt(1, QColor(Qt.transparent))
+        p.setPen(Qt.NoPen)
+        p.setBrush(ring_glow)
+        p.drawEllipse(QRectF(-1.2, -1.2, 2.4, 2.4))
+        p.restore()
         p.setBrush(Qt.NoBrush)
-        p.setPen(QPen(QColor("#244264" if theme == "dark" else "#CADBF0"), 1))
+        ring = QColor(colors["glow"])
+        ring.setAlpha(round(64 + 40 * breath))
+        p.setPen(QPen(ring, 1))
         p.drawEllipse(QRectF(-290, -79, 580, 158))
         p.setPen(Qt.NoPen)
         angle = radians(120 + dx * 9 + hover * 5 + travel)

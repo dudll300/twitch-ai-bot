@@ -185,6 +185,17 @@ def check_window(app):
                     target.button.setChecked(True)
                     assert not window._transition.isVisible()
                     wait_for(lambda: stopped(target._reveal_motion), "Opening did not settle")
+                    # Freeze drift, stars and satellite: the light must come
+                    # from the horizon/ring itself, including without hover.
+                    header._twinkle_timer.stop()
+                    header._motion.reset(0.)
+                    header._pointer_motion.reset((0, 0))
+                    with patch.object(header, "_orbit_pose", return_value=(0, 0, 0, 0, 0)):
+                        dim = header.grab().toImage()
+                    with patch.object(header, "_orbit_pose", return_value=(0, 0, 0, 1, 0)):
+                        bright = header.grab().toImage()
+                    assert dim != bright, "The orbit itself has no visible light pulse"
+                    header.sync_star_motion()
             before = header._star_phase
             QTest.qWait(100)
             assert header._star_phase > before and header._twinkle_timer.isActive()
