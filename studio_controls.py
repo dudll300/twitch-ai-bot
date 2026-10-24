@@ -1,6 +1,6 @@
 """Orbit's native controls, input policy and finite motion. No service calls."""
 from math import exp
-from PySide6.QtCore import Qt, QRectF, QSize, QPointF, QAbstractAnimation, QPoint
+from PySide6.QtCore import Qt, QRectF, QSize, QPointF, QAbstractAnimation, QPoint, QObject
 from PySide6.QtGui import QColor, QPainter, QPen, QPainterPath
 from PySide6.QtWidgets import (QApplication, QAbstractSpinBox, QCheckBox, QScrollBar, QScrollArea,
     QSpinBox, QStyle, QStyleOptionSlider, QStyleOptionSpinBox, QTabBar, QTabWidget, QStackedWidget,
@@ -90,6 +90,68 @@ class ScrollMotion(QAbstractAnimation):
         self._last_time = current
         if elapsed:
             self.area._spring_step(elapsed)
+
+
+class PixelScrollController(QObject):
+    """Continuous wheel motion for native pixel-based lists and text views."""
+    def __init__(self, view):
+        super().__init__(view)
+        self.view, self._setting = view, False
+        self.motion = SpringMotion(self, float(view.verticalScrollBar().value()), self._advance,
+                                   frequency=22, tolerance=.25)
+        bar = view.verticalScrollBar()
+        bar.valueChanged.connect(self._external_scroll)
+        bar.sliderPressed.connect(self.stop)
+        bar.actionTriggered.connect(self.stop)
+        bar.rangeChanged.connect(self._range_changed)
+
+    def _advance(self, value):
+        bar = self.view.verticalScrollBar()
+        self._setting = True
+        try:
+            bar.setValue(round(max(bar.minimum(), min(bar.maximum(), value))))
+        finally:
+            self._setting = False
+
+    def _external_scroll(self, value):
+        if not self._setting:
+            self.motion.reset(float(value))
+
+    def _range_changed(self, lower, upper):
+        target = max(lower, min(upper, self.motion._target[0]))
+        if upper <= lower:
+            self.stop()
+        elif self.motion.state() == QAbstractAnimation.Running and target != self.motion._target[0]:
+            self.motion.to(float(target))
+
+    def stop(self, *_):
+        self.motion.reset(float(self.view.verticalScrollBar().value()))
+
+    def wheel(self, event):
+        if event.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier):
+            return False
+        pixels, angle = event.pixelDelta().y(), event.angleDelta().y()
+        if not pixels and not angle:
+            return False
+        stop_parent_scroll(self.view)
+        bar = self.view.verticalScrollBar()
+        if pixels:
+            # A trackpad already supplies a continuous gesture, including inertia.
+            self.stop()
+            bar.setValue(bar.value() - pixels)
+        else:
+            running = self.motion.state() == QAbstractAnimation.Running
+            origin = self.motion._target[0] if running else bar.value()
+            target = max(bar.minimum(), min(bar.maximum(), origin - angle / 120 * 72))
+            if not running:
+                self.motion.reset(float(bar.value()))
+            elif (target - self.motion.value()) * self.motion._velocity[0] < 0:
+                self.motion._velocity[0] = 0.
+            self.motion.to(float(target), immediate=not self.view.isVisible())
+            if not running and self.motion.state() == QAbstractAnimation.Running:
+                self.motion.setCurrentTime(8)
+        event.accept()
+        return True
 
 
 class OrbitScrollArea(QScrollArea):
@@ -204,6 +266,15 @@ class OrbitScrollArea(QScrollArea):
     def keyPressEvent(self, event):
         self._manual_scroll()
         super().keyPressEvent(event)
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        if self._reveal_owner is not None:
+            # Native scroll-copy must not retain the previous translucent panel
+            # edges while layout and the reveal's scroll anchor move together.
+            self.viewport().update()
+            if self.widget() is not None:
+                self.widget().update()
 
 
 class NumberInput(QSpinBox):

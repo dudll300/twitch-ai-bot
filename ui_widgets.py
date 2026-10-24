@@ -4,14 +4,14 @@ import re
 
 from PySide6.QtCore import Qt, QSize, QVariantAnimation, QEasingCurve, QTimer, QRectF, QPointF, QPropertyAnimation, QEvent, QObject
 from PySide6.QtGui import (QColor, QIcon, QPainter, QPen, QPixmap, QPalette, QTransform,
-                          QTextLayout, QTextOption, QPainterPath, QRegion, QLinearGradient)
+                          QTextLayout, QTextOption, QPainterPath, QRegion, QLinearGradient, QTextCursor)
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDialog, QDialogButtonBox,
                               QFrame, QGridLayout, QHBoxLayout, QLabel, QListView, QListWidget,
-                              QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QScrollBar,
+                              QMessageBox, QTextEdit, QPushButton, QScrollArea, QScrollBar, QAbstractItemView,
                               QStyle, QStyleOptionComboBox, QVBoxLayout, QWidget,
                               QSplitter, QStackedWidget, QSizePolicy, QStyleOptionButton,
                               QStylePainter, QStyledItemDelegate, QLayout)
-from studio_controls import StudioScrollBar, OrbitScrollArea, OrbitTabBar, colors, mix, stop_parent_scroll
+from studio_controls import StudioScrollBar, OrbitScrollArea, OrbitTabBar, PixelScrollController, colors, mix, stop_parent_scroll
 from studio_surfaces import GlowSurface
 from studio_motion import SpringMotion
 
@@ -248,7 +248,14 @@ class StudioLinkLabel(QLabel):
 
 
 class ContainedScrollBar(StudioScrollBar):
+    def __init__(self, orientation, owner):
+        super().__init__(orientation, owner)
+        self._scroll_owner = owner
+
     def wheelEvent(self, event):
+        controller = getattr(self._scroll_owner, "_wheel_scroll", None)
+        if self.orientation() == Qt.Vertical and controller is not None and controller.wheel(event):
+            return
         stop_parent_scroll(self)
         super().wheelEvent(event)
         event.accept()
@@ -261,12 +268,29 @@ class ContainedWheel:
         super().__init__(*args, **kwargs)
         self.setVerticalScrollBar(ContainedScrollBar(Qt.Vertical, self))
         self.setHorizontalScrollBar(ContainedScrollBar(Qt.Horizontal, self))
-        self.setHorizontalScrollBar(ContainedScrollBar(Qt.Horizontal, self))
+        self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self.setHorizontalScrollMode(QAbstractItemView.ScrollPerPixel)
+        self._wheel_scroll = PixelScrollController(self)
 
     def wheelEvent(self, event):
+        if self._wheel_scroll.wheel(event):
+            return
         stop_parent_scroll(self)
         super().wheelEvent(event)
         event.accept()
+
+    def hideEvent(self, event):
+        self._wheel_scroll.stop()
+        super().hideEvent(event)
+
+    def keyPressEvent(self, event):
+        self._wheel_scroll.stop()
+        stop_parent_scroll(self)
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        self._wheel_scroll.stop()
+        super().mousePressEvent(event)
 
 
 class ScrollListView(ContainedWheel, QListView):
@@ -287,17 +311,53 @@ class TextScrollBar(StudioScrollBar):
     def wheelEvent(self, event):
         if self._editor._forward_wheel_at_boundary(event):
             return
+        if self._editor._wheel_scroll.wheel(event):
+            return
         super().wheelEvent(event)
         event.accept()
 
 
-class ScrollPlainTextEdit(QPlainTextEdit):
-    """Scroll text first, then continue through the page on the next wheel step."""
+class ScrollPlainTextEdit(QTextEdit):
+    """Plain text with pixel scrolling, then page handoff on the next wheel step."""
 
     def __init__(self, *args, **kwargs):
+        text = args[0] if args and isinstance(args[0], str) else None
+        if text is not None:
+            args = args[1:]
         super().__init__(*args, **kwargs)
+        self.setAcceptRichText(False)
+        if text is not None:
+            self.setPlainText(text)
         self.setVerticalScrollBar(TextScrollBar(Qt.Vertical, self))
         self.setHorizontalScrollBar(ContainedScrollBar(Qt.Horizontal, self))
+        self._wheel_scroll = PixelScrollController(self)
+
+    def appendPlainText(self, text):
+        bar = self.verticalScrollBar()
+        following = bar.value() >= bar.maximum()
+        cursor = QTextCursor(self.document())
+        cursor.movePosition(QTextCursor.End)
+        cursor.beginEditBlock()
+        if not self.document().isEmpty():
+            cursor.insertBlock()
+        cursor.insertText(text)
+        cursor.endEditBlock()
+        if following:
+            self._wheel_scroll.stop()
+            bar.setValue(bar.maximum())
+
+    def hideEvent(self, event):
+        self._wheel_scroll.stop()
+        super().hideEvent(event)
+
+    def keyPressEvent(self, event):
+        self._wheel_scroll.stop()
+        stop_parent_scroll(self)
+        super().keyPressEvent(event)
+
+    def mousePressEvent(self, event):
+        self._wheel_scroll.stop()
+        super().mousePressEvent(event)
 
     def _forward_wheel_at_boundary(self, event):
         delta = event.pixelDelta().y() or event.angleDelta().y()
@@ -322,6 +382,8 @@ class ScrollPlainTextEdit(QPlainTextEdit):
 
     def wheelEvent(self, event):
         if self._forward_wheel_at_boundary(event):
+            return
+        if self._wheel_scroll.wheel(event):
             return
         super().wheelEvent(event)
         # Even if this step reaches the edge, do not scroll the page as well.
@@ -843,7 +905,7 @@ class Disclosure(QWidget):
         self._visibility_pending = False
         self._retarget_pending = False
         self._follow_area = None
-        self._reveal_motion = SpringMotion(self, 0., self._advance_reveal, frequency=28, tolerance=.05)
+        self._reveal_motion = SpringMotion(self, 0., self._advance_reveal, frequency=24, tolerance=.05)
         self._reveal_motion.settled.connect(self._finish_reveal)
         layout.addWidget(self.button)
         layout.addWidget(self.reveal)
@@ -868,7 +930,18 @@ class Disclosure(QWidget):
         return hint
 
     def set_expanded(self, expanded):
+        if self.isVisible():
+            # A geometry mutation must expose live controls rather than animate
+            # underneath an older page/tab snapshot (also for keyboard changes).
+            from studio_artwork import PageTransition
+            ancestor = self.parentWidget()
+            while ancestor is not None:
+                for transition in ancestor.findChildren(PageTransition, options=Qt.FindDirectChildrenOnly):
+                    if transition.isVisible():
+                        transition.finish()
+                ancestor = ancestor.parentWidget()
         motion = self.isVisible() and QApplication.instance().property("animations") is not False
+        motion = motion and (expanded or not self.reveal.isHidden())
         if self.isVisible() and (self._reveal_motion.state() != QVariantAnimation.Running or
                                  expanded != getattr(self, "_follow_expanded", None)):
             area = self.parentWidget()
@@ -881,22 +954,22 @@ class Disclosure(QWidget):
         if motion:
             self.reveal.setProperty("clipPanelGlow", True)
             start = self.reveal.height() if self.reveal.isVisible() else 0
-            self.content.show()
-            self.reveal.show()
             if self._content_limits is None:
                 self._content_limits = self.content.minimumHeight(), self.content.maximumHeight()
-            lower, upper = self._content_limits
-            self.content.setMinimumHeight(lower)
-            self.content.setMaximumHeight(upper)
             # A never-shown child still has QWidget's default 640px width.
             # Measure wrapped content at the actual disclosure width first.
             width = max(1, self.contentsRect().width())
-            self.reveal.resize(width, self.reveal.height())
             self.content.ensurePolished()
-            target = self._natural_height(width)
+            # Closing clips the existing layout; do not temporarily release its
+            # constraints and reflow the model selector before freezing it again.
+            target = (self.content.height() if not expanded and self.content.width() == width
+                      else self._natural_height(width))
             self.content.setFixedHeight(target)
+            self.reveal.resize(width, self.reveal.height())
             if self._reveal_motion.state() != QVariantAnimation.Running:
                 self._reveal_motion.reset(float(start))
+            self.content.show()
+            self.reveal.show()
             self._reveal_motion.to(float(target + 8 if expanded else 0))
         else:
             self._reveal_motion.stop()
@@ -906,21 +979,27 @@ class Disclosure(QWidget):
         self.button.setAccessibleDescription("Развёрнуто" if expanded else "Свёрнуто")
 
     def _finish_reveal(self):
+        expanded = self.button.isChecked()
+        if not expanded:
+            # Hide before releasing constraints; native child/layout updates
+            # must never flash one last un-clipped frame during collapse.
+            self.content.hide()
+            self.reveal.hide()
         self.reveal.setProperty("clipPanelGlow", False)
         if self._content_limits is not None:
             lower, upper = self._content_limits
             self.content.setMinimumHeight(lower)
             self.content.setMaximumHeight(upper)
             self._content_limits = None
-        expanded = self.button.isChecked()
         self.content.setVisible(expanded)
         self.reveal.setVisible(expanded)
+        self.reveal.setMinimumHeight(0)
         self.reveal.setMaximumHeight(16777215 if expanded else 0)
         self._refresh_glow()
         self._schedule_visibility()
 
     def _advance_reveal(self, value):
-        self.reveal.setMaximumHeight(max(0, round(value)))
+        self.reveal.setFixedHeight(max(0, round(value)))
         self._refresh_glow()
         self._schedule_visibility()
 
@@ -935,6 +1014,8 @@ class Disclosure(QWidget):
             self._follow_area.reveal_frame(self, self.button.isChecked())
 
     def _refresh_glow(self):
+        if self._follow_area is not None:
+            self._follow_area.viewport().update()
         ancestor = self.parentWidget()
         while ancestor is not None:
             if isinstance(ancestor, GlowSurface):

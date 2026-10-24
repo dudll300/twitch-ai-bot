@@ -63,10 +63,10 @@ QLabel#status[state="error"], QLabel[role="historyStatus"][state="error"], QLabe
 QLabel#status[state="starting"], QLabel[role="historyStatus"][state="preview"] {{ color: {accent}; background: {selected}; }}
 QLabel#status[state="stopping"] {{ color: {warning}; background: {warningbg}; }}
 QLabel#authHint {{ color: {text}; background: {selected}; border: 1px solid {accent}; padding: 12px; border-radius: 10px; }}
-QLineEdit, QPlainTextEdit, QComboBox, QSpinBox {{ background: {input}; color: {text}; border: 1px solid {border}; border-radius: 14px; padding: 11px 14px; selection-background-color: {selected}; selection-color: {text}; }}
+QLineEdit, QTextEdit, QComboBox, QSpinBox {{ background: {input}; color: {text}; border: 1px solid {border}; border-radius: 14px; padding: 11px 14px; selection-background-color: {selected}; selection-color: {text}; }}
 QLineEdit, QComboBox, QSpinBox {{ min-height: 22px; }}
-QLineEdit:focus, QPlainTextEdit:focus, QComboBox:focus, QSpinBox:focus {{ border: 2px solid {accent}; padding: 10px 13px; }}
-QLineEdit:disabled, QPlainTextEdit:disabled, QComboBox:disabled, QSpinBox:disabled {{ color: {muted}; background: {raised}; }}
+QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QSpinBox:focus {{ border: 2px solid {accent}; padding: 10px 13px; }}
+QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled, QSpinBox:disabled {{ color: {muted}; background: {raised}; }}
 QComboBox {{ padding-right: 10px; }}
 QComboBox::drop-down {{ border: none; width: 30px; }}
 QComboBox::down-arrow {{ image: none; }}
@@ -111,8 +111,8 @@ QScrollBar::handle:horizontal {{ background: {border}; border-radius: 4px; min-w
 QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {{ background: none; }}
 QSplitter::handle {{ background: transparent; width: 18px; }}
-QPlainTextEdit[presentation="reading"] {{ border: none; padding: 0; border-radius: 0; background: transparent; }}
-QPlainTextEdit[presentation="reading"][emphasis="true"] {{ font-size: 20px; font-weight: 400; }}
+QTextEdit[presentation="reading"] {{ border: none; padding: 0; border-radius: 0; background: transparent; }}
+QTextEdit[presentation="reading"][emphasis="true"] {{ font-size: 20px; font-weight: 400; }}
 QListWidget[presentation="rows"] {{ background: transparent; border: none; border-radius: 0; padding: 0; }}
 QListWidget[presentation="rows"]::item {{ border: none; border-bottom: 1px solid {border}; border-radius: 0; padding: 16px 18px; }}
 QListWidget[presentation="rows"]::item:selected {{ background: {selected}; border: none; border-left: 2px solid {accent}; }}

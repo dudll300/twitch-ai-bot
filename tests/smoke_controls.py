@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from PySide6.QtCore import QPoint, QPointF, Qt, QAbstractAnimation
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
 import gui
 import model_catalog_gui
@@ -46,13 +46,16 @@ def wheel(widget, delta):
                         Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
     QApplication.sendEvent(widget, event)
     # Wait for the actual finite tail, rather than assuming one easing duration.
-    areas, parent = [], widget
+    areas, inner, parent = [], [], widget
     while parent is not None:
         if isinstance(parent, OrbitScrollArea):
             areas.append(parent)
+        if hasattr(parent, "_wheel_scroll"):
+            inner.append(parent._wheel_scroll.motion)
         parent = parent.parentWidget()
     QTest.qWait(20)
-    wait_for(lambda: all(area._scroll.state() == QAbstractAnimation.Stopped for area in areas), "Scroll motion did not settle")
+    wait_for(lambda: all(area._scroll.state() == QAbstractAnimation.Stopped for area in areas)
+             and all(motion.state() == QAbstractAnimation.Stopped for motion in inner), "Scroll motion did not settle")
     return event.isAccepted()
 
 
@@ -186,7 +189,7 @@ def check_all_page_text_fields(app):
             if index == gui.PAGE_SAFETY:
                 window.safety_page.link_mode.setCurrentIndex(1)
             app.processEvents()
-            for editor in window.pages.widget(index).findChildren(QPlainTextEdit):
+            for editor in window.pages.widget(index).findChildren(ScrollPlainTextEdit):
                 if editor.isHidden() and editor is window.dashboard.feed:
                     continue  # Compatibility data adapter; live conversations use native rows.
                 if index == gui.PAGE_TESTING:

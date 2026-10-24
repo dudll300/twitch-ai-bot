@@ -1,5 +1,5 @@
 """Orbit's native, resolution independent page horizon and session heading."""
-from math import cos, sin, radians, floor, ceil
+from math import cos, sin, radians, floor, ceil, pi
 from random import Random
 from weakref import ref
 from PySide6.QtCore import Qt, QRectF, QRect, QVariantAnimation, QEasingCurve, QTimer, QPointF, QPoint, QEvent, QElapsedTimer, QObject
@@ -295,7 +295,8 @@ class OrbitHeader(QFrame):
         self._star_clock = QElapsedTimer()
         self._star_window = None
         self._twinkle_timer = QTimer(self)
-        self._twinkle_timer.setInterval(33)
+        self._twinkle_timer.setTimerType(Qt.PreciseTimer)
+        self._twinkle_timer.setInterval(16)
         self._twinkle_timer.timeout.connect(self._twinkle)
         self.setMouseTracking(True)
         self._motion = SpringMotion(self, 0., self._advance, frequency=20)
@@ -374,6 +375,16 @@ class OrbitHeader(QFrame):
         self._star_phase += min(.1, self._star_clock.restart() / 1000)
         self.update(self.rect().adjusted(0, 0, 0, -1))
 
+    @staticmethod
+    def _orbit_pose(seconds):
+        # Independent long periods keep the horizon alive without a repeated
+        # bobbing gesture. The light completes one orbit in three minutes.
+        return (4 * sin(seconds * 2 * pi / 31),
+                2.5 * sin(seconds * 2 * pi / 23),
+                .65 * sin(seconds * 2 * pi / 37),
+                .5 - .5 * cos(seconds * 2 * pi / 19),
+                seconds * 2)
+
     def showEvent(self, event):
         super().showEvent(event)
         window = self.window().windowHandle()
@@ -437,15 +448,16 @@ class OrbitHeader(QFrame):
         width = self.width()
         hover = self._shift / 4
         dx, dy = self._parallax.x(), self._parallax.y()
+        sway_x, sway_y, tilt, breath, travel = self._orbit_pose(self._star_phase)
         p.save()
-        p.translate(width - 225 + dx * 9, -67 + self._shift + dy * 5)
-        p.rotate(-10 + dx * 1.4)
+        p.translate(width - 225 + dx * 9 + sway_x, -67 + self._shift + dy * 5 + sway_y)
+        p.rotate(-10 + dx * 1.4 + tilt)
         p.scale(310, 165)
         halo = QRadialGradient(0, .12, 1.25)
         halo.setColorAt(0, QColor(Qt.transparent))
         halo.setColorAt(.70, QColor(Qt.transparent))
         glow = QColor(colors["glow"])
-        glow.setAlpha(round(65 + 70 * hover))
+        glow.setAlpha(round(65 + 70 * hover + 8 * breath))
         halo.setColorAt(.83, glow)
         halo.setColorAt(1, QColor(Qt.transparent))
         p.setPen(Qt.NoPen)
@@ -466,13 +478,13 @@ class OrbitHeader(QFrame):
         p.drawEllipse(QRectF(-1, -1, 2, 2))
         p.restore()
         p.save()
-        p.translate(width - 220 + dx * 4, 39 + self._shift + dy * 3)
-        p.rotate(-15)
+        p.translate(width - 220 + dx * 4 + sway_x * .65, 39 + self._shift + dy * 3 + sway_y * .65)
+        p.rotate(-15 + tilt * .4)
         p.setBrush(Qt.NoBrush)
         p.setPen(QPen(QColor("#244264" if theme == "dark" else "#CADBF0"), 1))
         p.drawEllipse(QRectF(-290, -79, 580, 158))
         p.setPen(Qt.NoPen)
-        angle = radians(120 + dx * 9 + hover * 5)
+        angle = radians(120 + dx * 9 + hover * 5 + travel)
         satellite = QPointF(290 * cos(angle), 79 * sin(angle))
         radius = 14 + hover * 5
         light = QRadialGradient(satellite, radius)
