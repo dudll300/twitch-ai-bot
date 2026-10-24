@@ -92,10 +92,23 @@ def main():
                         window._navigate(gui.PAGE_AUTONOMOUS)
                         app.processEvents()
                         mode = window.autonomous_page.mode
-                        option = QStyleOptionComboBox()
-                        mode.initStyleOption(option)
-                        text = mode.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, mode)
-                        assert text.width() - 6 >= max(mode.fontMetrics().horizontalAdvance(mode.itemText(i)) for i in range(mode.count())), (mode.width(), text.width())
+                        for selection in range(mode.count()):
+                            mode.setCurrentIndex(selection)
+                            mode.clearFocus()
+                            app.processEvents()
+                            width = mode.width()
+                            for focused in (True, False):
+                                if focused:
+                                    mode.setFocus(Qt.TabFocusReason)
+                                else:
+                                    mode.clearFocus()
+                                app.processEvents()
+                                option = QStyleOptionComboBox()
+                                mode.initStyleOption(option)
+                                text = mode.style().subControlRect(QStyle.CC_ComboBox, option, QStyle.SC_ComboBoxEditField, mode)
+                                assert mode.width() == width, "Mode selector resizes on focus"
+                                visible = mode.fontMetrics().elidedText(mode.currentText(), Qt.ElideMiddle, text.width() - 6)
+                                assert visible == mode.currentText(), (theme, size, mode.currentText(), mode.width(), text.width(), focused)
                         window._navigate(gui.PAGE_LOCAL_CONTEXT)
                         context = window.local_context_page
                         heights = []
