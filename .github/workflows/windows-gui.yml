@@ -2,7 +2,7 @@ name: Windows GUI
 
 on:
   push:
-    branches: [dev, 'feature/**', 'codex/interface-*']
+    branches: [main, dev, 'feature/**', 'codex/interface-*']
   workflow_dispatch:
 
 permissions:
@@ -13,6 +13,7 @@ jobs:
     runs-on: windows-latest
     env:
       PYTHONIOENCODING: utf-8
+      PYTHONFAULTHANDLER: '1'
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
