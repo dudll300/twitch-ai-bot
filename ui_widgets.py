@@ -821,7 +821,9 @@ class PanelLayout(QVBoxLayout):
         self.outer = QVBoxLayout(frame)
         self.outer.setContentsMargins(0, 0, 0, 0)
         self.outer.setSpacing(0)
-        heading = QFrame()
+        # Visibility is set below: a parentless header would briefly become
+        # a separate native window before the layout reparents it.
+        heading = QFrame(frame)
         heading.setObjectName("panelHeading")
         row = QVBoxLayout(heading)
         row.setContentsMargins(22, 18, 22, 18)
