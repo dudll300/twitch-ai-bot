@@ -76,7 +76,12 @@ def main() -> None:
 
         missing = launch("--bot", str(log_path))
         assert missing.returncode == 1, missing.returncode
-        assert "Укажите ваш канал Twitch" in log_path.read_text(encoding="utf-8")
+        startup = log_path.read_text(encoding="utf-8")
+        assert "Укажите ваш канал Twitch" in startup
+        assert "APP_BUILD version=" in startup and "log_timezone=UTC" in startup
+        metadata = ROOT / "build-info.json"
+        if metadata.exists():
+            assert "commit=" + json.loads(metadata.read_text(encoding="utf-8"))["commit"] in startup
 
         (data / ".env").write_text(
             "TWITCH_CHANNEL=streamer\nTWITCH_BOT_NAME=helper_bot\n"
@@ -90,6 +95,25 @@ def main() -> None:
         assert ready.returncode == 0, (ready.returncode, log_path.read_text(encoding="utf-8"))
         assert "WORKER_READY" in log_path.read_text(encoding="utf-8")
         assert (data / "memory.json").exists()
+
+        # Windowed PyInstaller has no Python stdout object. Test the inherited
+        # Windows pipe with both subprocess and the GUI's actual QProcess API.
+        piped = subprocess.run([str(EXE), "--bot", str(log_path), "--pipe", "--self-test"],
+                               env=env, capture_output=True, timeout=30)
+        assert piped.returncode == 0, piped.stderr.decode("utf-8", errors="replace")
+        assert b"WORKER_READY" in piped.stdout
+        from PySide6.QtCore import QCoreApplication, QProcess, QProcessEnvironment
+        application = QCoreApplication.instance() or QCoreApplication([])
+        process = QProcess()
+        environment = QProcessEnvironment.systemEnvironment()
+        for key, value in env.items():
+            environment.insert(key, value)
+        process.setProcessEnvironment(environment)
+        process.setProcessChannelMode(QProcess.MergedChannels)
+        process.start(str(EXE), ["--bot", str(log_path), "--pipe", "--self-test"])
+        assert process.waitForFinished(30000), process.errorString()
+        assert process.exitCode() == 0
+        assert b"WORKER_READY" in bytes(process.readAllStandardOutput())
 
         dictionary = data / "local-context.json"
         dictionary.write_text("{ damaged dictionary", encoding="utf-8")
@@ -105,6 +129,9 @@ def main() -> None:
         invalid = launch("--bot", str(log_path), "--self-test")
         assert invalid.returncode == 1
         assert "profiles.json" in log_path.read_text(encoding="utf-8")
+        invalid_pipe = subprocess.run([str(EXE), "--bot", str(log_path), "--pipe", "--self-test"], env=env, capture_output=True, timeout=30)
+        assert invalid_pipe.returncode == 1
+        assert "profiles.json" in invalid_pipe.stdout.decode("utf-8")
         invalid_path.write_bytes(saved_profiles)
 
         gui = launch("--self-test-gui")

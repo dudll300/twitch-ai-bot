@@ -11,7 +11,9 @@ import uuid
 
 from ai_client import redact_secret
 from privacy import safe_history_text
-from recent_context import PERSONAL_REPLY_SECONDS, PERSONAL_REPLY_LIMIT, personal_reply
+from irc import ModerationEvent
+from recent_context import (PERSONAL_REPLY_SECONDS, PERSONAL_REPLY_LIMIT, PUBLIC_CANDIDATE_LIMIT,
+                            personal_reply, public_reply)
 
 STATUSES = {"generating", "generated", "sent", "preview", "silent", "skipped",
             "cancelled", "error", "send_error", "rejected"}
@@ -39,6 +41,9 @@ CREATE TABLE IF NOT EXISTS events (
     time REAL NOT NULL, status TEXT NOT NULL, note TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS events_record ON events(record_id, seq);
+CREATE INDEX IF NOT EXISTS events_status_time_record ON events(status, time, record_id);
+CREATE INDEX IF NOT EXISTS events_record_status_time ON events(record_id, status, time);
+CREATE INDEX IF NOT EXISTS records_context_recipient ON records(channel COLLATE NOCASE, kind, status, viewer_id);
 CREATE TABLE IF NOT EXISTS safety_events (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, time REAL NOT NULL, scenario TEXT NOT NULL,
     record_id TEXT, status TEXT NOT NULL, stage TEXT NOT NULL, reasons TEXT NOT NULL,
@@ -59,6 +64,10 @@ class MessageHistory:
         self.clock = clock
         self.session = uuid.uuid4().hex
         self._lock = RLock()
+        self._moderation_lock = RLock()
+        self._moderation_flush_lock = RLock()
+        self._moderations = []
+        self._moderation_epoch = 0
         self._ready = False
         self._warned = False
         self.warn = warn or (lambda message: print(message, flush=True))
@@ -236,9 +245,12 @@ class MessageHistory:
         except (OSError, sqlite3.Error, ValueError, TypeError) as exc:
             raise HistoryReadError("Не удалось прочитать историю. Проверьте папку с данными; исходный файл сохранён.") from exc
 
-    def page(self, *, kind="", status="", search="", before=None, limit=50, cancel=None):
+    def page(self, *, kind="", status="", search="", before=None, limit=50, cancel=None, session=""):
         limit = max(1, min(int(limit), 100))
         clauses, args = [], []
+        if session:
+            clauses.append("session=?")
+            args.append(session)
         if kind:
             clauses.append("kind=?")
             args.append(kind)
@@ -281,23 +293,120 @@ class MessageHistory:
         return self._read(select, cancel)
 
     def recent_personal_replies(self, channel, login, user_id, now):
+        return self._read_publications(channel, now, recipient=(login, user_id))
+
+    def recent_public_replies(self, channel, now):
+        return self._read_publications(channel, now)
+
+    def note_moderation(self, channel, event):
+        """Fence context reads immediately, without doing IO in the IRC loop."""
+        channel = channel.casefold()
+        with self._moderation_lock:
+            self._moderation_epoch += 1
+            now = self.clock()
+            # Bound memory if storage remains unavailable under a moderation
+            # flood. Coalesce to a conservative channel clear, never a user ban.
+            if len(self._moderations) >= 1024:
+                channels = {entry[1] for entry in self._moderations} | {channel}
+                self._moderations = [(self._moderation_epoch, name, now, ModerationEvent('all'))
+                                     for name in channels]
+            else:
+                self._moderations.append((self._moderation_epoch, channel, now, event))
+
+    def flush_moderation(self):
+        """Persist exclusion events in a worker; retain the fence on failure."""
+        with self._moderation_flush_lock:
+            with self._moderation_lock:
+                batch = tuple(self._moderations)
+            if not batch:
+                return True
+
+            def invalidate(connection):
+                for _, channel, now, event in batch:
+                    # Only publications still eligible when moderation arrived
+                    # need marking. Later publications by this user stay valid.
+                    for row in self._publication_rows(connection, channel, now, limit=-1):
+                        affected = event.kind in ('all', 'uncertain')
+                        try:
+                            context = json.loads(row['context']) if row['context'] else {}
+                            conversation = context.get('conversation', [])
+                            if not affected:
+                                affected = any(event.affects(item) for item in conversation if isinstance(item, dict))
+                            if not affected and event.kind == 'user':
+                                ids = {item.get('user_id') for item in conversation if isinstance(item, dict)
+                                       and item.get('sequence') in context.get('basis', [])
+                                       and item.get('author', '').casefold() == row['viewer'].casefold()
+                                       and item.get('user_id')}
+                                saved_id = row['viewer_id'] or (next(iter(ids)) if len(ids) == 1 else '')
+                                affected = (saved_id == event.user_id if event.user_id else
+                                            row['viewer'].casefold() == event.login)
+                        except (ValueError, TypeError, AttributeError):
+                            # Damaged provenance cannot establish independence
+                            # from a deleted scene. Keep the archive, omit context.
+                            affected = True
+                        if affected:
+                            connection.execute("INSERT INTO events(record_id,time,status,note) VALUES (?,?,'context_invalidated','moderation_cancelled')",
+                                               (row['record_id'], now))
+                return True
+
+            if self._write(invalidate) is None:
+                return False
+            tickets = {entry[0] for entry in batch}
+            with self._moderation_lock:
+                self._moderations = [entry for entry in self._moderations if entry[0] not in tickets]
+            return True
+
+    @staticmethod
+    def _publication_rows(connection, channel, now, recipient=None, *, limit=None):
+        # Narrow by the existing sent-event window before loading any JSON.
+        # Legacy rows without viewer_id still pass through the original basis
+        # validation, including ID-based matching after a login change.
+        kind_filter = "r.kind='autonomous'" if recipient is not None else "r.kind IN ('autonomous', 'reward')"
+        identity, identity_args = "", ()
+        if recipient is not None:
+            login, user_id = recipient
+            if user_id:
+                identity, identity_args = " AND (r.viewer_id=? OR r.viewer_id='')", (user_id,)
+            else:
+                identity, identity_args = " AND r.viewer_id='' AND r.viewer=? COLLATE NOCASE", (login,)
+        if limit is None:
+            limit = PUBLIC_CANDIDATE_LIMIT if recipient is None else -1
+        start = now - PERSONAL_REPLY_SECONDS
+        return connection.execute("""
+            WITH candidates AS (
+                SELECT r.id AS record_id, r.seq, r.kind, r.viewer, r.viewer_id, r.sent_text,
+                       CASE WHEN r.kind='autonomous' THEN r.context ELSE NULL END AS context,
+                       r.mode, r.channel,
+                       (SELECT MIN(first.time) FROM events first
+                        WHERE first.record_id=r.id AND first.status='sent') AS sent_at
+                FROM records r
+                WHERE """ + kind_filter + """ AND r.status='sent' AND r.mode!='preview'
+                      AND r.reason!='moderation_cancelled'
+                      AND NOT EXISTS (SELECT 1 FROM events invalid
+                                      WHERE invalid.record_id=r.id AND invalid.status='context_invalidated')
+                      AND r.channel=? COLLATE NOCASE """ + identity + """
+                      AND r.id IN (SELECT record_id FROM events
+                                   WHERE status='sent' AND time BETWEEN ? AND ?)
+            )
+            SELECT * FROM candidates WHERE sent_at BETWEEN ? AND ?
+            ORDER BY sent_at DESC, seq DESC LIMIT ?
+            """, (channel, *identity_args, start, now, start, now, limit))
+
+    def _read_publications(self, channel, now, recipient=None):
         """Read successful publications by sent-event time, including older schemas.
 
         Existing autonomous records may lack viewer_id: derive it only from the
         selected basis authored by the actual tagged recipient, never mentions.
         No schema migration, prompts, profiles or full conversations are returned.
         """
+        with self._moderation_lock:
+            epoch = self._moderation_epoch
+            if any(entry[1] == channel.casefold() for entry in self._moderations):
+                return []
         def select(connection):
             if connection is None:
                 return []
-            rows = connection.execute("""
-                SELECT r.viewer, r.viewer_id, r.sent_text, r.context, r.mode, r.channel,
-                       MIN(e.time) AS sent_at
-                FROM records r JOIN events e ON e.record_id=r.id AND e.status='sent'
-                WHERE r.kind='autonomous' AND r.status='sent' AND r.mode!='preview'
-                      AND lower(r.channel)=?
-                GROUP BY r.id HAVING sent_at BETWEEN ? AND ? ORDER BY sent_at DESC, r.seq DESC
-                """, (channel.casefold(), now - PERSONAL_REPLY_SECONDS, now))
+            rows = self._publication_rows(connection, channel, now, recipient)
             result = []
             for row in rows:
                 try:
@@ -309,16 +418,22 @@ class MessageHistory:
                            if item.get("author", "").casefold() == row["viewer"].casefold() and item.get("user_id")}
                     saved_id = row["viewer_id"] or (next(iter(ids)) if len(ids) == 1 else "")
                     # Ambiguous identities in a damaged/legacy record are never login fallback.
-                    if not row["viewer_id"] and len(ids) > 1:
+                    if len(ids) > 1 or (row["viewer_id"] and ids and ids != {row["viewer_id"]}):
                         continue
-                    candidate = {"source": "autonomous", "status": "sent", "mode": row["mode"],
+                    candidate = {"source": row["kind"], "status": "sent", "mode": row["mode"],
                                  "channel": row["channel"], "time": row["sent_at"], "text": row["sent_text"],
                                  "target": row["viewer"], "user_id": saved_id, "basis_messages": anchors}
-                    if personal_reply(candidate, login, user_id, now, channel=channel):
-                        result.append(self.redact(candidate))
-                    if len(result) >= PERSONAL_REPLY_LIMIT:
-                        break
+                    public = public_reply(candidate, now, channel=channel)
+                    if public and (recipient is None or personal_reply(candidate, *recipient, now, channel=channel)):
+                        candidate["basis_messages"] = public["basis_messages"]
+                        candidate = self.redact(candidate)
+                        candidate["user_id"] = saved_id
+                        result.append(candidate)
+                        if recipient is not None and len(result) >= PERSONAL_REPLY_LIMIT:
+                            break
                 except (ValueError, TypeError, AttributeError):
                     continue
             return result
-        return self._read(select)
+        result = self._read(select)
+        with self._moderation_lock:
+            return result if epoch == self._moderation_epoch else []

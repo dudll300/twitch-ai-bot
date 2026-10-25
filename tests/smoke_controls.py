@@ -15,24 +15,25 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import QPoint, QPointF, Qt
+from PySide6.QtCore import QPoint, QPointF, Qt, QAbstractAnimation
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QMessageBox, QPlainTextEdit, QScrollArea, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QApplication, QMessageBox, QScrollArea, QVBoxLayout, QWidget
 
 import gui
 import model_catalog_gui
 import testing
 from autonomous import AutoSettings, load_settings
 from configuration import env_content
-from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, scroll_page
+from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, scroll_page, Disclosure
+from studio_controls import OrbitScrollArea
 
 
-def wait_for(predicate):
+def wait_for(predicate, message="Timed out waiting for GUI worker"):
     deadline = time.monotonic() + 4
     while not predicate() and time.monotonic() < deadline:
         QTest.qWait(15)
-    assert predicate(), "Timed out waiting for GUI worker"
+    assert predicate(), message
 
 
 def response(data):
@@ -44,6 +45,17 @@ def wheel(widget, delta):
     event = QWheelEvent(QPointF(pos), QPointF(widget.mapToGlobal(pos)), QPoint(), QPoint(0, delta),
                         Qt.NoButton, Qt.NoModifier, Qt.NoScrollPhase, False)
     QApplication.sendEvent(widget, event)
+    # Wait for the actual finite tail, rather than assuming one easing duration.
+    areas, inner, parent = [], [], widget
+    while parent is not None:
+        if isinstance(parent, OrbitScrollArea):
+            areas.append(parent)
+        if hasattr(parent, "_wheel_scroll"):
+            inner.append(parent._wheel_scroll.motion)
+        parent = parent.parentWidget()
+    QTest.qWait(20)
+    wait_for(lambda: all(area._scroll.state() == QAbstractAnimation.Stopped for area in areas)
+             and all(motion.state() == QAbstractAnimation.Stopped for motion in inner), "Scroll motion did not settle")
     return event.isAccepted()
 
 
@@ -162,6 +174,7 @@ def check_all_page_text_fields(app):
         window.show()
         window.profiles_editor.add_button.click()
         window.profiles_editor.login.setText("viewer")
+        window.local_context_page.add_card()
         window.prompt_builder.show_preset()
         page = window.testing_page
         page.question.setPlainText("Вопрос для проверки прокрутки")
@@ -176,10 +189,21 @@ def check_all_page_text_fields(app):
             if index == gui.PAGE_SAFETY:
                 window.safety_page.link_mode.setCurrentIndex(1)
             app.processEvents()
-            for editor in window.pages.widget(index).findChildren(QPlainTextEdit):
+            for editor in window.pages.widget(index).findChildren(ScrollPlainTextEdit):
+                if editor.isHidden() and editor is window.dashboard.feed:
+                    continue  # Compatibility data adapter; live conversations use native rows.
                 if index == gui.PAGE_TESTING:
                     window.testing_page.mode.setCurrentIndex(1 if window.testing_page.diagnostic.isAncestorOf(editor) else 0)
                     app.processEvents()
+                if index == gui.PAGE_BEHAVIOR:
+                    window.behavior_mode.setCurrentIndex(1 if window.prompt_builder.isAncestorOf(editor) else 0)
+                    app.processEvents()
+                for disclosure in window.pages.widget(index).findChildren(Disclosure):
+                    if disclosure.content is editor or disclosure.content.isAncestorOf(editor):
+                        disclosure.button.setChecked(True)
+                app.processEvents()
+                if not editor.isVisible():
+                    continue
                 assert isinstance(editor, ScrollPlainTextEdit), "A page uses an inconsistent text control"
                 outer = editor.parentWidget()
                 while outer is not None and not isinstance(outer, QScrollArea):
@@ -193,7 +217,8 @@ def check_all_page_text_fields(app):
                 editor.setFixedHeight(130)
                 editor.setPlainText("Short text")
                 editor.setFocus()
-                wait_for(lambda: outer.verticalScrollBar().maximum() > 100)
+                wait_for(lambda: outer.verticalScrollBar().maximum() > 100,
+                         f"No page overflow for {index}: {editor.accessibleName()}")
                 assert editor.verticalScrollBar().maximum() == 0
                 outer.verticalScrollBar().setValue(30)
                 wheel(editor.viewport(), -120)

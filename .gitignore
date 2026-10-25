@@ -20,6 +20,7 @@ dist/
 *.spec
 !TwitchAIBot.spec
 assets/app.icns
+build-info.json
 profiles.json
 profiles.tmp
 autonomous.json
@@ -35,3 +36,5 @@ safety-settings.json
 .safety-settings.lock
 .safety-settings-*.tmp
 .test-tmp/
+ui-state.json
+ui-state.tmp

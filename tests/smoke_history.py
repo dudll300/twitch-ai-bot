@@ -11,7 +11,7 @@ from unittest.mock import patch
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QAbstractAnimation
 from PySide6.QtGui import QFont, QFontDatabase
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -73,7 +73,7 @@ def main():
         silent = store.add("autonomous", "silent", action="silent", reason="no_reason")
         window = window_at(root)
         page = window.history_page
-        assert window.nav_buttons[gui.PAGE_HISTORY].text() == "История"
+        assert window.nav_buttons[gui.PAGE_HISTORY].accessibleName() == "История"
         wait_for(lambda: not page._loading and page._detail_id == silent, "Initial history did not load")
         assert page.entries.count() == 50
         assert page.context_card.isHidden()
@@ -83,13 +83,16 @@ def main():
         assert page.context.isHidden()
         assert page.instructions.isHidden()
         page.context_button.click()
+        assert page.context_disclosure._reveal_motion.state() == QAbstractAnimation.Running
         assert not page.context.isHidden()
         assert "Наконец прошёл" in page.context.toPlainText()
         assert "Цель реплики" in page.context.toPlainText()
         page.instructions_button.click()
+        assert page.instructions_disclosure._reveal_motion.state() == QAbstractAnimation.Running
         assert "private-key" not in page.instructions.toPlainText()
         assert "ключ скрыт" in page.instructions.toPlainText()
         page.context_button.click()
+        wait_for(lambda: page.context_disclosure._reveal_motion.state() == QAbstractAnimation.Stopped, "Context did not collapse")
         assert page.context.isHidden()
 
         # A live refresh may still be running after the selected detail loads,
@@ -123,7 +126,11 @@ def main():
         select(page, preview)
         page.context_button.click()
         QTest.qWait(80)
-        assert page.timeline.geometry().top() > page.answer.geometry().bottom(), "Details overlap"
+        from ui_widgets import Disclosure
+        disclosure = next(row for row in page.findChildren(Disclosure) if row.content is page.timeline)
+        disclosure.button.setChecked(True)
+        wait_for(lambda: disclosure._reveal_motion.state() == QAbstractAnimation.Stopped, "Disclosure did not settle")
+        assert page.timeline.mapTo(page.answer.parentWidget(), page.timeline.rect().topLeft()).y() > page.answer.geometry().bottom(), "Details overlap"
         assert page.timeline.geometry().bottom() < page.timeline.parentWidget().height(), "Details clipped"
         if "--screenshot" in sys.argv:
             destination = Path(__file__).resolve().parents[1] / "build" / "history-preview.png"

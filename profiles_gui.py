@@ -12,10 +12,19 @@ from PySide6.QtWidgets import (
 from profiles import MAX_PROFILE_PROMPT, ProfileError, load_profiles, validate_profiles
 from configuration import normalize
 from viewer_recognition import russian_name
-from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page
+from ui_widgets import ScrollListWidget, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page, Disclosure, MasterDetail
 
 
-class ProfilesEditor(QWidget):
+from ui_widgets import StudioButton as QPushButton
+from studio_controls import StudioCheckBox as QCheckBox
+from studio_rows import OrbitRowDelegate
+from ui_widgets import panel_badge
+from studio_surfaces import GlowSurface
+from studio_icons import studio_icon
+from studio_artwork import PageTransition
+from studio_motion import enabled as motion_enabled
+
+class ProfilesEditor(GlowSurface):
     changed = Signal()
     test_requested = Signal(int)
 
@@ -27,13 +36,14 @@ class ProfilesEditor(QWidget):
         self._loading = False
         self._editable = True
         self._removed = []
+        self._detail_index = None
         try:
             self.rows = load_profiles(path)
         except ProfileError as exc:
             self.load_error = str(exc)
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(16)
         self.error = label(self.load_error, "error", True)
         self.error.setVisible(bool(self.load_error))
@@ -45,19 +55,16 @@ class ProfilesEditor(QWidget):
 
         columns = QHBoxLayout()
         columns.setSpacing(20)
-        left, left_layout = card()
+        left, left_layout = card("Зрители")
         left.setMinimumWidth(260)
         left.setMaximumWidth(300)
         left_layout.setContentsMargins(16, 16, 16, 16)
         header = QHBoxLayout()
-        self.count = label("", "section")
-        header.addWidget(self.count)
-        header.addStretch()
+        self.count = left_layout.title_label
         self.add_button = QPushButton("+ Добавить")
         self.add_button.setProperty("variant", "quiet")
         self.add_button.clicked.connect(self.add_profile)
-        header.addWidget(self.add_button)
-        left_layout.addLayout(header)
+        panel_badge(left_layout, self.add_button)
         self.search = QLineEdit()
         self.search.setPlaceholderText("Логин, имя или ID")
         self.search.setAccessibleName("Поиск зрителей")
@@ -66,36 +73,49 @@ class ProfilesEditor(QWidget):
         left_layout.addWidget(self.search)
         self.list = ScrollListWidget()
         self.list.setObjectName("profileList")
+        self.list.setProperty("presentation", "rows")
+        self.list.setItemDelegate(OrbitRowDelegate(self.list, "profile"))
         self.list.setAccessibleName("Профили зрителей")
         self.list.currentRowChanged.connect(self._select)
-        left_layout.addWidget(self.list, 1)
+        self.list.itemClicked.connect(lambda *_: self.master_detail.show_detail())
         self.empty_search = label("", "muted", True)
         left_layout.addWidget(self.empty_search)
+        left_layout.addWidget(self.list, 1)
         self.undo_button = QPushButton("Отменить удаление")
         self.undo_button.clicked.connect(self._undo)
         self.undo_button.setVisible(False)
         left_layout.addWidget(self.undo_button)
-        columns.addWidget(left, 1)
+
 
         self.stack = QStackedWidget()
-        empty, empty_layout = card()
-        empty_layout.addStretch()
-        empty_layout.addWidget(label("Каждому — свой подход", "section"))
-        empty_layout.addWidget(label(
-            "Добавьте зрителя и задайте личную инструкцию: как обращаться, о чём шутить или какой тон использовать.",
-            "muted", True))
+        empty_page = QWidget()
+        empty_page_layout = QVBoxLayout(empty_page)
+        empty_page_layout.setContentsMargins(0, 0, 0, 0)
+        empty, empty_layout = card("Личные инструкции")
+        self.empty_card = empty
+        glyph = label("")
+        glyph.setPixmap(studio_icon("users", size=48).pixmap(48, 48))
+        empty_layout.addWidget(glyph)
+        empty_layout.addWidget(label("Каждому — свой подход", "emptyTitle", True))
+        self.empty_copy = label("Добавьте зрителя и задайте личную инструкцию: как обращаться, о чём шутить и какой тон использовать.", "emptyCopy", True)
+        self.empty_copy.setAlignment(Qt.AlignJustify | Qt.AlignTop)
+        empty_layout.addWidget(self.empty_copy)
         empty_layout.addWidget(label("Общий промпт продолжит действовать для всех.", "muted", True))
-        empty_layout.addStretch()
-        self.stack.addWidget(empty)
+        self.empty_add = QPushButton("Добавить первого зрителя")
+        self.empty_add.setProperty("variant", "primary")
+        self.empty_add.clicked.connect(self.add_profile)
+        empty_layout.addWidget(self.empty_add, 0, Qt.AlignLeft)
+        empty_page_layout.addWidget(empty)
+        empty_page_layout.addStretch()
+        self.stack.addWidget(empty_page)
 
-        editor, editor_layout = card()
+        editor, editor_layout = card("Профиль зрителя")
+        self.profile_card = editor
         heading = QHBoxLayout()
-        self.editor_title = label("Новый профиль", "section")
-        heading.addWidget(self.editor_title, 1)
+        self.editor_title = editor_layout.title_label
         self.enabled = ToggleSwitch("Включён")
         self.enabled.setAccessibleName("Персонализация включена")
-        heading.addWidget(self.enabled)
-        editor_layout.addLayout(heading)
+        panel_badge(editor_layout, self.enabled)
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setColumnStretch(0, 1)
@@ -109,22 +129,26 @@ class ProfilesEditor(QWidget):
         editor_layout.addLayout(grid)
         editor_layout.addWidget(label(
             "Достаточно логина или ID. Если указан ID, используем его — даже после смены ника.", "muted", True))
+        advanced = QWidget()
+        advanced_layout = QVBoxLayout(advanced)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.addWidget(Disclosure("Другие имена и ограничение наград", advanced))
         self.reward_blocked = QCheckBox("Запретить запросы через награду")
-        editor_layout.addWidget(self.reward_blocked)
-        editor_layout.addWidget(label(
+        advanced_layout.addWidget(self.reward_blocked)
+        advanced_layout.addWidget(label(
             "Бот отправит стандартный отказ без обращения к AI. Запрет действует независимо от персонализации. "
             "Для такого профиля личную инструкцию можно оставить пустой.", "muted", True))
         self.aliases = QLineEdit()
         self.aliases.setPlaceholderText("Например: лопотик, лопотика, Лёха")
-        editor_layout.addWidget(field("Другие имена / ники · через запятую", self.aliases))
+        advanced_layout.addWidget(field("Другие имена / ники · через запятую", self.aliases))
         alias_row = QHBoxLayout()
         self.russian_hint = label("", "muted", True)
         alias_row.addWidget(self.russian_hint, 1)
         self.suggest_alias_button = QPushButton("Добавить русский вариант")
         self.suggest_alias_button.clicked.connect(self._suggest_alias)
         alias_row.addWidget(self.suggest_alias_button)
-        editor_layout.addLayout(alias_row)
-        editor_layout.addWidget(label(
+        advanced_layout.addLayout(alias_row)
+        advanced_layout.addWidget(label(
             "Бот узнаёт эти имена в вопросах других зрителей и в чате. Русский вариант логина распознаётся "
             "автоматически; его можно уточнить здесь. Небольшие опечатки допускаются при однозначном совпадении.", "muted", True))
         self.prompt = ScrollPlainTextEdit()
@@ -147,8 +171,10 @@ class ProfilesEditor(QWidget):
             "Инструкция действует для этого зрителя, а также при обращении к нему или обсуждении его другими людьми. "
             "Тестирование учитывает черновики; работающий бот — сохранённые профили после перезапуска.",
             "muted", True))
-        self.stack.addWidget(scroll_page(editor))
-        columns.addWidget(self.stack, 3)
+        self.stack.addWidget(scroll_page(editor, ambient=False))
+        self.master_detail = MasterDetail(left, self.stack)
+        self._detail_transition = PageTransition(self.stack)
+        columns.addWidget(self.master_detail, 1)
         outer.addLayout(columns, 1)
         for widget in (self.login, self.user_id, self.aliases):
             widget.textChanged.connect(self._store)
@@ -177,6 +203,7 @@ class ProfilesEditor(QWidget):
 
     def _rebuild(self, selected):
         self.list.blockSignals(True)
+        self.list.itemDelegate().selection.reset()
         self.list.clear()
         for row in self.rows:
             item = QListWidgetItem(self._item_text(row))
@@ -184,13 +211,21 @@ class ProfilesEditor(QWidget):
             self.list.addItem(item)
         self.list.setCurrentRow(selected)
         self.list.blockSignals(False)
+        self.list.itemDelegate().selection.select(selected, immediate=True)
         self.count.setText(f"Зрители · {len(self.rows)}")
         self._select(selected)
         self._filter()
 
     def _select(self, index):
+        previous = self._detail_transition.snapshot() if (index != self._detail_index and
+            self.stack.isVisible() and motion_enabled()) else None
+        self._detail_index = index
+        if hasattr(self, "master_detail") and index >= 0:
+            self.master_detail.show_detail()
         if index < 0 or index >= len(self.rows):
             self.stack.setCurrentIndex(0)
+            if previous is not None:
+                self._detail_transition.start(previous)
             return
         self._loading = True
         row = self.rows[index]
@@ -203,6 +238,8 @@ class ProfilesEditor(QWidget):
         self._loading = False
         self._update_caption()
         self.stack.setCurrentIndex(1)
+        if previous is not None:
+            self._detail_transition.start(previous)
 
     def _update_caption(self):
         self.editor_title.setText(self.login.text().strip() or ("ID " + self.user_id.text().strip() if self.user_id.text().strip() else "Новый профиль"))

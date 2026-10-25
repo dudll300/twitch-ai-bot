@@ -10,7 +10,7 @@ from ai_client import clean_text, redact_secret
 from model_catalog_gui import ModelCatalogControl
 from prompt_builder import (DEFAULT_TOPICS, GENERATOR_MODEL, PRESETS, TEMPERAMENTS, check_prompt, compose_prompt,
                             generate_prompt, prepare_generation, style_for, topics_from_prompt)
-from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, card, field, label
+from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, card, field, label, Disclosure, ResponsiveColumns
 
 
 def generation_worker(snapshot, output, cancel):
@@ -21,6 +21,8 @@ def generation_worker(snapshot, output, cancel):
     if not cancel.is_set():
         output.put(result)
 
+
+from ui_widgets import StudioButton as QPushButton
 
 class PromptBuilder(QWidget):
     test_requested = Signal(str)
@@ -37,7 +39,7 @@ class PromptBuilder(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(20)
         api_card, api_layout = card("Модель генератора", "Общая для создания нового промпта и улучшения текущего")
-        self.model_catalog = ModelCatalogControl(GENERATOR_MODEL, get_credentials)
+        self.model_catalog = ModelCatalogControl(GENERATOR_MODEL, get_credentials, role="Модель генератора промптов")
         api_layout.addWidget(field("Модель для генерации · отдельная от модели ответов", self.model_catalog))
         api_layout.addWidget(label(
             "Каталог загружается по кнопке. Укажите точный ID доступной модели; автоматической замены нет. "
@@ -45,7 +47,7 @@ class PromptBuilder(QWidget):
         self.connection_button = QPushButton("К подключению")
         self.connection_button.clicked.connect(lambda: self.connection_requested.emit())
         api_layout.addWidget(self.connection_button, 0, Qt.AlignLeft)
-        outer.addWidget(api_card)
+        outer.addWidget(Disclosure("Модель генерации и подключение", api_card))
 
         self.create_card, layout = card("Создать новый промпт", "Выберите готовый пресет или опишите новый характер для AI-генератора")
         grid = QGridLayout()
@@ -99,18 +101,27 @@ class PromptBuilder(QWidget):
         self.status = label("Защита темы и служебных инструкций добавляется в каждый пресет и результат генерации.", "muted", True)
         self.status.setTextFormat(Qt.PlainText)
         outer.addWidget(self.status)
+        self.cancel_button = QPushButton("Отменить генерацию")
+        self.cancel_button.clicked.connect(self.cancel_generation)
+        self.cancel_button.hide()
+        outer.addWidget(self.cancel_button)
+        self.improve_card.hide()
 
-        self.draft_card, draft_layout = card("Новый вариант промпта", "Текущий общий промпт не меняется до нажатия «Применить»")
+        self.draft_card, draft_layout = card("Новый вариант промпта", "Новый вариант слева, текущий справа. Замена черновика требует отдельного сохранения.")
         self.preview = ScrollPlainTextEdit()
         self.preview.setAccessibleName("Новый вариант промпта")
-        self.preview.setMinimumHeight(520)
-        draft_layout.addWidget(self.preview)
+        self.preview.setMinimumHeight(220)
+        self.current_preview = ScrollPlainTextEdit()
+        self.current_preview.setReadOnly(True)
+        self.current_preview.setMinimumHeight(220)
+        self.current_preview.setAccessibleName("Текущий общий промпт для сравнения")
+        draft_layout.addWidget(ResponsiveColumns(self.preview, self.current_preview))
         draft_layout.addWidget(label("Колесо прокручивает длинный текст внутри поля. Если весь текст помещается, прокручивается вкладка.", "muted", True))
         self.validation = label("", "muted", True)
         self.validation.setTextFormat(Qt.PlainText)
         draft_layout.addWidget(self.validation)
         draft_buttons = QHBoxLayout()
-        self.apply_button = QPushButton("Применить к общему промпту")
+        self.apply_button = QPushButton("Заменить черновик")
         self.apply_button.clicked.connect(self.apply_draft)
         draft_buttons.addWidget(self.apply_button)
         self.test_button = QPushButton("Проверить этот вариант")
@@ -122,11 +133,24 @@ class PromptBuilder(QWidget):
         draft_layout.addLayout(draft_buttons)
         outer.addWidget(self.draft_card)
         self.draft_card.hide()
+        outer.addStretch()
         self.preview.textChanged.connect(self._update_state)
         self._timer = QTimer(self)
         self._timer.setInterval(60)
         self._timer.timeout.connect(self._poll)
         self._timer.start()
+        self._update_state()
+
+    def set_operation_mode(self, mode):
+        self.create_card.setVisible(mode == "create")
+        self.improve_card.setVisible(mode == "improve")
+
+    def cancel_generation(self):
+        self._cancel.set()
+        self._cancel = Event()
+        self._events = Queue()
+        self._busy = False
+        self.status.setText("Генерация отменена. Текущий текст сохранён в редакторе.")
         self._update_state()
 
     def _style(self):
@@ -135,6 +159,7 @@ class PromptBuilder(QWidget):
 
     def _update_state(self):
         editable = self._editable and not self._closed and not self._busy
+        self.cancel_button.setVisible(self._busy)
         for widget in (self.preset, self.temperament, self.humor, self.profanity, self.topics, self.preset_button,
                        self.wishes, self.improve_wishes, self.generate_button, self.improve_button, self.preview):
             widget.setEnabled(editable)
@@ -160,6 +185,7 @@ class PromptBuilder(QWidget):
         self.status.setText("Пресет подготовлен локально. Его можно проверить без замены текущего промпта.")
 
     def _show_draft(self, text):
+        self.current_preview.setPlainText(self.get_prompt())
         self.preview.setPlainText(text)
         self.draft_card.show()
         self._update_state()
@@ -217,7 +243,7 @@ class PromptBuilder(QWidget):
                 self.status.setText(clean_error(error, auth.api_key))
             else:
                 self._show_draft(prompt)
-                self.status.setText("Вариант готов. Проверьте ответы, затем примените промпт, если результат устраивает.")
+                self.status.setText("Вариант готов. Проверьте ответы, затем замените черновик, если результат устраивает.")
             self._update_state()
 
     def apply_draft(self):

@@ -6,10 +6,15 @@ from threading import Event, Thread
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (QHBoxLayout, QLineEdit, QListWidgetItem, QPushButton,
-                              QSplitter, QVBoxLayout, QWidget)
+                              QSplitter, QVBoxLayout, QWidget, QApplication, QFrame, QMenu)
 
 from message_history import MessageHistory
-from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, label, scroll_page
+from studio_rows import OrbitRowDelegate
+from studio_icons import studio_icon
+from studio_artwork import PageTransition
+from studio_surfaces import GlowSurface
+from ui_widgets import ReadingText, panel_badge, field
+from ui_widgets import NoWheelComboBox, ScrollListWidget, ScrollPlainTextEdit, card, label, scroll_page, MasterDetail, Disclosure
 
 STATUS_NAMES = {
     "generating": "Запрос начат · результата нет", "generated": "Сгенерировано · отправка не подтверждена",
@@ -23,7 +28,7 @@ REASONS = {**REASON_NAMES, "answer": "Ответ на вопрос", "reaction":
            "no_reason": "Нет повода для участия", "offtopic": "Вне темы канала",
            "already_answered": "На этот повод уже ответили", "insufficient_context": "Недостаточно контекста"}
 EVENT_NAMES = {**STATUS_NAMES, "generating": "Запрос начат", "generated": "Сгенерировано",
-               "send_error": "Ошибка отправки"}
+               "send_error": "Ошибка отправки", "context_invalidated": "Исключено из AI-контекста после модерации"}
 
 
 def timestamp(value, *, short=False):
@@ -57,7 +62,9 @@ def history_worker(store, tasks, output, closed):
             output.put((kind, token, result, error))
 
 
-class HistoryPage(QWidget):
+from ui_widgets import StudioButton as QPushButton
+
+class HistoryPage(GlowSurface):
     def __init__(self, root):
         super().__init__()
         self.store = MessageHistory(root)
@@ -74,107 +81,167 @@ class HistoryPage(QWidget):
         self._fingerprint = None
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setContentsMargins(14, 14, 14, 14)
         outer.setSpacing(16)
-        filters, filter_layout = card()
-        controls = QHBoxLayout()
-        self.kind = NoWheelComboBox()
-        for title, value in (("Все записи", ""), ("Ответы на награды", "reward"), ("Самостоятельные реплики", "autonomous")):
-            self.kind.addItem(title, value)
+        left, left_layout = card("Лента событий")
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(0)
+        self.refresh_button = QPushButton("Обновить")
+        self.refresh_button.setProperty("variant", "quiet")
+        self.refresh_button.setFixedHeight(30)
+        panel_badge(left_layout, self.refresh_button)
+        filters = QWidget()
+        filter_layout = QVBoxLayout(filters)
+        filter_layout.setContentsMargins(22, 20, 22, 22)
+        filter_layout.setSpacing(14)
+        self.search = QLineEdit()
+        self.search.setPlaceholderText("Вопрос, ответ или зритель")
+        self.search.setAccessibleName("Поиск в истории сообщений")
+        filter_layout.addWidget(self.search)
         self.status = NoWheelComboBox()
         for title, value in (("Все статусы", ""), ("Отправлено", "sent"), ("Предпросмотр", "preview"),
                              ("Не отправлено", "not_sent"), ("Молчание", "silent"), ("Ошибки", "errors"), ("Отказы", "rejected")):
             self.status.addItem(title, value)
-        self.search = QLineEdit()
-        self.search.setPlaceholderText("Поиск по вопросам, ответам и логинам")
-        self.search.setAccessibleName("Поиск в истории сообщений")
-        self.refresh_button = QPushButton("Обновить")
-        controls.addWidget(self.kind)
-        controls.addWidget(self.status)
-        controls.addWidget(self.search, 1)
-        controls.addWidget(self.refresh_button)
-        filter_layout.addLayout(controls)
-        self.hint = plain("История сохраняется между запусками. Тестирование и генератор промптов сюда не попадают.", "muted")
+        self.status.setAccessibleName("Результат ответа")
+        self.status_chips = []
+        chip_row = QHBoxLayout()
+        chip_row.setSpacing(6)
+        for title, value in (("Все", ""), ("Отправлено", "sent"), ("Предпросмотр", "preview"), ("Отклонено", "rejected")):
+            button = QPushButton(title)
+            button.setProperty("variant", "chip")
+            button.setCheckable(True)
+            button.clicked.connect(lambda checked=False, status=value: self.status.setCurrentIndex(self.status.findData(status)))
+            chip_row.addWidget(button)
+            self.status_chips.append((button, value))
+        def update_chips(*_):
+            for button, value in self.status_chips:
+                button.setChecked(value == self.status.currentData())
+        self.status.currentIndexChanged.connect(update_chips)
+        update_chips()
+        filter_layout.addLayout(chip_row)
+        self.kind = NoWheelComboBox()
+        for title, value in (("Все", ""), ("Награда канала", "reward"), ("Самостоятельное участие", "autonomous")):
+            self.kind.addItem(title, value)
+        self.kind.setAccessibleName("Тип записи в истории")
+        filter_layout.addWidget(field("Источник", self.kind))
+        self.status.setParent(filters)
+        self.status.hide()
+        status_menu = QMenu(self)
+        self._status_actions = []
+        for index in range(self.status.count()):
+            action = status_menu.addAction(self.status.itemText(index))
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked=False, value=index: self.status.setCurrentIndex(value))
+            self._status_actions.append(action)
+        def update_actions(*_):
+            for index, action in enumerate(self._status_actions):
+                action.setChecked(index == self.status.currentIndex())
+        self.status.currentIndexChanged.connect(update_actions)
+        update_actions()
+        self.status_menu_button = QPushButton()
+        self.status_menu_button.setIcon(studio_icon("sliders", size=16))
+        self.status_menu_button.setProperty("variant", "quiet")
+        self.status_menu_button.setAccessibleName("Все статусы истории")
+        self.status_menu_button.setToolTip("Все статусы: молчание, ошибки, отказы и другие")
+        self.status_menu_button.setFixedSize(30, 30)
+        self.status_menu_button.clicked.connect(lambda: status_menu.popup(self.status_menu_button.mapToGlobal(self.status_menu_button.rect().bottomLeft())))
+        left_layout.outer.itemAt(0).widget().layout().itemAt(0).layout().addWidget(self.status_menu_button)
+        self.hint = plain("", "muted")
+        self.hint.hide()
         filter_layout.addWidget(self.hint)
+        self.reset_filters = QPushButton("Сбросить фильтры")
+        self.reset_filters.clicked.connect(self._reset_filters)
+        self.reset_filters.hide()
+        filter_layout.addWidget(self.reset_filters)
         self.error = plain("", "error")
         self.error.hide()
         filter_layout.addWidget(self.error)
-        outer.addWidget(filters)
-
-        splitter = QSplitter(Qt.Horizontal)
-        left, left_layout = card("Записи")
-        left.setMinimumWidth(300)
+        left_layout.addWidget(filters)
         self.entries = ScrollListWidget()
+        self.entries.setProperty("presentation", "rows")
         self.entries.setObjectName("historyEntries")
+        self.entries.setItemDelegate(OrbitRowDelegate(self.entries))
         self.entries.setWordWrap(True)
         self.entries.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.entries.setAccessibleName("Сохранённые ответы и самостоятельные реплики")
-        self.entries.setSpacing(4)
+        self.entries.setSpacing(0)
         left_layout.addWidget(self.entries, 1)
         pager = QHBoxLayout()
-        self.newer = QPushButton("Новее")
-        self.older = QPushButton("Старее")
+        pager.setContentsMargins(18, 12, 18, 16)
+        pager.setSpacing(12)
+        self.newer, self.older = QPushButton("Новее"), QPushButton("Старее")
         self.page_label = plain("", "muted")
         pager.addWidget(self.newer)
         pager.addWidget(self.page_label, 1)
         pager.addWidget(self.older)
         left_layout.addLayout(pager)
-        splitter.addWidget(left)
-
         detail_page = QWidget()
         detail_layout = QVBoxLayout(detail_page)
-        detail_layout.setContentsMargins(0, 0, 8, 0)
-        detail_layout.setSpacing(14)
-        details, details_layout = card("Детали сообщения")
+        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setSpacing(16)
+        details, details_layout = card("Выбранное событие")
         self.badge = plain("Выберите запись", "historyStatus")
-        details_layout.addWidget(self.badge)
+        self.badge.setWordWrap(False)
+        panel_badge(details_layout, self.badge)
         self.meta = plain("", "muted")
         details_layout.addWidget(self.meta)
-        self.reason = plain("", "caption")
-        details_layout.addWidget(self.reason)
-        self.question_label = plain("Запрос зрителя", "section")
-        self.question = self._editor("Полный запрос зрителя", 100)
+        self.question_label = plain("СООБЩЕНИЕ", "eyebrow")
+        self.question = ReadingText("Полный запрос зрителя", maximum=240)
         details_layout.addWidget(self.question_label)
         details_layout.addWidget(self.question)
-        self.answer_label = plain("Ответ", "section")
-        self.answer = self._editor("Сгенерированный или отправленный ответ", 150)
+        rule = QFrame()
+        rule.setObjectName("rule")
+        rule.setFixedHeight(1)
+        details_layout.addWidget(rule)
+        self.answer_label = plain("ОТВЕТ", "eyebrow")
+        self.answer = ReadingText("Сгенерированный или отправленный ответ", emphasis=True, maximum=420)
         details_layout.addWidget(self.answer_label)
         details_layout.addWidget(self.answer)
+        self.reason = plain("", "muted")
+        details_layout.addWidget(self.reason)
         self.notice_label = plain("Уведомление, переданное Twitch", "caption")
-        self.notice = self._editor("Отправленное служебное уведомление", 90)
+        self.notice = ReadingText("Отправленное служебное уведомление")
         details_layout.addWidget(self.notice_label)
         details_layout.addWidget(self.notice)
         self.timeline = plain("", "muted")
-        details_layout.addWidget(self.timeline)
+        self.timeline_disclosure = Disclosure("Ход обработки", self.timeline)
+        details_layout.addWidget(self.timeline_disclosure)
+        copy_row = QHBoxLayout()
+        self.copy_buttons = []
+        for title, editor in (("Копировать вопрос", self.question), ("Копировать ответ", self.answer)):
+            button = QPushButton(title)
+            button.setIcon(studio_icon("copy", size=16))
+            button.clicked.connect(lambda checked=False, source=editor: QApplication.clipboard().setText(source.toPlainText()))
+            copy_row.addWidget(button)
+            self.copy_buttons.append(button)
+        details_layout.addLayout(copy_row)
         detail_layout.addWidget(details)
-        context_card, context_layout = card()
-        self.context_button = QPushButton("Показать контекст")
-        self.context_button.setCheckable(True)
-        self.context_button.toggled.connect(self._toggle_context)
-        context_layout.addWidget(self.context_button)
+        context_card, context_layout = card("Контекст события")
         self.context = self._editor("Разговор, по которому сформирована реплика", 280)
-        context_layout.addWidget(self.context)
-        self.instructions_button = QPushButton("Показать инструкции запроса")
-        self.instructions_button.setCheckable(True)
-        self.instructions_button.toggled.connect(self._toggle_instructions)
-        context_layout.addWidget(self.instructions_button)
+        self.context_disclosure = Disclosure("Показать контекст", self.context)
+        self.context_button = self.context_disclosure.button
+        self.context_button.toggled.connect(self._toggle_context)
+        context_layout.addWidget(self.context_disclosure)
         self.instructions = self._editor("Инструкции, использованные при генерации", 260)
-        context_layout.addWidget(self.instructions)
+        self.instructions_disclosure = Disclosure("Показать инструкции запроса", self.instructions)
+        self.instructions_button = self.instructions_disclosure.button
+        self.instructions_button.toggled.connect(self._toggle_instructions)
+        context_layout.addWidget(self.instructions_disclosure)
         self.context_card = context_card
         detail_layout.addWidget(context_card)
         detail_layout.addStretch()
-        right = scroll_page(detail_page)
-        right.setMinimumWidth(340)
-        splitter.addWidget(right)
-        splitter.setStretchFactor(0, 2)
-        splitter.setStretchFactor(1, 3)
-        splitter.setChildrenCollapsible(False)
-        outer.addWidget(splitter, 1)
+        right = scroll_page(detail_page, ambient=False)
+        self._detail_transition = PageTransition(right.viewport())
+        self.master_detail = MasterDetail(left, right)
+        self.master_detail.restore_sizes([520, 520])
+        outer.addWidget(self.master_detail, 1)
+
 
         self.refresh_button.clicked.connect(lambda: self.refresh(reset=True))
         self.newer.clicked.connect(self._newer)
         self.older.clicked.connect(self._older)
         self.entries.currentItemChanged.connect(self._selection)
+        self.entries.itemClicked.connect(lambda *_: self.master_detail.show_detail())
         self._search_timer = QTimer(self)
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(200)
@@ -210,6 +277,8 @@ class HistoryPage(QWidget):
         self._cancel[category] = Event()
         self._tokens[category] += 1
         self._tasks.put((category, self._tokens[category], args, self._cancel[category]))
+        if category == "detail":
+            self._poll.setInterval(16)
 
     def refresh(self, *, reset=False):
         if self._closed.is_set():
@@ -264,47 +333,79 @@ class HistoryPage(QWidget):
                 if error:
                     self.hint.setText("История недоступна. Сохранённые файлы не изменены.")
                     continue
+                rows_changed = self._rows != result["rows"]
                 self._rows, self._more = result["rows"], result["more"]
-                selected = self._selected
-                self.entries.blockSignals(True)
-                self.entries.clear()
-                select_index = 0
-                for index, row in enumerate(self._rows):
-                    source = "Награда" if row["kind"] == "reward" else "Самостоятельная реплика"
-                    target = " · @" + row["viewer"] if row["viewer"] else ""
-                    body = row["answer"] or row["sent_text"] or row["question"] or REASONS.get(row["reason"], row["reason"])
-                    body = " ".join(body.split())
-                    item = QListWidgetItem(f"{timestamp(row['created'])} · {source}{target}\n"
-                                           f"{STATUS_NAMES.get(row['status'], row['status'])}\n{body[:140]}")
-                    item.setData(Qt.UserRole, row["id"])
-                    self.entries.addItem(item)
-                    if row["id"] == selected:
-                        select_index = index
-                self.entries.blockSignals(False)
+                if rows_changed:
+                    selected = self._selected
+                    self.entries.blockSignals(True)
+                    self.entries.itemDelegate().selection.reset()
+                    old_scroll = self.entries.verticalScrollBar().value()
+                    self.entries.clear()
+                    select_index = 0
+                    for index, row in enumerate(self._rows):
+                        source = "Награда" if row["kind"] == "reward" else "Самостоятельная реплика"
+                        target = " · @" + row["viewer"] if row["viewer"] else ""
+                        body = row["answer"] or row["sent_text"] or row["question"] or REASONS.get(row["reason"], row["reason"])
+                        body = " ".join(body.split())
+                        item = QListWidgetItem(f"{timestamp(row['created'])} · {source}{target}\n"
+                                               f"{STATUS_NAMES.get(row['status'], row['status'])}\n{body[:140]}")
+                        item.setData(Qt.UserRole, row["id"])
+                        item.setData(Qt.UserRole + 1, dict(time=timestamp(row["created"], short=True)[:5],
+                            title=" ".join((row["question"] or row["answer"] or row["sent_text"] or REASONS.get(row["reason"], row["reason"]) or STATUS_NAMES.get(row["status"], row["status"])).split()),
+                            subtitle=" · ".join(part for part in (row["viewer"], source, STATUS_NAMES.get(row["status"], row["status"])) if part),
+                            date=timestamp(row["created"]).split(" ")[0]))
+                        self.entries.addItem(item)
+                        if row["id"] == selected:
+                            select_index = index
+                    self.entries.blockSignals(False)
                 self.newer.setEnabled(len(self._cursors) > 1)
                 self.older.setEnabled(self._more)
                 self.page_label.setText(f"Страница {len(self._cursors)}")
                 self.hint.setText(f"Записей на странице: {len(self._rows)}. Самые новые — сверху." if self._rows else
-                                  "Записей пока нет или они не подходят под фильтры. История появится после работы бота.")
+                                  "Ничего не найдено. Сбросьте фильтры или измените поиск." if self.kind.currentData() or self.status.currentData() or self.search.text().strip() else "История пуста. Запустите бота — здесь появятся ответы и решения.")
+                self.reset_filters.setVisible(not self._rows and bool(self.kind.currentData() or self.status.currentData() or self.search.text().strip()))
+                self.hint.setVisible(not self._rows)
                 if self._rows:
-                    self.entries.setCurrentRow(select_index)
+                    if rows_changed:
+                        self.entries.setCurrentRow(select_index)
+                        self.entries.verticalScrollBar().setValue(old_scroll)
+                    else:
+                        # A background refresh must not reset the travelling
+                        # selection when the visible rows have not changed.
+                        self._selection(self.entries.currentItem())
                 else:
                     self._selected = None
                     self._cancel["detail"].set()
                     self._clear_detail()
-            elif result is not None and result["id"] == self._selected:
-                self._render(result)
+            else:
+                self._poll.setInterval(100)
+                if error or result is None:
+                    self._clear_detail()
+                    self.badge.setText("Запись недоступна" if not error else "Не удалось загрузить")
+                elif result["id"] == self._selected:
+                    self._render(result)
+
+    def _reset_filters(self):
+        self.kind.setCurrentIndex(0)
+        self.status.setCurrentIndex(0)
+        self.search.clear()
+        self.refresh(reset=True)
 
     def _selection(self, item, previous=None):
         if item is None:
             return
         record_id = item.data(Qt.UserRole)
-        if record_id != self._selected:
-            self._clear_detail()
+        if record_id != self._detail_id:
+            self.badge.setText("Загрузка…")
+            for button in self.copy_buttons:
+                button.setEnabled(False)
         self._selected = record_id
         self._request("detail", record_id=record_id)
 
     def _clear_detail(self):
+        self._detail_transition.finish()
+        for button in self.copy_buttons:
+            button.setEnabled(False)
         self._detail_id = None
         self.badge.setText("Выберите запись")
         self.meta.clear()
@@ -315,11 +416,13 @@ class HistoryPage(QWidget):
         self.notice.clear()
         for widget in (self.question, self.question_label, self.notice, self.notice_label, self.context_card):
             widget.hide()
-        self.context_button.setChecked(False)
-        self.instructions_button.setChecked(False)
 
     def _render(self, row):
+        changed = self._detail_id != row["id"]
+        previous = self._detail_transition.snapshot() if changed and self.isVisible() and QApplication.instance().property("animations") is not False else None
         self._detail_id = row["id"]
+        for button in self.copy_buttons:
+            button.setEnabled(True)
         self.badge.setText(STATUS_NAMES.get(row["status"], row["status"]))
         self.badge.setProperty("state", row["status"])
         self.badge.style().unpolish(self.badge)
@@ -359,17 +462,24 @@ class HistoryPage(QWidget):
             instructions = "\n\n".join(message["content"] for message in context.get("request_messages", ())
                                         if message.get("role") == "system")
             self.instructions.setPlainText(instructions)
-            self.instructions_button.setVisible(bool(instructions))
+            self.instructions_disclosure.setVisible(bool(instructions))
+        else:
+            self.context.clear()
+            self.instructions.clear()
         self._toggle_context(self.context_button.isChecked())
         self._toggle_instructions(self.instructions_button.isChecked())
+        if previous is not None:
+            self._detail_transition.start(previous)
 
     def _toggle_context(self, checked):
-        self.context.setVisible(checked)
-        self.context_button.setText("Скрыть контекст" if checked else "Показать контекст")
+        self.context_disclosure.title = "Скрыть контекст" if checked else "Показать контекст"
+        self.context_button.setText(self.context_disclosure.title)
+        self.context_button.setAccessibleName(self.context_disclosure.title)
 
     def _toggle_instructions(self, checked):
-        self.instructions.setVisible(checked)
-        self.instructions_button.setText("Скрыть инструкции запроса" if checked else "Показать инструкции запроса")
+        self.instructions_disclosure.title = "Скрыть инструкции запроса" if checked else "Показать инструкции запроса"
+        self.instructions_button.setText(self.instructions_disclosure.title)
+        self.instructions_button.setAccessibleName(self.instructions_disclosure.title)
 
     def shutdown(self):
         self._closed.set()

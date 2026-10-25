@@ -1,0 +1,16 @@
+{
+  "CHANGE-01": {
+    "ram_context_cleared": true,
+    "sqlite_context_reintroduced": false,
+    "journal_record_preserved": true
+  },
+  "CHANGE-04": {
+    "returned": 1,
+    "context_documents_decoded": 1
+  },
+  "CHANGE-06": {
+    "http_calls": 1,
+    "original_cache_preserved": true,
+    "error_type": "TemporaryTwitchError"
+  }
+}

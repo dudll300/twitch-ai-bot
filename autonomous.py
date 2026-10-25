@@ -1,5 +1,7 @@
 """Low-priority, bounded chat participation with live local settings."""
 
+from runtime_events import emit_ui
+
 import asyncio
 from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
@@ -21,7 +23,7 @@ import uuid
 
 from ai_client import RequestTrace, clean_text, redact_secret
 from privacy import FragmentGuard, PrivacyAnalysisLimit, PrivacyCheckError, PrivacyViolation, unsafe_question
-from irc import moderation_event
+from irc import moderation_event, parse_irc
 from safety_settings import PolicyStore, policy_scope, run_with_policy, current_policy
 from safety import SafetyBlocked, SafetyReview, review_candidate, validate_publication, publication_guard
 from local_context import LocalBundle, LocalResultError
@@ -177,15 +179,12 @@ class ChatBuffer:
     def add_irc(self, line, channel, bot_name, now, settings):
         self.deleted = OrderedDict((key, at) for key, at in self.deleted.items() if now - at <= 300)
         self.cutoffs = OrderedDict((key, row) for key, row in self.cutoffs.items() if now - row[0] <= 300)
-        tags = {}
-        if line.startswith("@"):
-            tag_text, _, line = line.partition(" ")
-            tags = dict(part.split("=", 1) if "=" in part else (part, "") for part in tag_text[1:].split(";"))
-        header, separator, text = line.partition(" :")
-        parts = header.split()
-        if not separator or len(parts) != 3 or parts[1] != "PRIVMSG" or parts[2].casefold() != "#" + channel.casefold():
+        message = parse_irc(line)
+        if (message is None or message.malformed or message.command != "PRIVMSG"
+                or message.channel != channel.casefold() or len(message.params) != 1):
             return False
-        author = parts[0].lstrip(":").split("!", 1)[0].casefold()
+        tags, text = message.tags, message.text
+        author = message.prefix.split("!", 1)[0].casefold()
         if not re.fullmatch(r"[a-z0-9_]{1,25}", author) or author == bot_name.casefold() or tags.get("custom-reward-id"):
             return False
         try:
@@ -317,7 +316,7 @@ class Autonomous:
         print("AUTO_EVENT " + json.dumps(event, ensure_ascii=False), flush=True)
 
     def event(self, status, text="", action="", reason="", *, target="", basis=()):
-        self.emit({"time": datetime.fromtimestamp(self.clock()).strftime("%H:%M:%S"),
+        self.emit({"time": datetime.fromtimestamp(self.clock(), timezone.utc).isoformat(),
                    "status": status, "action": action, "text": redact_secret(text, self.cfg.get("AI_API_KEY", "")),
                    "reason": reason, "target": target, "basis": list(basis)})
 
@@ -348,6 +347,7 @@ class Autonomous:
         if revision == self.revision:
             return
         self.settings, self.revision = settings, revision
+        emit_ui("settings", section="autonomous", version=revision)
         self.interrupt()
         self.buffer.clear()
         if not settings.enabled:
@@ -395,6 +395,8 @@ class Autonomous:
         with self._state_lock:
             event = moderation_event(line, self.cfg["TWITCH_CHANNEL"])
             if event is not None and self.connected:
+                if self.history_store is not None:
+                    self.history_store.note_moderation(self.cfg["TWITCH_CHANNEL"], event)
                 removed = self.buffer.moderate(event, self.clock())
                 self.output_fragments.clear(event.user_id or None)
                 active = self.pending or self.reviewing
@@ -469,11 +471,24 @@ class Autonomous:
             if value not in self.consumed_ids:
                 self.consumed_ids.append(value)
 
-    def reserve(self, text, basis=()):
+    def reserve(self, text, basis=(), *, before_commit=None):
         with self._state_lock:
             now = self.clock()
             quota = [t for t in self.quota if now - t < 3600] + [now]
             self.write_quota(quota, self.requests, text)
+            # Storage can outlive the opportunity or a settings revision. Keep
+            # the in-memory reservation uncommitted until the last check; no
+            # Twitch write or preview has happened, so rollback is still safe.
+            if before_commit is not None:
+                try:
+                    before_commit()
+                except RequestCancelled:
+                    try:
+                        self.write_quota(self.quota, self.requests, self.last_text)
+                    except OSError:
+                        self.quota_error = True
+                        raise RequestCancelled(code='quota_storage_error') from None
+                    raise
             self.quota, self.last_text = quota, text
             self.recent_candidates.append((now, text))
             self.consume(basis)
@@ -606,6 +621,8 @@ class Autonomous:
                     "preview" if self.settings.mode == "preview" else "autonomous", review, record_id=record_id)
 
     async def tick(self):
+        if self.history_store is not None:
+            await asyncio.to_thread(self.history_store.flush_moderation)
         self.refresh()
         self.refresh_local()
         if self.pending is not None and self.pending.future.done():
@@ -664,14 +681,17 @@ class Autonomous:
                         check_basis(decision, pending.messages, pending.new_ids)
                         if redact_secret(decision.reply, self.cfg.get("AI_API_KEY", "")) != decision.reply:
                             raise ValueError("secret in reply")
-                        def valid():
+                        def valid(*, lease_reserved=False):
                             return (current() and not set(decision.basis).intersection(self.consumed_ids)
                                     and (not isinstance(local_bundle, LocalBundle)
                                          or self.local_manager.is_current(local_bundle.snapshot))
-                                    and (creative_card_id is None
+                                    and (creative_card_id is None or lease_reserved
                                          or self.local_manager.is_allowed(local_bundle, creative_card_id))
                                     and still_relevant(decision, pending.messages,
                                         self.buffer.fresh(self.clock(), self.settings), pending.new_ids, self.clock(), self.settings))
+                        def validate_reservation(*, lease_reserved=False):
+                            if not valid(lease_reserved=lease_reserved):
+                                raise RequestCancelled(code=cancellation_reason('cancelled'))
                         text = decision.reply
                         approval = None
                         if decision.action != "silent" and valid():
@@ -718,7 +738,7 @@ class Autonomous:
                                 self.event("skipped", reason=reason)
                             else:
                                 with publication_guard(text, approval, limit=min(self.settings.max_chars, 450), target=decision.target):
-                                    self.reserve(text, decision.basis)
+                                    self.reserve(text, decision.basis, before_commit=validate_reservation)
                                 self.event("preview", text, decision.reason,
                                            reason=("Творческая карточка в предпросмотре: " + redact_secret(
                                                creative_card_id, self.cfg.get("AI_API_KEY", ""))) if creative_card_id else "",
@@ -728,7 +748,9 @@ class Autonomous:
                             kwargs["approval"] = approval
                             stage = "autonomous_send"
                             def reserve_send():
-                                self.reserve(text, decision.basis)
+                                # The sender already holds the local-card lease;
+                                # it must not reject its own reservation as busy.
+                                self.reserve(text, decision.basis, before_commit=lambda: validate_reservation(lease_reserved=True))
                                 pending.request_trace.twitch_attempted = True
                             sent = await self.sender(text, valid, reserve_send, **kwargs)
                             if (sent and pending.generation == self.generation and self.connected

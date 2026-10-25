@@ -1,13 +1,12 @@
 """Live participation controls and a human-readable decision journal."""
 
 from dataclasses import asdict
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPen
-from PySide6.QtWidgets import QAbstractSpinBox, QGridLayout, QHBoxLayout, QPushButton, QSpinBox, QStyle, QStyleOptionSpinBox, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtWidgets import QAbstractSpinBox, QFrame, QGridLayout, QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from autonomous import AutoSettings, MINIMUM_VALUES, load_settings, save_settings, validate_settings
 from participation import PARTICIPATION
-from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page
+from ui_widgets import NoWheelComboBox, ScrollPlainTextEdit, ToggleSwitch, card, field, label, scroll_page, Disclosure
 
 
 PARAMETERS = (
@@ -28,42 +27,31 @@ PARAMETERS = (
 )
 
 
-class NumberInput(QSpinBox):
-    """Keep step controls legible under the dark stylesheet on Windows."""
+from ui_widgets import StudioButton as QPushButton
 
-    def wheelEvent(self, event):
-        event.ignore()
-
-    def paintEvent(self, event):
-        super().paintEvent(event)
-        option = QStyleOptionSpinBox()
-        self.initStyleOption(option)
-        painter = QPainter(self)
-        painter.setPen(QPen(QColor("#d5d8de"), 1.5))
-        for control in (QStyle.SC_SpinBoxUp, QStyle.SC_SpinBoxDown):
-            center = self.style().subControlRect(QStyle.CC_SpinBox, option, control, self).center()
-            painter.drawLine(center.x() - 4, center.y(), center.x() + 4, center.y())
-            if control == QStyle.SC_SpinBoxUp:
-                painter.drawLine(center.x(), center.y() - 4, center.x(), center.y() + 4)
+from studio_controls import NumberInput
+from ui_widgets import ResponsiveColumns
 
 
 class AutonomousPage(QWidget):
+    changed = Signal()
     def __init__(self, root):
         super().__init__()
         self.path = root / "autonomous.json"
         self._loading = True
         self._running = False
         try:
-            self.saved, _ = load_settings(self.path)
+            self.saved, self.revision = load_settings(self.path)
             error = ""
         except (OSError, ValueError, TypeError):
             self.saved = AutoSettings()
+            self.revision = "invalid"
             error = "Файл настроек повреждён. Режим выключен; проверьте параметры и сохраните их заново."
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(0, 0, 8, 0)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(20)
         main, main_layout = card("Самостоятельные реплики")
         controls = QHBoxLayout()
@@ -75,6 +63,8 @@ class AutonomousPage(QWidget):
         self.mode = NoWheelComboBox()
         self.mode.addItem("Предпросмотр", "preview")
         self.mode.addItem("Публикация", "publish")
+        self.mode.setSizeAdjustPolicy(NoWheelComboBox.AdjustToContents)
+        self.mode.setMinimumContentsLength(0)
         self.mode.setCurrentIndex(0 if self.saved.mode == "preview" else 1)
         self.mode.setAccessibleName("Режим отправки самостоятельных реплик")
         controls.addWidget(self.mode)
@@ -105,14 +95,23 @@ class AutonomousPage(QWidget):
         self.reset_prompt_button = QPushButton("Вернуть стандартные инструкции")
         self.reset_prompt_button.setProperty("variant", "quiet")
         self.reset_prompt_button.clicked.connect(self.reset_prompt)
-        instructions_layout.addWidget(self.reset_prompt_button, 0, Qt.AlignLeft)
+        prompt_footer = QWidget()
+        footer_layout = QVBoxLayout(prompt_footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(16)
+        self.prompt_rule = QFrame()
+        self.prompt_rule.setObjectName("rule")
+        self.prompt_rule.setFixedHeight(1)
+        footer_layout.addWidget(self.prompt_rule)
+        footer_layout.addWidget(self.reset_prompt_button, 0, Qt.AlignLeft)
+        instructions_layout.addWidget(prompt_footer)
         instructions_layout.addWidget(label(
-            "Изменения текста и числовых параметров применяются вместе по кнопке «Применить». "
+            "Изменения текста и числовых параметров применяются вместе по кнопке «Сохранить и применить». "
             "До 10 000 символов; пустое поле оставляет обязательные правила приложения. "
             "Сначала AI выбирает одну цепочку и повод, затем пишет реплику только по ней. "
             "Шутка необязательна; качество и уместность оценивайте в предпросмотре.",
             "muted", True))
-        layout.addWidget(instructions)
+
         options, options_layout = card("Частота и контекст", "Новые сообщения собираются в короткий фрагмент. AI выбирает один разговор и адресата; проверки не выполняются на каждую строку.")
         grid = QGridLayout()
         grid.setHorizontalSpacing(24)
@@ -139,14 +138,11 @@ class AutonomousPage(QWidget):
             target.addWidget(field(title, spin), position // 2, position % 2)
             spin.valueChanged.connect(self._edited)
         options_layout.addLayout(grid)
-        self.advanced_button = QPushButton("Расширенные настройки")
-        self.advanced_button.setCheckable(True)
-        self.advanced_button.setProperty("variant", "quiet")
+        self.advanced_disclosure = Disclosure("Расширенные настройки", self.advanced_panel)
+        self.advanced_button = self.advanced_disclosure.button
         self.advanced_button.setAccessibleName("Показать расширенные настройки")
         self.advanced_button.toggled.connect(self._toggle_advanced)
-        options_layout.addWidget(self.advanced_button, 0, Qt.AlignLeft)
-        self.advanced_panel.hide()
-        options_layout.addWidget(self.advanced_panel)
+        options_layout.addWidget(self.advanced_disclosure)
         options_layout.addWidget(label(
             "Максимум за час задаётся вами. Предпросмотр учитывает те же паузы и лимиты. "
             "Вопросы по награде всегда имеют приоритет. AI расходует баланс API: выбор разговора — один запрос, "
@@ -172,7 +168,21 @@ class AutonomousPage(QWidget):
         self.log.setPlaceholderText("После запуска бота здесь появятся решения: промолчать, ответить, отреагировать, пошутить или задать вопрос.")
         self.log.setAccessibleName("Журнал самостоятельных реплик")
         journal_layout.addWidget(self.log)
-        layout.addWidget(journal)
+        layout.removeWidget(main)
+        layout.removeWidget(options)
+        left, right = QWidget(), QWidget()
+        left_box, right_box = QVBoxLayout(left), QVBoxLayout(right)
+        for box in (left_box, right_box):
+            box.setContentsMargins(0, 0, 0, 0)
+            box.setSpacing(20)
+        left_box.addWidget(main)
+        left_box.addWidget(options)
+        left_box.addStretch()
+        right_box.addWidget(journal)
+        self.instructions_disclosure = Disclosure("Инструкции самостоятельного участия", instructions)
+        right_box.addWidget(self.instructions_disclosure)
+        right_box.addStretch()
+        layout.addWidget(ResponsiveColumns(left, right, threshold=850))
         outer.addWidget(scroll_page(content))
         self.enabled.toggled.connect(self._live_change)
         self.mode.currentIndexChanged.connect(self._live_change)
@@ -187,8 +197,24 @@ class AutonomousPage(QWidget):
     def _update_hint(self):
         changed = self.autonomous_prompt.toPlainText() != self.saved.autonomous_prompt or any(
             widget.value() != getattr(self.saved, key) for key, widget in self.inputs.items())
-        self.hint.setText("Текст или параметры изменены — нажмите «Применить»" if changed else
+        self.hint.setText("Текст или параметры изменены — нажмите «Сохранить и применить»" if changed else
                           "Инструкции и параметры сохранены")
+        self.changed.emit()
+
+    @property
+    def dirty(self):
+        return self.autonomous_prompt.toPlainText() != self.saved.autonomous_prompt or any(
+            widget.value() != getattr(self.saved, key) for key, widget in self.inputs.items())
+
+    def revert(self):
+        self._loading = True
+        try:
+            for key, widget in self.inputs.items():
+                widget.setValue(getattr(self.saved, key))
+            self.autonomous_prompt.setPlainText(self.saved.autonomous_prompt)
+        finally:
+            self._loading = False
+        self._update_hint()
 
     def reset_prompt(self):
         # Restoring instructions is an editor action; it does not enable the mode
@@ -196,8 +222,8 @@ class AutonomousPage(QWidget):
         self.autonomous_prompt.setPlainText(AutoSettings().autonomous_prompt)
 
     def _toggle_advanced(self, expanded):
-        self.advanced_panel.setVisible(expanded)
         self.advanced_button.setText("Скрыть расширенные настройки" if expanded else "Расширенные настройки")
+        self.advanced_disclosure.title = self.advanced_button.text()
         self.advanced_button.setAccessibleName("Скрыть расширенные настройки" if expanded else
                                                "Показать расширенные настройки")
 
@@ -222,6 +248,7 @@ class AutonomousPage(QWidget):
             self._loading = False
             return False
         self.saved = settings
+        self.revision = load_settings(self.path)[1]
         self.error.hide()
         self.set_running(self._running)
         self._update_hint()
@@ -259,8 +286,8 @@ class AutonomousPage(QWidget):
 
     def set_running(self, running):
         self._running = running
-        self.state.setText("Тумблер, режим и характер участия сохраняются сразу. Бот применяет изменения без перезапуска." if running else
-                           "Настройки сохранены для следующего запуска бота. Тумблер, режим и характер участия сохраняются сразу.")
+        self.state.setText("Включение, режим и характер участия действуют сразу." if running else
+                           "Инструкции и частота сохраняются отдельно. Режим сейчас выключен." if not self.saved.enabled else "Режим сохранён для следующего запуска.")
 
     def push_event(self, event):
         statuses = {"settings": "Настройки", "pending": "Проверка AI", "silent": "Промолчать",

@@ -1,17 +1,24 @@
 """Native GUI builds: Windows EXE, macOS app bundle, Linux directory."""
 
 import runpy
+import json
+import subprocess
 import sys
 from pathlib import Path
 
 root = Path(SPECPATH)
 version = runpy.run_path(str(root / "version.py"))["VERSION"]
 name = "TwitchAIBot"
+build_info = root / "build-info.json"
+commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True).strip()
+build_info.write_text(json.dumps({"commit": commit}), encoding="utf-8")
 analysis = Analysis(
     [str(root / "app.py")],
     pathex=[str(root)],
     datas=[(str(root / "assets" / "app.ico"), "assets"),
            (str(root / "assets" / "checkmark.svg"), "assets"),
+           (str(root / "assets" / "fonts"), "assets/fonts"),
+           (str(build_info), "."),
            (str(root / "memory.example.json"), ".")],
 )
 archive = PYZ(analysis.pure)

@@ -1,5 +1,7 @@
 """Small Twitch IRC bot for an OpenAI-compatible chat API (Python 3.10+)."""
 
+from runtime_events import emit_ui
+
 import asyncio
 import json
 import os
@@ -10,6 +12,7 @@ import time
 import urllib.request
 from collections import deque
 from dataclasses import replace
+from threading import Event
 
 from configuration import AI_MODEL, AI_FALLBACK_MODELS, SYSTEM_PROMPT, DEFAULTS, FIELDS, normalize, read_config
 
@@ -21,15 +24,16 @@ from local_context import LocalContextManager, LocalReply, LocalResultError, pre
 from reply_rules import CHAT_MAX_CHARS
 from memory import ensure_local_memory, load_memory
 from message_history import MessageHistory
-from recent_context import for_reward
+from recent_context import for_reward, references_public_reply
 from profiles import REWARD_BLOCKED_REFUSAL, load_profiles, profile_for, prompt_for, reward_is_blocked
 from privacy import FragmentGuard, PRIVACY_REFUSAL, PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError, check_question, safe_history_text, unsafe_question
-from irc import moderation_event
+from irc import moderation_event, parse_irc, pong_payload
 from safety import (SAFETY_REFUSAL, SafetyBlocked, SafetyReview, check_candidate_source,
                     local_review, validate_publication, publication_guard)
 from safety_settings import PolicyStore, policy_scope, current_policy, policy_binding
 from viewer_recognition import related_context
 from paths import data_dir
+from participation import RequestCancelled
 from rewards import RewardListener
 from twitch_auth import get_access_token
 
@@ -57,12 +61,8 @@ def config() -> dict[str, str]:
 
 
 def irc_command(line: str) -> str:
-    parts = line.split()
-    if parts and parts[0].startswith("@"):
-        parts.pop(0)
-    if parts and parts[0].startswith(":"):
-        parts.pop(0)
-    return parts[0] if parts else ""
+    message = parse_irc(line)
+    return message.command if message is not None else ""
 
 
 class AIModelRouter:
@@ -76,7 +76,9 @@ class AIModelRouter:
     def ask(self, cfg: dict[str, str], user: str, question: str,
             memory_data: dict | None = None, user_id: str = "",
             history: tuple[tuple[str, str], ...] = (), *, allow_creative=True, on_answer=None,
-            recent_context=(), history_times=(), history_recipients=()) -> str:
+            recent_context=(), history_times=(), history_recipients=(), cancelled=None) -> str:
+        if cancelled is not None and cancelled():
+            raise RequestCancelled()
         check_question(question)
         self.last_model = ""
         bundle = None
@@ -86,9 +88,12 @@ class AIModelRouter:
         try:
             answer = self._ask_models(cfg, user, question, memory_data, user_id, history, bundle,
                                       reject_local_service=not allow_creative,
-                                      recent_context=recent_context, history_times=history_times, history_recipients=history_recipients)
+                                      recent_context=recent_context, history_times=history_times,
+                                      history_recipients=history_recipients, cancelled=cancelled)
             if not allow_creative and is_local_service_output(answer):
                 raise LocalResultError("Некорректный обычный ответ после отмены локальной отсылки.")
+            if cancelled is not None and cancelled():
+                raise RequestCancelled()
             if on_answer is not None:
                 on_answer(answer, self.last_model)
             return answer
@@ -98,10 +103,16 @@ class AIModelRouter:
             print("Локальный контекст: некорректный результат; повторяю ответ без творческой отсылки.", flush=True)
             return self.ask(cfg, user, question, memory_data, user_id, history,
                             allow_creative=False, on_answer=on_answer,
-                            recent_context=recent_context, history_times=history_times, history_recipients=history_recipients)
+                            recent_context=recent_context, history_times=history_times,
+                            history_recipients=history_recipients, cancelled=cancelled)
 
     def _ask_models(self, cfg, user, question, memory_data, user_id, history, local_bundle,
-                    *, reject_local_service=False, recent_context=(), history_times=(), history_recipients=()):
+                    *, reject_local_service=False, recent_context=(), history_times=(), history_recipients=(), cancelled=None):
+        def before_request():
+            if cancelled():
+                raise RequestCancelled()
+            return AI_REQUEST_TIMEOUT_SECONDS
+
         primary = cfg["AI_MODEL"]
         backups = tuple(dict.fromkeys(name.strip() for name in cfg.get("AI_FALLBACK_MODELS", "").split(",")
                                       if name.strip() and name.strip() != primary))
@@ -109,12 +120,20 @@ class AIModelRouter:
         if not models or time.monotonic() >= self.primary_disabled_until:
             models = (primary,) + models
         personal_prompt = prompt_for(self.profiles, user, user_id)
-        context = related_context(self.profiles, clean_question(question), memory_data,
+        public_reference = references_public_reply(question)
+        context_profiles = self.profiles
+        if public_reference:
+            sender = profile_for(self.profiles, user, user_id)
+            context_profiles = [sender] if sender is not None else []
+        context = related_context(context_profiles, clean_question(question), memory_data,
                                   sender_profile=profile_for(self.profiles, user, user_id))
         last_error = None
         for model in models:
             try:
                 kwargs = {"model": model, "history": history}
+                if cancelled is not None:
+                    before_request()
+                    kwargs["before_request"] = before_request
                 if recent_context:
                     kwargs["recent_context"] = recent_context
                 if history_times:
@@ -298,9 +317,11 @@ class Bot:
     async def worker(self, writer: asyncio.StreamWriter, queue: asyncio.Queue) -> None:
         while True:
             user, user_id, question, redemption_id = await queue.get()
+            emit_ui("queue", size=queue.qsize(), phase="started")
             self._paid_busy = True
             record_id = None
             recorded_review = None
+            cancel = Event()
             scope = policy_scope(getattr(self, "safety_store", PolicyStore(ROOT)))
             scope.__enter__()
             try:
@@ -324,6 +345,7 @@ class Bot:
                     if getattr(self, "history", None) is not None and isinstance(self.ai_router, AIModelRouter):
                         kwargs["on_answer"] = generated
                     if isinstance(self.ai_router, AIModelRouter):
+                        kwargs["cancelled"] = cancel.is_set
                         if recent:
                             kwargs['recent_context'] = recent
                         if history_times:
@@ -344,7 +366,8 @@ class Bot:
                 autonomous = getattr(self, "autonomous", None)
                 rows = autonomous.reward_reply_snapshot() if isinstance(autonomous, Autonomous) else ()
                 recent = await asyncio.to_thread(for_reward, getattr(self, "history", None), rows,
-                    self.cfg.get("TWITCH_CHANNEL", ""), user, user_id, time.time())
+                    self.cfg.get("TWITCH_CHANNEL", ""), user, user_id, time.time(), question=question,
+                    profiles=self.ai_router.profiles if isinstance(self.ai_router, AIModelRouter) else ())
                 origins = tuple(getattr(self, 'history_recipients', {}).get(key, ()))
                 history_recipients = ('',) * max(0, len(history) - len(origins)) + origins[-len(history):] if history else ()
                 fragments = getattr(self, "fragments", None)
@@ -405,8 +428,10 @@ class Bot:
                     del self.histories[oldest]
                     self.history_times.pop(oldest, None)
                     self.history_recipients.pop(oldest, None)
+                emit_ui("reply", state="sent", record_id=record_id or "")
                 print(f"Ответ отправлен для {user}", flush=True)
             except asyncio.CancelledError:
+                cancel.set()
                 await self.history_update(record_id, "cancelled", reason="Ответ прерван при остановке или разрыве соединения.")
                 print(f"Награда {redemption_id} от {user}: ответ прерван; проверьте возврат баллов вручную.", flush=True)
                 raise
@@ -440,11 +465,14 @@ class Bot:
                 except Exception as send_error:
                     await self.history_update(record_id, "send_error", reason=str(send_error))
             finally:
+                cancel.set()
                 scope.__exit__(None, None, None)
                 self._paid_busy = False
                 queue.task_done()
+                emit_ui("queue", size=queue.qsize(), phase="finished")
 
     async def connection(self) -> None:
+        emit_ui("chat", state="connecting")
         access_token = await asyncio.to_thread(
             get_access_token, self.cfg["TWITCH_CLIENT_ID"], self.cfg["TWITCH_BOT_NAME"],
             ROOT / ".twitch_token.json",
@@ -470,6 +498,7 @@ class Bot:
                     raise
                 await self.history_update(record_id, "error", sent_text=notice)
                 return
+            emit_ui("queue", size=queue.qsize(), phase="queued")
             print(f"Вопрос от {user} принят (в очереди: {queue.qsize()})", flush=True)
 
         listener = RewardListener(
@@ -501,12 +530,21 @@ class Bot:
             async def read_chat() -> None:
                 while raw := await reader.readline():
                     line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
-                    command = irc_command(line)
+                    message = parse_irc(line)
+                    if message is None or message.malformed and message.command not in ("CLEARMSG", "CLEARCHAT"):
+                        continue
+                    command = message.command
                     if command == "PING":
-                        await self.send(writer, "PONG " + line[5:])
+                        if payload := pong_payload(message):
+                            await self.send(writer, "PONG " + payload)
+                    elif command in ("366", "ROOMSTATE") and message.channel == self.cfg["TWITCH_CHANNEL"].casefold():
+                        emit_ui("chat", state="ready")
+                    elif (command == "JOIN" and message.channel == self.cfg["TWITCH_CHANNEL"].casefold()
+                          and message.prefix.split("!", 1)[0].casefold() == self.cfg["TWITCH_BOT_NAME"].casefold()):
+                        emit_ui("chat", state="ready")
                     elif command == "RECONNECT":
                         return
-                    elif command == "NOTICE" and "Login authentication failed" in line:
+                    elif command == "NOTICE" and "Login authentication failed" in message.text:
                         raise RuntimeError("Twitch отклонил OAuth-токен")
                     elif command in ("PRIVMSG", "CLEARMSG", "CLEARCHAT"):
                         self.autonomous.receive(line)
@@ -515,7 +553,7 @@ class Bot:
                             self.fragments.clear(event.user_id or None)
                             # Reward history is also a source of AI context, even
                             # when autonomous participation is disabled.
-                            if event.kind == "all":
+                            if event.kind in ("all", "uncertain"):
                                 self.histories.clear()
                                 self.history_times.clear()
                                 self.history_recipients.clear()
@@ -524,14 +562,17 @@ class Bot:
                                 self.histories.pop(key, None)
                                 self.history_times.pop(key, None)
                                 self.history_recipients.pop(key, None)
+                            await asyncio.to_thread(self.history.flush_moderation)
                     elif command == "NOTICE":
-                        print("Twitch: " + line.split(" :", 1)[-1], flush=True)
+                        print("Twitch: " + message.text, flush=True)
 
             reader_task = asyncio.create_task(read_chat())
             done, _ = await asyncio.wait((reader_task, rewards_task, autonomous_task), return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 task.result()
         finally:
+            emit_ui("chat", state="disconnected")
+            emit_ui("eventsub", state="disconnected")
             self.autonomous.disconnect()
             self.fragments.clear()
             self.histories.clear()
@@ -565,6 +606,7 @@ class Bot:
                     await self.connection()
                     print("Соединение закрыто; повтор через 5 секунд", flush=True)
                 except (OSError, asyncio.IncompleteReadError) as exc:
+                    emit_ui("chat", state="error")
                     print(f"Ошибка соединения: {exc}", flush=True)
                 await asyncio.sleep(5)
         finally:
@@ -572,6 +614,8 @@ class Bot:
 
 
 if __name__ == "__main__":
+    from app_version import log_startup
+    log_startup()
     try:
         asyncio.run(Bot(config()).run())
     except (ValueError, RuntimeError) as exc:

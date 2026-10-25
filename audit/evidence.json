@@ -1,0 +1,30 @@
+{
+  "CHANGE-01": {
+    "ram_context_cleared": true,
+    "sqlite_context_reintroduced": true,
+    "journal_record_preserved": true
+  },
+  "CHANGE-02": {
+    "window_closed": true,
+    "close_confirmation_shown": false,
+    "draft_written": false
+  },
+  "CHANGE-03": {
+    "env_already_updated": true,
+    "prompt_still_old": true
+  },
+  "CHANGE-04": {
+    "returned": 1,
+    "context_documents_decoded": 2001
+  },
+  "CHANGE-05": {
+    "response_bytes": 2097240,
+    "read_size": -1,
+    "answer_accepted": true
+  },
+  "CHANGE-06": {
+    "unclassified_exception": "JSONDecodeError",
+    "http_calls": 1,
+    "original_cache_preserved": true
+  }
+}

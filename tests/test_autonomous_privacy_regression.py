@@ -161,7 +161,7 @@ class TransportPrivacyRegression(unittest.TestCase):
         disconnected['source_roles'][1]['linked_to'] = 0
         cases = [(urllib.error.URLError('private body'), 'api'), (TimeoutError('private body'), 'timeout'),
                  (response(asdict(plan()), 'length'), 'truncated'), (response('not-json'), 'json'),
-                 (response(invalid_schema), 'schema'), (response(disconnected), 'roles')]
+                 (response(invalid_schema), 'schema_wrong_type'), (response(disconnected), 'roles')]
         for output, suffix in cases:
             with self.subTest(suffix=suffix), patch('urllib.request.urlopen', side_effect=[output]) as http:
                 with self.assertRaises(ParticipationError) as caught:
