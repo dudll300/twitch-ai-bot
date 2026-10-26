@@ -75,10 +75,12 @@ def _actor(prefix, author):
             and not RELATIVE.search(prefix) and not re.search(r"\b(?:что|кто|когда|если)\b", prefix, re.I)):
         return author
     relatives = list(RELATIVE.finditer(prefix))
-    if len(relatives) == 1 and len(prefix[relatives[0].end():].split()) <= 5 and not re.search(r"\b(?:или|и)\b", prefix):
+    if (len(relatives) == 1 and len(prefix[relatives[0].end():].split()) <= 5
+            and not re.search(r"[.!?,;:]|\b(?:или|и|я|ты|мы|вы|что|кто|если|как)\b", prefix, re.I)):
         return {"kind": "third_party", "name": relatives[0][0], "evidence": relatives[0][0]}
     named = re.fullmatch(r"([А-ЯЁ][а-яё-]{1,40})(?:\s+(?:уже|вчера|сегодня|тоже))?", prefix)
-    if named and named[1].casefold() not in {"он", "она", "они", "мне", "тебе", "блин", "это"}:
+    if named and named[1].casefold() not in {"он", "она", "они", "мы", "вы", "мне", "тебе", "блин", "это",
+                                            "вчера", "сегодня", "завтра", "сначала", "потом"}:
         return {"kind": "third_party", "name": named[1]}
     return {"kind": "unknown"}
 

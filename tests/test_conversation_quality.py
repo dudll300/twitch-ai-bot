@@ -69,6 +69,11 @@ class EventFactsTests(unittest.TestCase):
             ("Я маме пасту приготовил", "author", None),
             ("Мне приготовили карбонару", "unknown", None),
             ("Мама или папа приготовили ужин", "unknown", None),
+            ("Мама И гости приготовили ужин", "unknown", None),
+            ("Мама рядом, я приготовил ужин", "unknown", None),
+            ("Я как мама приготовила ужин", "unknown", None),
+            ("Вчера приготовил ужин", "unknown", None),
+            ("Мы приготовили ужин", "unknown", None),
         ):
             with self.subTest(text=text):
                 fact = self.statement(text)
