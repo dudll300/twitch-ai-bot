@@ -31,6 +31,13 @@ def response(value):
     return io.BytesIO(json.dumps({'choices': [{'message': {'content': json.dumps(value)}}]}).encode())
 
 
+def refresh_page(page):
+    # Finish any earlier journal read before requesting the new verdict.
+    wait_for(lambda: not page._loading)
+    page.refresh()
+    wait_for(lambda: not page._loading)
+
+
 def main():
     app = QApplication([])
     for filename in ('segoeui.ttf', 'seguisb.ttf'):
