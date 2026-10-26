@@ -86,7 +86,7 @@ class PublicationReservationTests(unittest.IsolatedAsyncioTestCase):
         http, pending, record, event = await self.execute(outputs=[
             fixtures.response(fixtures.asdict(fixtures.plan())),
             fixtures.response({"text": "Подожду такого же дропа", "creative_card_id": "drop"}),
-            fixtures.response({"allowed": True, "reasons": []}),
+            fixtures.response({"allowed": True, "reasons": [], "context_allowed": True, "context_reasons": []}),
         ])
         self.assertEqual(http.call_count, 3)
         self.writer.write.assert_called_once()

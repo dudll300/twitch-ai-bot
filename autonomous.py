@@ -27,6 +27,7 @@ from irc import moderation_event, parse_irc
 from safety_settings import PolicyStore, policy_scope, run_with_policy, current_policy
 from safety import SafetyBlocked, SafetyReview, review_candidate, validate_publication, publication_guard
 from local_context import LocalBundle, LocalResultError
+from autonomous_context import capture_autonomous_context
 from participation import (DEFAULT_AUTONOMOUS_PROMPT, Decision, PARTICIPATION, ParticipationError, RequestCancelled, check_basis, parse_decision,
                            repeats, request_decision, still_relevant)
 
@@ -700,7 +701,13 @@ class Autonomous:
                             target_id = addressed.get("user_id", "")
                             if self.output_fragments.check(decision.text, target_id, "public-replies"):
                                 raise SafetyBlocked(SafetyReview("blocked", "", ("privacy_blocked",)))
-                            scene = "\n".join(row["text"] for row in pending.messages if row["sequence"] in decision.basis)
+                            try:
+                                scene = capture_autonomous_context(self.cfg, decision, pending.messages,
+                                    pending.history_ref[1] if pending.history_ref else None)
+                            except (PrivacyViolation, PrivacyAnalysisLimit, PrivacyCheckError):
+                                raise
+                            except (ValueError, TypeError, KeyError, OverflowError):
+                                raise ParticipationError('autonomous_review_context') from None
                             approval = await asyncio.to_thread(review_candidate, self.cfg, pending.answer_model or self.cfg.get("AI_MODEL", ""), text,
                                 kind="autonomous", target=decision.target, context=scene, limit=min(self.settings.max_chars, 450),
                                 before_request=lambda: self.before_request(pending.generation, pending.cancel, pending.window, pending.local_snapshot),
@@ -844,19 +851,22 @@ class Autonomous:
                 await asyncio.to_thread(self.history_store.update, history_ref[0], "cancelled",
                     reason="Повод отменён до обращения к AI.")
                 return
-            def generated(decision, context):
+        def generated(decision, context):
+            # The review snapshot is independent of SQLite journaling. It stays
+            # tied to this generation/cancellation object, including headless use.
+            history_ref[1] = context if not cancel.is_set() else None
+            if self.history_store is not None:
                 status = "silent" if decision.action == "silent" else "cancelled" if cancel.is_set() else "generated"
                 fields = dict(channel=request_cfg.get("TWITCH_CHANNEL", ""), model=request_cfg.get("AI_MODEL", ""),
                     mode=mode, viewer=decision.target, action=decision.action,
                     answer="", reason="moderation_cancelled" if cancel.is_set() else decision.reason)
                 # Do not persist an unreviewed candidate or a late deleted scene.
-                history_ref[1] = context if not cancel.is_set() else None
                 context = None
                 if history_ref[0]:
                     self.history_store.update(history_ref[0], status, context=context, **fields)
                 else:
                     history_ref[0] = self.history_store.add("autonomous", status, context=context, **fields)
-            kwargs["on_result"] = generated
+        kwargs["on_result"] = generated
         from functools import partial
         request = partial(run_with_policy, self.safety_store, policy, self.request)
         future = self.executor.submit(request, dict(self.cfg), rows, self.settings, **kwargs)

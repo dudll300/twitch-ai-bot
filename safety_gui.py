@@ -34,6 +34,7 @@ PROTECTIONS = (
 )
 SCENARIOS = {'reward': 'Награда', 'autonomous': 'Самостоятельная реплика', 'preview': 'Предпросмотр'}
 STAGES = {'question': 'Вопрос', 'answer': 'Ответ', 'ai_review': 'AI-оценка', 'publication': 'Публикация'}
+STAGES['context_review'] = 'Проверка безопасности и смысла'
 STAGES.update(selector_request='Запрос селектора', selector_response='Ответ селектора',
               generator_request='Запрос генератора', generator_response='Ответ генератора',
               review_request='Запрос проверки публикации', review_response='Ответ проверки публикации')

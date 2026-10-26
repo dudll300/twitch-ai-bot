@@ -212,7 +212,9 @@ class ModerationPipelineTests(unittest.IsolatedAsyncioTestCase):
             self.executor.kwargs[-1]["before_request"]()
             sequence = pending.messages[-1]["sequence"]
             pending.future.set_result(Decision("reply", f"Победа уже близко, попытка {budget}!", "viewer", (sequence,), "reaction"))
-            with patch("urllib.request.urlopen", return_value=io.BytesIO(b'{"choices":[{"message":{"content":"{\\"allowed\\":true,\\"reasons\\":[]}"}}]}')) as network:
+            review_response = io.BytesIO(json.dumps({"choices": [{"message": {"content": json.dumps(
+                {"allowed": True, "reasons": [], "context_allowed": True, "context_reasons": []})}}]}).encode())
+            with patch("urllib.request.urlopen", return_value=review_response) as network:
                 await self.controller.tick()
             self.assertEqual(len(self.controller.requests), budget)
             self.assertEqual(network.call_count, 1 if budget == 3 else 0)

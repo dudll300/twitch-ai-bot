@@ -400,7 +400,7 @@ class AutonomousPolicyTests(unittest.IsolatedAsyncioTestCase):
                 return response(dict(action='reply', conversation=[1], basis=[1], target='viewer', reason='answer', intent='Ссылка на канал'))
             if len(models) == 2:
                 return response({'text': 'https://twitch.tv'})
-            return response(review or {'allowed': True, 'reasons': []})
+            return response({'context_allowed': True, 'context_reasons': [], **(review or {'allowed': True, 'reasons': []})})
         with patch('urllib.request.urlopen', side_effect=http):
             result = await asyncio.to_thread(self.executor.callback, *self.executor.args, **self.executor.kwargs)
             self.executor.future.set_result(result)

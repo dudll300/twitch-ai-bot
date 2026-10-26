@@ -232,7 +232,7 @@ class ControllerPrivacyRegression(unittest.IsolatedAsyncioTestCase):
         await self.controller.tick()
         pending = self.controller.pending
         outputs = outputs or [response(asdict(plan())), response({'text': 'Подожду такого же дропа'}),
-                              response({'allowed': True, 'reasons': []})]
+                              response({'allowed': True, 'reasons': [], 'context_allowed': True, 'context_reasons': []})]
         with patch('urllib.request.urlopen', side_effect=outputs) as http:
             function, args, kwargs = self.executor.call
             try:

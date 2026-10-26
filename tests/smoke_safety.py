@@ -151,6 +151,12 @@ def main():
         assert 'Запрос генератора' in page.decisions.item(0).text()
         assert 'HTTP: выбор 1, генерация 0, проверка 0' in page.decisions.item(0).text()
         assert 'Попытка Twitch: нет' in page.decisions.item(0).text()
+        journal.safety_event('autonomous', SafetyReview('blocked', '', ('context_actor_mismatch',),
+            stage='context_review', ai_attempted=True, model='review/manual', http_attempts=(1, 1, 1), twitch_attempted=False))
+        refresh_page(page)
+        assert 'Проверка безопасности и смысла' in page.decisions.item(0).text()
+        assert 'Ответ не соответствует разговору' in page.decisions.item(0).text()
+        assert 'Найдено нарушение' not in page.decisions.item(0).text()
         window._test_prompt()
         assert window.pages.currentIndex() == gui.PAGE_TESTING and window.testing_page.mode.currentIndex() == 0
         # A damaged file remains visible and repairable without credentials.

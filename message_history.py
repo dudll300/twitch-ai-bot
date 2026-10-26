@@ -137,7 +137,7 @@ class MessageHistory:
             raise ValueError('Unknown safety scenario')
         if review.status not in {'allowed', 'local_allowed', 'blocked', 'error', 'cancelled'}:
             raise ValueError('Unknown safety status')
-        stage = review.stage if review.stage in {'question', 'answer', 'ai_review', 'publication',
+        stage = review.stage if review.stage in {'question', 'answer', 'ai_review', 'context_review', 'publication',
             'selector_request', 'selector_response', 'generator_request', 'generator_response',
             'review_request', 'review_response'} else 'answer'
         reasons = [code for code in review.reasons if code in REASON_NAMES]
